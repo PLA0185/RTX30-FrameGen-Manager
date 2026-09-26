@@ -677,6 +677,16 @@ public static class DeploymentService
                 r.Note(Loc.T("Deploy.BackedUp", backups.Count, restoreFolder));
             }
 
+            // **事务快照用完就删。** `_pending` 里装的是「这次要覆盖的文件的原字节」，只在本次事务
+            // 失败回滚时需要；一旦走到这里（写入已经完成、记录也已经落下），它就再也没有引用者了。
+            //
+            // 而原来**只有 catch 分支**删它 ⇒ **每次成功的重部署都在 `%RestoreRoot%` 里多留一份
+            // 代理 + INI 的副本**（真实代理约 15 MB）。用户看不到任何提示，磁盘却在每次「改设置再部署」
+            // 时增长 —— 而 `backups.Count == 0` 时连 `RestoreFolder` 都不会被记录，
+            // **那些副本没有任何东西指向它们**。
+            try { if (Directory.Exists(txFolder)) Directory.Delete(txFolder, recursive: true); }
+            catch { /* 快照目录可丢弃；删不掉不影响这次部署的结果 */ }
+
             r.Message = Loc.T("Deploy.Success", proxy);
         }
         catch (Exception ex)
