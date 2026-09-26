@@ -4473,6 +4473,34 @@ public static class Program
             vResult.Plan is null || vResult.Plan.ProviderVersion is not null ||
             string.IsNullOrEmpty(vParts.Provider.GetInstalledVersion(vGame)));
 
+        // ---- 第二轮 P0-07：payload 目录必须按 provider + 版本隔离 ----
+        // The defect this covers: one shared folder for every provider and version, which makes "which version is
+        // this payload?" unanswerable — and the plan and its manifest both depend on that answer.
+        Check("不同版本的 payload 目录不同",
+            PayloadPaths.For("mfg-smooth", "2.8.2") != PayloadPaths.For("mfg-smooth", "2.9.0"));
+
+        Check("不同 provider 的 payload 目录不同",
+            PayloadPaths.For("mfg-smooth", "2.8.2") != PayloadPaths.For("dlssg-sm86", "2.8.2"));
+
+        Check("payload 根目录位于应用数据目录之下，不在游戏目录里",
+            SafeZip.IsInside(AppPaths.Root, PayloadPaths.Root));
+
+        // Provider ids and versions arrive from the network, so neither is trusted to be one well-formed segment.
+        Check("版本里的路径分隔符不会逃出 payload 根目录",
+            SafeZip.IsInside(PayloadPaths.Root, PayloadPaths.For("p", "../../etc")));
+
+        Check("provider id 里的路径分隔符同样不会逃出",
+            SafeZip.IsInside(PayloadPaths.Root, PayloadPaths.For("../../x", "1.0")));
+
+        Check("空版本落到明确的 _unknown 段，而不是根目录本身",
+            PayloadPaths.For("p", "").EndsWith("_unknown", StringComparison.OrdinalIgnoreCase));
+
+        Check("staging 目录与最终目录同级（同卷移动才是原子的）",
+            string.Equals(
+                Path.GetDirectoryName(PayloadPaths.Staging("p", "1.0")),
+                Path.GetDirectoryName(PayloadPaths.For("p", "1.0")),
+                StringComparison.OrdinalIgnoreCase));
+
         // ---- H: the configuration service the window now calls (整改 H) ----
         var hParts = Build(work, "wfHMatrix");
         var hService = new GameConfigurationService(hParts.Workflow);

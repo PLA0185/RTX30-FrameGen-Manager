@@ -85,3 +85,63 @@ public static class PayloadScanner
         }
     }
 }
+
+/// <summary>
+/// Where a provider's downloaded payload lives.
+///
+/// <para><b>Keyed on provider and version together.</b> A payload only means something together with the version
+/// it came from: sharing one folder across versions makes "which version is this?" unanswerable, and both the
+/// plan and its manifest depend on that answer. It also means switching providers cannot leave one provider's
+/// files sitting where another will look for its own.</para>
+/// </summary>
+public static class PayloadPaths
+{
+    /// <summary>Root under the application's data folder — not a game folder, and not the source folder.</summary>
+    public static string Root => Path.Combine(AppPaths.Root, "payloads");
+
+    /// <summary>The final folder for one provider and version.</summary>
+    public static string For(string providerId, string version) =>
+        Path.Combine(Root, Segment(providerId), Segment(version));
+
+    /// <summary>
+    /// A staging folder <b>beside</b> the target, so the swap into place stays on one volume.
+    ///
+    /// <para>A payload is downloaded here first and moved into place only after it verifies. Moving across
+    /// volumes degrades to copy-then-delete, which is exactly the non-atomic behaviour this avoids.</para>
+    /// </summary>
+    public static string Staging(string providerId, string version) =>
+        For(providerId, version) + ".staging-" + Guid.NewGuid().ToString("N")[..8];
+
+    /// <summary>
+    /// The other version folders for this provider, newest first, so a caller can clean up old payloads without
+    /// touching the one in use. Staging folders are excluded: they belong to a download in progress.
+    /// </summary>
+    public static IReadOnlyList<string> OtherVersions(string providerId, string keepVersion)
+    {
+        var parent = Path.Combine(Root, Segment(providerId));
+
+        if (!Directory.Exists(parent)) return Array.Empty<string>();
+
+        var keep = Segment(keepVersion);
+
+        return Directory.EnumerateDirectories(parent)
+            .Where(d => !Path.GetFileName(d).Contains(".staging-", StringComparison.OrdinalIgnoreCase))
+            .Where(d => !string.Equals(Path.GetFileName(d), keep, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(Directory.GetLastWriteTimeUtc)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Makes one path segment safe. Provider ids and versions reach this from the network, so neither is trusted
+    /// to be a single well-formed name — and a version string is not guaranteed to be a version number at all.
+    /// </summary>
+    private static string Segment(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "_unknown";
+
+        var invalid = Path.GetInvalidFileNameChars();
+        var cleaned = new string(value.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim('.', ' ');
+
+        return cleaned.Length == 0 ? "_unknown" : cleaned;
+    }
+}

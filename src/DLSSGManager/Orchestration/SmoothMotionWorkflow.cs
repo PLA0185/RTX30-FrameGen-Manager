@@ -312,6 +312,13 @@ public sealed class SmoothMotionWorkflow
                 ? $"使用版本 {resolvedVersion}。"
                 : "未能确定版本；后续按「未知版本」判定，不做猜测。"));
 
+        // The payload folder is derived from the provider and the version just resolved, so two providers — or two
+        // versions of one provider — cannot share one folder. A caller may still name a folder explicitly, which is
+        // what the tests do; the derived path is what the interface relies on.
+        var payloadDirectory = string.IsNullOrWhiteSpace(request.PayloadDirectory)
+            ? PayloadPaths.For(request.Provider.Id, resolvedVersion)
+            : request.PayloadDirectory;
+
         // ---- 3. compatibility ----
         var environment = new CompatibilityQuery(
             Gpu: request.GpuName,
@@ -335,13 +342,13 @@ public sealed class SmoothMotionWorkflow
         // Prefer the payload's real contents when the provider has already scanned them. The hard-coded name is
         // only a fallback for the first run, where the download has not happened yet — and the executor checks
         // the plan against the payload afterwards precisely because a fallback is a guess.
-        var manifest = request.PayloadDirectory is null
+        var manifest = payloadDirectory is null
             ? null
-            : request.Provider.ManifestOf(request.PayloadDirectory);
+            : request.Provider.ManifestOf(payloadDirectory);
 
         var payloadFiles = manifest is not null
             ? manifest.FileNames
-            : request.PayloadDirectory is null
+            : payloadDirectory is null
                 ? new List<string>()
                 : new List<string> { ModSource.IniName };
 
@@ -423,14 +430,14 @@ public sealed class SmoothMotionWorkflow
         try
         {
             // ---- 4. payload ----
-            if (string.IsNullOrWhiteSpace(request.PayloadDirectory))
+            if (string.IsNullOrWhiteSpace(payloadDirectory))
             {
                 errors.Add("没有可用的本地 payload 目录。");
                 return Finish(WorkflowOutcome.Failed, SmoothMotionEvidence.None, steps, plan, request, errors,
                     filesWritten, profileWritten, journal: profileJournal);
             }
 
-            var download = await request.Provider.DownloadAsync(request.PayloadDirectory!, progress, ct)
+            var download = await request.Provider.DownloadAsync(payloadDirectory, progress, ct)
                 .ConfigureAwait(false);
             steps.Add(new WorkflowStep("获取 payload", download.Ok, download.Message));
 
@@ -444,7 +451,7 @@ public sealed class SmoothMotionWorkflow
             // The plan was built before the payload existed, so its file list may have come from the fallback.
             // Now that the bytes are on disk, compare the two: a plan that names files the payload does not
             // contain describes an installation that cannot happen.
-            var downloaded = request.Provider.ManifestOf(request.PayloadDirectory!);
+            var downloaded = request.Provider.ManifestOf(payloadDirectory);
             if (downloaded is not null)
             {
                 var absent = plan.FilesToDeploy
@@ -466,7 +473,7 @@ public sealed class SmoothMotionWorkflow
             // ---- 5. install the patch (files before driver) ----
             // The plan decides what gets installed: its entry choice, its file list, and its ASI strategy. The
             // executor refuses rather than substituting some other arrangement the user never approved.
-            var source = new ModSource(request.PayloadDirectory!);
+            var source = new ModSource(payloadDirectory);
             var execution = InstallPlanExecutor.Execute(
                 request.Provider, plan, request.Game, source, request.AllowProtected);
 
