@@ -4648,6 +4648,20 @@ public static class Program
         var dlssgOnly = new DlssgSm86Provider();
         var mfgSmooth = new MfgSmoothProvider();
 
+        // §11/§16：正规化在「payload 里只有不可部署的入口名」时必须返回 null。
+        //
+        // 这一条对应一个真实缺陷：provider 侧的候选判据曾经用 IsKnownProxyName（**扫描名**，含 winhttp.dll），
+        // 而 planner 用 ProxyCandidates（**可部署名**）。若 payload 里只有扫描名，正规化会产出一个
+        // **没有任何可部署入口**的目录 —— 计划随后会选一个源目录里根本不存在的名字，部署直接失败。
+        // 真实 MFG payload 里有 version.dll，永远走不到这条分支，所以 900 项测试全绿也没发现它。
+        var onlyScanNames = Path.Combine(work, "canonical-edge-only-scan-names");
+        Directory.CreateDirectory(onlyScanNames);
+        File.WriteAllBytes(Path.Combine(onlyScanNames, "winhttp.dll"), new byte[] { 0x4D, 0x5A, 0x90, 0x00 });
+
+        Check("只有不可部署入口名时不予正规化（§11/§16）",
+            new MfgSmoothProvider().PrepareCanonicalPayload(onlyScanNames) is null,
+            "winhttp.dll 是扫描名而非可部署名；正规化必须拒绝产出一个没有可部署入口的目录");
+
         Check("dlssg-sm86 提供帧生成但不要求 Smooth Motion DRS",
             dlssgOnly.ProvidesDlssFrameGeneration && !dlssgOnly.RequiresSmoothMotionDrs
                 && !dlssgOnly.SupportsSmoothMotionDrs,
