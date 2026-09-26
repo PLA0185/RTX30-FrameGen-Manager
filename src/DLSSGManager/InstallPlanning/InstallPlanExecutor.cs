@@ -195,11 +195,16 @@ public static class InstallPlanExecutor
 
         static string Leaf(string path) => Path.GetFileName(path.Replace('/', '\\'));
 
+        // 用 FilesToDeploy 而不是 PlannedFiles 本身：两者由 InstallPlanner 的同一次 BuildPlannedFiles 调用
+        // 产生（§15 的「同源派生」），必然一致；而测试手工构造的 plan 只填 FilesToDeploy，读派生视图对它们
+        // 同样有效。**这个等价不是巧合，是 §15 那条结构性约束的直接结果。**
         var planned = plan.FilesToDeploy
             .Where(f => !string.IsNullOrWhiteSpace(f))
             .Select(Leaf)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        // 两个方向都要查。只看「部署了计划外的」会漏掉「计划里说了却没写」—— 后者同样违反
+        // planned == deployed，而且它恰好是最难发现的那种：安装悄悄少写了东西，报告却一切正常。
         var unexpected = deployed.Where(f => !planned.Contains(Leaf(f.FileName)))
             .Select(f => f.FileName).ToList();
 
