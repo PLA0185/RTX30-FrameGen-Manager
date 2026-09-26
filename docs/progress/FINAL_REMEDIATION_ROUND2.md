@@ -49,12 +49,17 @@ NVAPI profile lookup:               PASS（--nvapi-smoke：FindApplicationByName
 dotnet test:                        exit 0
 RC Packaging:                       PASS（scripts/package-release.ps1 exit 0）
 UI Process Smoke:                   PASS（从最终 ZIP 解压到全新临时目录，进程稳定 20 秒，句柄非 0，日志无 Exception/Fatal/Unhandled，只终止本次 PID，未误杀其他进程）
-EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,063,058 B）
+EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,063,186 B）
 ZIP:                                artifacts/RTX30-FrameGen-Manager-win-x64-1.9.3.zip（57.7 MB）
-SHA256 (EXE):                       FE3115028323E1FF6933208B65E126778EE4F154854FFA3524F36067583124AA
-SHA256 (ZIP):                       68A1DA4E8F40A84CCC555A28188A8A1BEA2A9CD29F718856605615FBAB68B597
+SHA256 (EXE):                       FCE848692A2CBABF7521BD81F7FF4A2726676E9369C86E95705723580FC17846
+SHA256 (ZIP):                       0B10E87AE9901A21E53F788BF6735054D297EA6B6BB8BDF7ECD12D3F54EF5B38
 发布目录内容:                        恰好 4 个文件（EXE + LICENSE + README.md + THIRD_PARTY_NOTICES.txt）
 ```
+
+### 额外修掉的缺陷（不在任务书 §22 的清单内，单独列出）
+
+- **`ModFetcher.AllowedHosts` 缺少 `release-assets.githubusercontent.com`**（`882ab9b`）。每一次重定向都要过白名单，所以 MFG 的下载此前**永远无法完成**——而只走到 API 的 smoke 看不见这一点。
+- **深色主题下 `ToolTip` / `ListBox` / `Expander` / `ToggleButton` 没有隐式样式**（`b32bf18`）。它们会落回 WPF 内置模板，而内置模板的前景色来自系统主题、不参与本项目的主题字典，于是在深色界面上渲染成黑字；`ListBox` 反向还有浅色底整块发白。两个主题已各补齐这四个隐式样式。**验证到「样式被正确加载、资源键可解析、窗口正常渲染」为止（启动日志无 `XamlParseException` / `Cannot find resource`）；实际字形颜色是视觉结果，需人在界面上确认。**
 
 > **关于 §10 这个额外发现**：`--network-smoke` 覆盖了「解析 Release + 检查 host 白名单」，看起来网络路径已经测过——但它**从未跟随重定向**。真实下载第一跳是 `github.com`，随后重定向到 CDN 主机；白名单对每一跳都校验，缺了那一个就拒绝。**编译、单元测试、结构断言都不可能发现它**，只有真的去下载才会撞上。这正是 §10 单独列一项的理由。
 
