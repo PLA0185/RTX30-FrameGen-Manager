@@ -46,6 +46,17 @@ Mod 文件（约 101 MB）不随安装包分发，安装过程也不联网：**�
 
 > [!IMPORTANT]
 > **当前状态：Release Candidate，没有 Stable 标签。** 部署、还原、Provider 校验与兼容性判定已有完整回归覆盖；**真实 NVIDIA Profile 写入与视觉界面仍未在真机上验证**——这两项按待用户验证记录，不算已完成。
+>
+> **写入路径的具体状态（第三轮实测，2026-09-26）**：仓库里有一条专门的、可重复运行的临时 Profile 写入自检：
+> `DLSSGManager.Harness.exe --nvapi-write-smoke`。它在一个**自己创建、自己删除**的 `RTX30FGM-SMOKE-<GUID>`
+> Profile 上走完「建 Profile → 绑定测试 EXE → 写设置 → 保存 → 读回 → 删设置 → 保存 → 确认恢复 → 解绑 →
+> 删 Profile」，全程 `try/finally` 清理，**从不触碰用户现有 Profile 或 Ground Branch**。
+>
+> **实测结果**：Profile 与应用的新建、绑定、解绑、删除**全部成功**，保存调用也成功；但
+> **`NvAPI_DRS_SetSetting` 返回 `-160` / `-137`，写入未生效**。因此写路径在代码里**保持关闭**：
+> `CanWrite = false`，能力门 `WriteCallsProven` / `SaveCallsProven` / `DeleteCallsProven` **全部为 false**。
+> 读路径是分开判断的（`CanRead = true`，由 200 次真实读取证明）—— **这就是「读通过不等于写可用」的落实**。
+> 上述两个错误码的含义**未在任何可得的官方头文件中定义**，故**列为未知，不做推测**。
 
 ## 用法
 
