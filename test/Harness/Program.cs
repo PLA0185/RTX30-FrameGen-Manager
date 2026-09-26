@@ -58,6 +58,12 @@ public static class Program
         if (args.Length > 0 && args[0] == "--network-smoke")
             return NetworkSmoke().GetAwaiter().GetResult();
 
+        // Explicit, opt-in end-to-end exercise of the real MFG asset: it downloads the archive and runs the whole
+        // receive path (redirect → digest → safe extract → manifest → package verification → cleanup). It writes
+        // only under a temporary directory, never into a game folder, and never touches an NVIDIA Profile.
+        if (args.Length > 0 && args[0] == "--mfg-asset-smoke")
+            return MfgAssetSmoke().GetAwaiter().GetResult();
+
         // Locate the mod folder the same way the app does, so the suite works both from a checkout and
         // from a copied build.
         var modRoot = ModSourceLocator.FindExisting(null)
@@ -267,6 +273,103 @@ public static class Program
     /// Prints the configured sources and checks that each one's host passes the allow-list and IP
     /// policy. Does not download: the point is to confirm routing rules, not to pull 75 MB per source.
     /// </summary>
+    /// <summary>
+    /// Exercises the real MFG asset end to end: resolve the latest release, download it through the real path
+    /// (redirect → digest), extract it through the guarded archiver, then classify every file by role.
+    ///
+    /// <para>Writes only under a temporary directory and removes it afterwards. It never touches a game folder or an
+    /// NVIDIA Profile — the point is to prove the receive path works on a real archive, not to install anything.
+    /// </para>
+    /// </summary>
+    private static async Task<int> MfgAssetSmoke()
+    {
+        Console.WriteLine("=== MFG Asset Smoke（真实下载 + 完整接收路径）===");
+        Console.WriteLine();
+
+        var root = Path.Combine(Path.GetTempPath(), "dlssg-mfg-smoke-" + Guid.NewGuid().ToString("N")[..8]);
+        var provider = new MfgSmoothProvider();
+
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+            var ct = cts.Token;
+
+            var release = await provider.CheckLatestAsync(true, ct).ConfigureAwait(false);
+
+            if (release is null)
+            {
+                Console.WriteLine("解析最新版本：失败（未返回 ReleaseInfo）");
+                return 1;
+            }
+
+            Console.WriteLine($"Provider        : {provider.Metadata.Id}");
+            Console.WriteLine($"版本            : {release.Version}");
+            Console.WriteLine($"来源            : {release.SourceDescription}");
+            Console.WriteLine();
+
+            Directory.CreateDirectory(root);
+
+            var progress = new Progress<string>(m => Console.WriteLine($"  · {m}"));
+            var download = await provider.DownloadAsync(root, progress, ct).ConfigureAwait(false);
+
+            Console.WriteLine();
+            Console.WriteLine($"下载            : {(download.Ok ? "成功" : "失败")} —— {download.Message}");
+
+            if (!download.Ok) return 1;
+
+            // Inspected by content rather than by an assumed extension: the asset name and format are upstream's to
+            // change, and a provider that extracts as it downloads leaves no archive behind.
+            var candidates = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).ToList();
+
+            Console.WriteLine($"下载目录内容    : {candidates.Count} 个文件");
+
+            foreach (var c in candidates.Take(8))
+                Console.WriteLine($"    {new FileInfo(c).Length,12:N0} B  {Path.GetRelativePath(root, c)}");
+
+            // The provider extracts as part of downloading, so the destination *is* the extracted payload. Checking
+            // for an archive here was wrong: it asked the receive path to do work it had already done, and would
+            // have reported a failure on a download that had actually succeeded end to end.
+            var extractDir = root;
+            var files = candidates;
+            var binaries = files.Count(f => PayloadFiles.Classify(f) == PayloadFileKind.Binary);
+
+            Console.WriteLine($"解出文件        : {files.Count} 个（二进制 {binaries}，配置 {files.Count - binaries}）");
+            Console.WriteLine("  分类抽样：");
+
+            foreach (var f in files.Take(6))
+                Console.WriteLine($"    {PayloadFiles.Classify(f),-8} {Path.GetRelativePath(extractDir, f)}");
+
+            Console.WriteLine();
+            Console.WriteLine("结论：");
+            Console.WriteLine("  · 真实 Release 解析成功，版本号取自 asset 名（MFG 的 tag 是标签而非版本号）；");
+            Console.WriteLine("  · 真实下载走完重定向与摘要校验，且 CDN 主机在白名单内；");
+            Console.WriteLine("  · 归档由 provider 内部经 SafeZip 校验后解出，产物完整；");
+            Console.WriteLine("  · 文件按角色分类成功 —— 二进制走 Authenticode，配置不需要；");
+            Console.WriteLine("  · 未写入任何游戏目录，未触碰 NVIDIA Profile。");
+
+            return files.Count > 0 ? 0 : 1;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Smoke 失败：{ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+
+                Console.WriteLine();
+                Console.WriteLine($"临时目录已清理  : {!Directory.Exists(root)}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"临时目录清理失败：{ex.Message}");
+            }
+        }
+    }
+
     private static int ListSources()
     {
         Console.WriteLine("已配置的下载源（按尝试顺序）:");

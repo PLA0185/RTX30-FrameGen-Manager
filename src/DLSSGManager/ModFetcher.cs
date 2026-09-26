@@ -42,6 +42,10 @@ public static class ModFetcher
         // release assets, because every hop is re-checked and a redirect to an unlisted host is refused —
         // without this entry the download could not complete at all.
         "objects.githubusercontent.com",
+        // GitHub also serves release assets from its own CDN host. A real download was refused here until this
+        // entry existed — only an actual fetch could reveal it, because the earlier smoke stopped at the API
+        // response and never followed a redirect to this host.
+        "release-assets.githubusercontent.com",
         // Third-party mirrors. Accepted only with a matching certificate pin, because a mirror is not
         // the authority for this content — see Verify().
         "cdn.jsdelivr.net",
