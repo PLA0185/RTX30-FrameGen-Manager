@@ -4034,7 +4034,16 @@ public static class Program
             return OkResult("测试替身已安装。");
         }
 
-        public OpResult Restore(GameEntry game, bool removeLogs) => OkResult("测试替身未部署任何内容。");
+        /// <summary>
+        /// 让 Restore 失败，用于验证「回滚没成功」这条路径被如实暴露（P0-10 的 RollbackIncomplete）。
+        /// 默认 false —— 既有测试全都依赖还原成功。
+        /// </summary>
+        public bool FailRestore { get; set; }
+
+        public OpResult Restore(GameEntry game, bool removeLogs) =>
+            FailRestore
+                ? FailResult("测试替身：还原失败。")
+                : OkResult("测试替身未部署任何内容。");
 
         private static OpResult OkResult(string message)
         {
@@ -5425,6 +5434,11 @@ public static class Program
         Check("Profile 失败后回滚文件部署", rolledBack.FilesRolledBack, string.Join("; ", rolledBack.Steps.Select(s => s.Message)));
         Check("回滚后代理已移除", !File.Exists(Path.Combine(rbGame.RenderDir, "version.dll")));
         Check("回滚被记录为步骤", rolledBack.Steps.Any(s => s.Stage.Contains("回滚")));
+
+        // P0-10：RollbackIncomplete 表达的是「尝试过回滚、但没成功」。这次回滚成功了，所以它必须是 false ——
+        // 没有这一条，一个恒为 true 的实现也能满足「失败时要为 true」那半边。
+        Check("回滚成功时不声称回滚未完成", !rolledBack.RollbackIncomplete,
+            $"incomplete={rolledBack.RollbackIncomplete}");
 
         // ---- 7. profile journal wiring ----
         var jParts = Build(work, "wfJournal");
