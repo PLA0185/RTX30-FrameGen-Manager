@@ -41,7 +41,7 @@
 
 ```
 Build:                              0 warnings / 0 errors（dotnet build --no-incremental -c Release）
-Harness:                            855 passed / 0 failed / 10 skipped（原 801 项全保留，新增 54 项）
+Harness:                            861 passed / 0 failed / 10 skipped（原 801 项全保留，新增 60 项）
 Network smoke:                      PASS（Release 解析 + host 白名单）
 Real MFG Asset Smoke:               PASS（真实下载 mfg-smooth 2.8.2 → 312 个文件，二进制 8 / 配置 304，exit 0）
 NVAPI read loop:                    PASS（--nvapi-smoke --loop：200 次真实读取，驱动被触达 200/200，异常 0）
@@ -49,10 +49,10 @@ NVAPI profile lookup:               PASS（--nvapi-smoke：FindApplicationByName
 dotnet test:                        exit 0
 RC Packaging:                       PASS（scripts/package-release.ps1 exit 0）
 UI Process Smoke:                   PASS（从最终 ZIP 解压到全新临时目录，进程稳定 20 秒，句柄非 0，日志无 Exception/Fatal/Unhandled，只终止本次 PID，未误杀其他进程）
-EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,063,186 B）
+EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,063,238 B）
 ZIP:                                artifacts/RTX30-FrameGen-Manager-win-x64-1.9.3.zip（57.7 MB）
-SHA256 (EXE):                       FCE848692A2CBABF7521BD81F7FF4A2726676E9369C86E95705723580FC17846
-SHA256 (ZIP):                       0B10E87AE9901A21E53F788BF6735054D297EA6B6BB8BDF7ECD12D3F54EF5B38
+SHA256 (EXE):                       35C338C7FFA565187F7B80155E789A9796D50FFA0CCD18520D8A6CE51CA81C63
+SHA256 (ZIP):                       199DCF5611447AE8C7B931915F775BBD308613014FB9123AEDDC5542AA780EC0
 发布目录内容:                        恰好 4 个文件（EXE + LICENSE + README.md + THIRD_PARTY_NOTICES.txt）
 ```
 
@@ -75,7 +75,7 @@ SHA256 (ZIP):                       0B10E87AE9901A21E53F788BF6735054D297EA6B6BB8
 ## 五、Known Risks
 
 1. **P0-09 的确认框仍不描述计划**：用户看到的是防作弊风险，而不是各游戏的实际计划与被阻止的原因。
-2. **§13 是随附式加清单式核对，而非逐项补齐**：每个修复都带了断言（累计新增 54 项），未覆盖的七项记在 `ROUND2_TEST_COVERAGE.md`，其共同根因是 UI 文件不在 Harness 编译白名单内。
+2. **§13 是随附式加清单式核对，而非逐项补齐**：每个修复都带了断言（累计新增 60 项）。SafeZip 的**单文件上限与总大小上限已在 `78f89d2` 补测** —— 做法是把两个上限改成**带默认值的参数**（默认值即原常量，生产调用点一行未改），于是几百字节的压缩包就能覆盖全部分支，而不必真的付出 512 MiB / 2 GiB 的代价。**未覆盖的剩余五项**记在 `ROUND2_TEST_COVERAGE.md`，其共同根因是 UI 文件不在 Harness 编译白名单内。
 3. **UI 路径的测试覆盖有限**：批量部署、Provider 下拉、Plan Preview 的改动**不在 Harness 编译白名单内**（`MainWindow.xaml.cs` / `MainWindow.Actions.cs`），Build 0/0 与 Harness 全绿只说明没有破坏既有行为，不等于新路径被执行过。
 4. **视觉结果未经确认**：深色主题的隐式样式已验证到「样式被正确加载、资源键可解析、窗口正常渲染」（启动日志无 `XamlParseException` / `Cannot find resource`），**实际字形颜色是视觉结果，需人在界面上确认**。
 
