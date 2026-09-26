@@ -4720,6 +4720,39 @@ public static class Program
         Check("空版本落到明确的 _unknown 段，而不是根目录本身",
             PayloadPaths.For("p", "").EndsWith("_unknown", StringComparison.OrdinalIgnoreCase));
 
+        // ---- payload 旧版本清理（P0-07 的第三项：旧版本可清理）----
+        //
+        // 用唯一的 providerId，确保不会碰到任何真实 provider 的目录；测完把整个目录删掉。
+        // 关键断言是「仍被引用的版本必须活着」—— 一个 provider 的 payload 可能支撑多个游戏的部署。
+        var cleanupProvider = "__cleanup_test_" + Guid.NewGuid().ToString("N")[..8];
+        var providerDir = Path.Combine(PayloadPaths.Root, cleanupProvider);
+
+        var oldVersion = PayloadPaths.For(cleanupProvider, "1.0.0");
+        var inUseVersion = PayloadPaths.For(cleanupProvider, "2.0.0");
+        var currentVersion = PayloadPaths.For(cleanupProvider, "3.0.0");
+
+        foreach (var dir in new[] { oldVersion, inUseVersion, currentVersion })
+        {
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, "marker.txt"), "x");
+        }
+
+        var staging = PayloadPaths.Staging(cleanupProvider, "4.0.0");
+        Directory.CreateDirectory(staging);
+
+        var removedVersions = PayloadPaths.RemoveUnreferenced(cleanupProvider, "3.0.0", new[] { "2.0.0" });
+
+        Check("清理删除未被引用的旧版本",
+            removedVersions.Count == 1 && !Directory.Exists(oldVersion), string.Join(",", removedVersions));
+        Check("清理保留当前版本", Directory.Exists(currentVersion));
+        Check("清理保留仍被其他部署引用的版本", Directory.Exists(inUseVersion));
+        Check("清理不触碰进行中的 staging 目录", Directory.Exists(staging));
+
+        Check("清理后再次列出可清理版本时为空",
+            PayloadPaths.OtherVersions(cleanupProvider, "3.0.0").Count == 1);
+
+        Directory.Delete(providerDir, recursive: true);
+
         Check("staging 目录与最终目录同级（同卷移动才是原子的）",
             string.Equals(
                 Path.GetDirectoryName(PayloadPaths.Staging("p", "1.0")),

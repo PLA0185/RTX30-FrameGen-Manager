@@ -132,6 +132,46 @@ public static class PayloadPaths
     }
 
     /// <summary>
+    /// Deletes version folders for a provider that nothing refers to any more, and returns what it removed.
+    ///
+    /// <para><paramref name="keepVersion"/> and every entry of <paramref name="referenced"/> survive. One provider's
+    /// payload can back the deployments of several games, and each records its own version — deleting a version that
+    /// is still referenced would break those deployments. So this refuses to guess: it removes only what the caller
+    /// has said is unused, which is why it takes the referenced set rather than deciding for itself.</para>
+    ///
+    /// <para>Staging folders are never touched: they belong to a download in progress. A folder that cannot be
+    /// removed is skipped rather than allowed to abort the rest — cleanup is best-effort, and the next run sees it.</para>
+    /// </summary>
+    public static IReadOnlyList<string> RemoveUnreferenced(
+        string providerId, string keepVersion, IEnumerable<string> referenced)
+    {
+        var keep = new HashSet<string>(referenced.Select(Segment), StringComparer.OrdinalIgnoreCase);
+
+        var removed = new List<string>();
+
+        foreach (var folder in OtherVersions(providerId, keepVersion))
+        {
+            if (keep.Contains(Path.GetFileName(folder))) continue;
+
+            try
+            {
+                Directory.Delete(folder, recursive: true);
+                removed.Add(folder);
+            }
+            catch (IOException)
+            {
+                // Locked or in use; leave it for the next cleanup.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Not ours to remove; leave it rather than failing the caller's operation over it.
+            }
+        }
+
+        return removed;
+    }
+
+    /// <summary>
     /// Makes one path segment safe. Provider ids and versions reach this from the network, so neither is trusted
     /// to be a single well-formed name — and a version string is not guaranteed to be a version number at all.
     /// </summary>
