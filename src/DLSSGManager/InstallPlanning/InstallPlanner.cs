@@ -682,7 +682,17 @@ public static class InstallPlanner
         }
         else
         {
-            warnings.Add("没有适用的安装配方；计划仅包含代理部署，未包含 NVIDIA Profile 与启动参数。");
+            // 措辞必须说清「配方」与「计划」的区别 —— 这一条在生产路径上**恒成立**。
+            //
+            // `ConfigurationRequest` 没有 `Recipe` 字段，所以 `WorkflowRequest.Recipe` 永远是 null，
+            // 这个 else 分支每次都会走到。原措辞「计划仅包含代理部署，未包含 NVIDIA Profile 与启动参数」
+            // 会让用户以为**整个计划不写 Profile** —— 而实际上写入哪些 Profile 设置由 `ProfileRequirements`
+            // （来自 provider 与界面上的选择）单独决定，**与配方无关**。
+            //
+            // 恒成立的 warning 还有一个副作用：它会**淹没**真正需要注意的那些 warning。
+            warnings.Add("未提供安装配方（配方驱动的 Profile 变更与启动参数因此留空）；"
+                + "本次要写的 NVIDIA Profile 设置由 Provider 与界面上的选择单独决定。");
+
             rollback.Add("移除本次部署的代理文件与 INI，并恢复被覆盖的同名文件。");
         }
 

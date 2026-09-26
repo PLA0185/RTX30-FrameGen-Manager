@@ -795,6 +795,18 @@ public static class Program
                 $"[{string.Join("、", planOnly.FilesToDeploy)}] vs " +
                 $"[{string.Join("、", planOnly.PlannedFiles.Select(f => f.TargetRelativePath))}]");
 
+            // §17 P2：**计划里没有配方时，warning 的措辞不得让用户以为整个计划不写 Profile。**
+            //
+            // 这条 warning 在生产路径上**恒成立**（`ConfigurationRequest` 没有 `Recipe` 字段），所以它出现得
+            // 很频繁 —— 措辞一旦误导，就会**每次都**误导。旧措辞「计划仅包含代理部署，未包含 NVIDIA Profile
+            // 与启动参数」正是如此：写哪些 Profile 设置由 `ProfileRequirements` 单独决定，与配方无关。
+            //
+            // 这里用的是**真实 planner 的产物**（plan-only 段），所以这条断言真的会跑到。
+            Check("无配方时的措辞不把「配方为空」说成「计划不写 Profile」（§17 P2）",
+                planOnly.Warnings.All(w => !w.Contains("未包含 NVIDIA Profile"))
+                    || planOnly.Warnings.Any(w => w.Contains("由 Provider 与界面上的选择单独决定")),
+                string.Join(" | ", planOnly.Warnings));
+
             Console.WriteLine($"  判定             : {verdict}");
 
             foreach (var b in planOnly.Blockers) Console.WriteLine($"  Blocked 原因     : {b}");
