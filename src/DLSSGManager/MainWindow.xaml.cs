@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using DLSSGManager.UI;
 using Microsoft.Win32;
 
 namespace DLSSGManager;
@@ -454,6 +455,79 @@ public partial class MainWindow : Window
     /// </summary>
     private string SourcePath =>
         ModSourceLocator.FindExisting(_data.ModSourcePath) ?? _data.ModSourcePath;
+
+    // ═══════════ 页面导航 ═══════════
+
+    private AppPage _currentPage = NavigationModel.DefaultPage;
+
+    /// <summary>
+    /// Switches the visible page.
+    ///
+    /// Both navigation lists share this handler, so selecting in one clears the other: two highlighted
+    /// entries at once would leave it unclear which page is actually on screen.
+    /// </summary>
+    private void Nav_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (sender is not ListBox source || source.SelectedItem is not ListBoxItem item) return;
+
+        var other = ReferenceEquals(source, NavPrimary) ? NavAdvanced : NavPrimary;
+        if (other.SelectedIndex >= 0) other.SelectedIndex = -1;
+
+        if (item.Tag is string tag && Enum.TryParse<AppPage>(tag, out var page))
+            ShowPage(page);
+    }
+
+    /// <summary>Shows exactly one page, then refreshes what it says.</summary>
+    private void ShowPage(AppPage page)
+    {
+        _currentPage = page;
+
+        PageDashboard.Visibility = Visible(page == AppPage.Dashboard);
+        PageLibrary.Visibility = Visible(page == AppPage.Library);
+        PageGameDetails.Visibility = Visible(page == AppPage.GameDetails);
+        PageUpdates.Visibility = Visible(page == AppPage.Updates);
+        PageDownloads.Visibility = Visible(page == AppPage.Downloads);
+        PageDiagnostics.Visibility = Visible(page == AppPage.Diagnostics);
+        PageSettings.Visibility = Visible(page == AppPage.Settings);
+
+        RefreshPageContent();
+
+        static Visibility Visible(bool shown) => shown ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Fills the page summaries from the same core state the rest of the window already uses.
+    ///
+    /// Plain text rather than resource keys, matching how the core services describe themselves
+    /// (ProviderHealth.Reason, UpdateNotification). Two vocabularies for one fact is how an interface and
+    /// its engine start disagreeing.
+    /// </summary>
+    private void RefreshPageContent()
+    {
+        var games = _data.Games;
+
+        DashboardMachine.Text = $"{GpuText.Text}\n{SubtitleText.Text}";
+
+        DashboardNextStep.Text = games.Count == 0
+            ? "还没有游戏：先扫描 Steam 库，或手动添加一个游戏目录。"
+            : Selected is null
+                ? $"已有 {games.Count} 个游戏，但尚未选中。到「游戏库」里选择要配置的游戏。"
+                : $"已选中「{Selected.Name}」。到「游戏详情」查看它的检测结果与安装计划。";
+
+        DetailsSummary.Text = Selected is null
+            ? "未选中游戏。"
+            : $"{Selected.Name}\n{Selected.RenderDir}";
+
+        UpdatesSummary.Text = $"当前版本 {AppVersion.Label}。本软件与第三方补丁的更新是两套独立流程。";
+
+        DownloadsSummary.Text = "传输进度显示在窗口底部的进度条中；已完成的下载历史尚未在此页汇总。";
+
+        DiagnosticsSummary.Text = "日志位于窗口底部。兼容性数据库与证据规则见 docs/COMPATIBILITY.md；" +
+                                  "数据库当前为空，因此没有任何条目达到 Project Verified。";
+
+        SettingsSummary.Text = "语言与主题在上方工具栏；代理入口、图形 API 与 NVIDIA Profile 相关设置" +
+                               "属于高级项，默认折叠在「游戏详情」的高级区域。";
+    }
 
     private ModSource CurrentSource() => new(SourcePath);
 

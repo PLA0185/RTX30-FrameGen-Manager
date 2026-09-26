@@ -457,9 +457,49 @@
         <!-- ═══════════ 主体：侧边栏 + 详情卡片区 ═══════════ -->
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="300" MinWidth="240" MaxWidth="420" />
+                <ColumnDefinition Width="184" MinWidth="158" MaxWidth="230" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
+
+            <!-- ═══════════ 页面导航（七页；高级页单列一组）═══════════ -->
+            <Border Grid.Column="0" Background="{DynamicResource PanelBackground}"
+                    BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,0,1,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10,14,10,12">
+                        <TextBlock Text="{loc:Tr Nav.Primary}" FontSize="11" Opacity="0.6" Margin="8,0,0,6" />
+                        <ListBox x:Name="NavPrimary" Background="Transparent" BorderThickness="0"
+                                 SelectionChanged="Nav_SelectionChanged"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBoxItem Content="{loc:Tr Nav.Dashboard}" Tag="Dashboard" Padding="10,7" />
+                            <ListBoxItem Content="{loc:Tr Nav.Library}" Tag="Library" Padding="10,7" />
+                            <ListBoxItem Content="{loc:Tr Nav.GameDetails}" Tag="GameDetails" Padding="10,7" />
+                            <ListBoxItem Content="{loc:Tr Nav.Updates}" Tag="Updates" Padding="10,7" />
+                            <ListBoxItem Content="{loc:Tr Nav.Downloads}" Tag="Downloads" Padding="10,7" />
+                        </ListBox>
+
+                        <TextBlock Text="{loc:Tr Nav.Advanced}" FontSize="11" Opacity="0.6" Margin="8,16,0,6" />
+                        <ListBox x:Name="NavAdvanced" Background="Transparent" BorderThickness="0"
+                                 SelectionChanged="Nav_SelectionChanged"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBoxItem Content="{loc:Tr Nav.Diagnostics}" Tag="Diagnostics" Padding="10,7" />
+                            <ListBoxItem Content="{loc:Tr Nav.Settings}" Tag="Settings" Padding="10,7" />
+                        </ListBox>
+
+                        <TextBlock Text="{loc:Tr Page.AdvancedNote}" FontSize="10.5" Opacity="0.55"
+                                   TextWrapping="Wrap" Margin="8,18,8,0" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <!-- ═══════════ 页面容器：同一时刻只显示一页 ═══════════ -->
+            <Grid Grid.Column="1">
+
+                <!-- ── 游戏库 / 游戏详情：沿用已有的侧边栏 + 详情联动视图 ── -->
+                <Grid x:Name="PageLibrary" Visibility="Collapsed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="300" MinWidth="240" MaxWidth="420" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
 
             <!-- 侧边栏：游戏列表 + 批量操作 -->
             <Border Grid.Column="0" Background="{DynamicResource PanelBackground}"
@@ -763,6 +803,102 @@
                     </StackPanel>
                 </ScrollViewer>
             </Border>
+                </Grid><!-- /PageLibrary -->
+
+                <!-- ── 总览：这台机器现在是什么状态、下一步做什么 ── -->
+                <Grid x:Name="PageDashboard">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="26,22,26,22" MaxWidth="780" HorizontalAlignment="Left">
+                            <TextBlock Text="{loc:Tr Nav.Dashboard}" FontSize="20" FontWeight="SemiBold" />
+                            <TextBlock Text="{loc:Tr Page.Dashboard.Purpose}" Opacity="0.7" Margin="0,4,0,20" TextWrapping="Wrap" />
+
+                            <TextBlock Text="{loc:Tr Page.Dashboard.Machine}" FontWeight="SemiBold" />
+                            <Border Background="{DynamicResource PanelBackground}" CornerRadius="8" Padding="14,11" Margin="0,6,0,18">
+                                <TextBlock x:Name="DashboardMachine" TextWrapping="Wrap" />
+                            </Border>
+
+                            <TextBlock Text="{loc:Tr Page.Dashboard.NextStep}" FontWeight="SemiBold" />
+                            <Border Background="{DynamicResource PanelBackground}" CornerRadius="8" Padding="14,11" Margin="0,6,0,0">
+                                <TextBlock x:Name="DashboardNextStep" TextWrapping="Wrap" />
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- ── 游戏详情：选中游戏的完整状态 ── -->
+                <Grid x:Name="PageGameDetails" Visibility="Collapsed">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="26,22,26,22" MaxWidth="780" HorizontalAlignment="Left">
+                            <TextBlock Text="{loc:Tr Nav.GameDetails}" FontSize="20" FontWeight="SemiBold" />
+                            <TextBlock Text="{loc:Tr Page.GameDetails.Purpose}" Opacity="0.7" Margin="0,4,0,20" TextWrapping="Wrap" />
+                            <Border Background="{DynamicResource PanelBackground}" CornerRadius="8" Padding="14,11">
+                                <TextBlock x:Name="DetailsSummary" TextWrapping="Wrap" />
+                            </Border>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- ── 更新 ── -->
+                <Grid x:Name="PageUpdates" Visibility="Collapsed">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="26,22,26,22" MaxWidth="780" HorizontalAlignment="Left">
+                            <TextBlock Text="{loc:Tr Nav.Updates}" FontSize="20" FontWeight="SemiBold" />
+                            <TextBlock Text="{loc:Tr Page.Updates.Purpose}" Opacity="0.7" Margin="0,4,0,20" TextWrapping="Wrap" />
+                            <Border Background="{DynamicResource PanelBackground}" CornerRadius="8" Padding="14,11">
+                                <TextBlock x:Name="UpdatesSummary" TextWrapping="Wrap" />
+                            </Border>
+                            <TextBlock Text="{loc:Tr Page.Placeholder}" Opacity="0.55" FontSize="11.5"
+                                       TextWrapping="Wrap" Margin="0,14,0,0" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- ── 下载 ── -->
+                <Grid x:Name="PageDownloads" Visibility="Collapsed">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="26,22,26,22" MaxWidth="780" HorizontalAlignment="Left">
+                            <TextBlock Text="{loc:Tr Nav.Downloads}" FontSize="20" FontWeight="SemiBold" />
+                            <TextBlock Text="{loc:Tr Page.Downloads.Purpose}" Opacity="0.7" Margin="0,4,0,20" TextWrapping="Wrap" />
+                            <Border Background="{DynamicResource PanelBackground}" CornerRadius="8" Padding="14,11">
+                                <TextBlock x:Name="DownloadsSummary" TextWrapping="Wrap" />
+                            </Border>
+                            <TextBlock Text="{loc:Tr Page.Placeholder}" Opacity="0.55" FontSize="11.5"
+                                       TextWrapping="Wrap" Margin="0,14,0,0" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- ── 诊断（高级）── -->
+                <Grid x:Name="PageDiagnostics" Visibility="Collapsed">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="26,22,26,22" MaxWidth="780" HorizontalAlignment="Left">
+                            <TextBlock Text="{loc:Tr Nav.Diagnostics}" FontSize="20" FontWeight="SemiBold" />
+                            <TextBlock Text="{loc:Tr Page.Diagnostics.Purpose}" Opacity="0.7" Margin="0,4,0,20" TextWrapping="Wrap" />
+                            <Border Background="{DynamicResource PanelBackground}" CornerRadius="8" Padding="14,11">
+                                <TextBlock x:Name="DiagnosticsSummary" TextWrapping="Wrap" />
+                            </Border>
+                            <TextBlock Text="{loc:Tr Page.Placeholder}" Opacity="0.55" FontSize="11.5"
+                                       TextWrapping="Wrap" Margin="0,14,0,0" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+                <!-- ── 设置（高级）── -->
+                <Grid x:Name="PageSettings" Visibility="Collapsed">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="26,22,26,22" MaxWidth="780" HorizontalAlignment="Left">
+                            <TextBlock Text="{loc:Tr Nav.Settings}" FontSize="20" FontWeight="SemiBold" />
+                            <TextBlock Text="{loc:Tr Page.Settings.Purpose}" Opacity="0.7" Margin="0,4,0,20" TextWrapping="Wrap" />
+                            <Border Background="{DynamicResource PanelBackground}" CornerRadius="8" Padding="14,11">
+                                <TextBlock x:Name="SettingsSummary" TextWrapping="Wrap" />
+                            </Border>
+                            <TextBlock Text="{loc:Tr Page.Placeholder}" Opacity="0.55" FontSize="11.5"
+                                       TextWrapping="Wrap" Margin="0,14,0,0" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+
+            </Grid><!-- /页面容器 -->
         </Grid>
 
         <!-- ═══════════ 下载进度条（仅下载时可见）：源 · 文件 · 进度 · 速度 · 暂停 · 取消 ═══════════ -->
