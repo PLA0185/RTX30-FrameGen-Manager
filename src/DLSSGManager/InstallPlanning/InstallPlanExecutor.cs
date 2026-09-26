@@ -184,12 +184,19 @@ public static class InstallPlanExecutor
         steps.Add(install.Message);
 
         if (!install.Ok)
-            // Install() failed, but a provider can fail after writing some of its files — Ok == false does not mean
-            // nothing reached the disk. Assume files may be there: an unnecessary restore is far cheaper than a
-            // missed one, and the caller cannot otherwise tell the two cases apart.
+            // Install() 失败 ≠ 什么都没写 —— 但**也不等于写了**。
+            //
+            // 这里曾经无条件 `FilesWereWritten = true`（注释自陈「Assume files may be there」）。而 `Deploy`
+            // 有多条**零写入**的早期失败路径：游戏正在运行、目录不可写、内核反作弊未授权、源目录无效、
+            // 代理名无效。那些情况下调用方会拿**上一次**的部署记录去回滚 —— 把用户**原本正常的安装**整个
+            // 卸载掉，报告却写「已回滚」。
+            //
+            // 「宁可多回滚一次」这条推理在这里恰恰是错的：多回滚一次删掉的是**用户能用的东西**，不是
+            // 我们自己的半成品。现在由 `Deploy` 如实回答（`OpResult.FilesWritten`：只有进入写入事务之后
+            // 才为 true），假设不再代替回答。
             return new PlanExecutionResult(false, install.Message, steps, plan.ProxyChoice)
             {
-                FilesWereWritten = true,
+                FilesWereWritten = install.FilesWritten,
             };
 
         // Record which provider did this, so a later restore uses the same one. Without it the restore has to

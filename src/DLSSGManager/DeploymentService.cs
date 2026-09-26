@@ -13,6 +13,19 @@ public sealed class OpResult
     public string Message { get; set; } = "";
     public List<string> Lines { get; } = new();
 
+    /// <summary>
+    /// 这一次操作是否**真的往磁盘上写过东西**。
+    ///
+    /// <para><b>为什么失败时也必须如实回答这个。</b>`Deploy` 有多条**零写入**的早期失败路径（游戏正在
+    /// 运行、目录不可写、内核反作弊未授权、源目录无效、代理名无效）。调用方据此决定要不要回滚 ——
+    /// 而回滚用的是**上一次**的部署记录：一个零写入的失败被当成「写过」，`Restore` 就会把用户**原本
+    /// 正常的安装**整个卸载，报告却写「已回滚」。反过来，真的写到一半才失败却不回滚，会留下半成品。</para>
+    ///
+    /// <para>默认 <b>false</b> 是保守的那一侧：**没有明确说写过，就不要去回滚别人的东西。**
+    /// 每个真正写过盘的返回点必须显式把它置为 `true`。</para>
+    /// </summary>
+    public bool FilesWritten { get; set; }
+
     public void Note(string text)
     {
         Lines.Add(text);
@@ -511,6 +524,19 @@ public static class DeploymentService
 
         try
         {
+            // 从这里开始就可能写盘了 —— 而且**只有从这里开始才可能**。
+            //
+            // 上面那 7 个早期返回点（游戏正在运行、目录不可写、内核反作弊未授权、源目录无效、代理名无效…）
+            // 全都是**零写入**的，默认 `false` 已经如实反映了它们。
+            //
+            // 这个位置是保守选择：进入事务后任何一步都可能写（trim 多余代理、备份外来 INI、快照、复制
+            // 代理与 INI），而失败时无法精确知道写到了哪一步 ——「宁可多回滚一次，不可漏回滚」。
+            //
+            // **这条区分为什么重要**：调用方（`SmoothMotionWorkflow.Finish`）据此决定要不要回滚，而回滚
+            // 用的是**上一次**的部署记录。零写入的失败若被当成「写过」，`Restore` 会把用户**原本正常的
+            // 安装**整个卸载掉，报告却写「已回滚」—— 用户失去了一个能用的安装，而程序说它清理干净了。
+            r.FilesWritten = true;
+
             // Extra proxies of ours in the folder: on 0.2.x payloads two live pipelines crash, so
             // they are trimmed. On 0.3.3+ the loader runs them as standby forwarders by design (the
             // game loads whichever name it recognises first), and some games only respond to one
