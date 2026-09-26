@@ -3603,6 +3603,29 @@ public static class Program
             !InstallPlanExecutor.Execute(blockedRunner, plan with { Status = PlanStatus.Blocked },
                 execGame, planSource).Ok && blockedRunner.InstallCount == 0);
 
+        // ---- 部署结果与计划不一致（§13 的最后一项缺口）----
+        //
+        // 这条此前写不出来：RecordingProvider 的 Install 不写部署记录，于是执行器永远走「没有记录、无从核对」
+        // 那条分支 —— 而「无从核对」与「不一致」是两件不同的事，只有后者才说明计划被绕过了。
+        var extraGame = new GameEntry { Name = "ExtraDeployed", RenderDir = MakeGameDir(work, "extra") };
+        var extraRunner = new RecordingProvider
+        {
+            RecordsDeployed = new List<string> { "version.dll", "not-planned.dll" },
+        };
+
+        var extra = InstallPlanExecutor.Execute(extraRunner, execPlan, extraGame, planSource);
+
+        Check("部署了计划外的文件时按失败处理", !extra.Ok, extra.Message);
+        Check("失败原因点名计划外的文件", extra.Message.Contains("not-planned.dll"), extra.Message);
+
+        // 反向的一半：没有部署记录时，执行器必须如实报「无从核对」，而不是报「一致」。
+        // 这正是项目里那条既有判据的现场验证 —— 没有可比对的数据时报「无法核对」，不报「一致」。
+        var noneGame = new GameEntry { Name = "NoRecord", RenderDir = MakeGameDir(work, "norecord") };
+        var none = InstallPlanExecutor.Execute(new RecordingProvider(), execPlan, noneGame, planSource);
+
+        Check("没有部署记录时如实报「无从核对」，不报「一致」",
+            none.Ok && none.Steps.Any(s => s.Contains("无法核对")), string.Join("；", none.Steps));
+
         // ---- payload manifest: the plan's file list comes from what is actually there (整改 F) ----
         var manifestDir = Path.Combine(work, "payload-manifest");
         Directory.CreateDirectory(Path.Combine(manifestDir, "sub"));
@@ -3747,9 +3770,27 @@ public static class Program
 
         public PackageVerification VerifyPackage(string path) => Verification(path);
 
+        /// <summary>
+        /// What the fake install records as deployed, or null to record nothing.
+        ///
+        /// <para>Null is the honest default — the executor then takes its "no record, so nothing to compare with"
+        /// branch, which is a different fact from a mismatch. A test that wants the mismatch branch has to say what
+        /// was deployed, exactly as a real provider would have written it.</para>
+        /// </summary>
+        public List<string>? RecordsDeployed { get; set; }
+
         public OpResult Install(GameEntry game, ModSource source, bool allowProtected = false)
         {
             InstallCount++;
+
+            if (RecordsDeployed is not null)
+                game.Deployment = new DeploymentInfo
+                {
+                    ModVersion = game.Deployment?.ModVersion ?? "test",
+                    ProviderId = Id,
+                    Files = RecordsDeployed.Select(n => new DeployedFile { FileName = n }).ToList(),
+                };
+
             return OkResult("测试替身已安装。");
         }
 
