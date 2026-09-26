@@ -32,17 +32,76 @@
 | `git` | **可用**（`D:\Git\cmd\git.exe`） | — |
 | `python` | **可用**（3.14） | 调研脚本 |
 | `node` | **可用** | — |
-| **`dotnet`** | **未安装** | ⚠️ 原项目（.NET 8 / WPF）**无法在本机构建**，见 R-01 |
-| `gh` CLI | 未安装 | 只能走 REST API / 网页 |
+| **`dotnet`** | **已安装 8.0.425**（`C:\Users\linxi\AppData\Local\Microsoft\dotnet\dotnet.exe`；`dotnet --list-sdks` → `8.0.425 [...]\sdk`） | ✅ 原项目（.NET 8 / WPF）**可在本机构建与测试**，R-01 已消解 |
+| `gh` CLI | **已安装 2.101.0**（`C:\Users\linxi\AppData\Local\Programs\gh\gh.exe`），已登录账号 `PLA0185` | 可走 CLI，不必再省 REST 配额 |
 | `api.github.com` | 可用，未认证配额 **60 次/小时** | 必须节约，见 §0.3 |
 | `github.com` git 协议 | **间歇性失败**（`Failed to connect to github.com:443 after 21079 ms`），同一时刻 HTTPS 正常 | 取源码改用 `codeload` zip |
 | `raw.githubusercontent.com` | 稳定可用 | **主证据通路**（不消耗 API 配额） |
 | `codeload.github.com` | 可用 | 取整仓 zip |
 | **GPU** | **NVIDIA GeForce RTX 3070 Ti Laptop GPU**（8192 MiB，`Status=OK`） | ✅ **本机即目标硬件，具备 RTX 30 / SM86 实机验证条件**（正是任务书 §39 首页示例机型） |
 | **NVIDIA 驱动** | **617.14**（`32.0.16.1714`，2026-09-17） | ⚠️ 相对社区白名单偏新：MFG 有专门为 617.14 出的修复包；但**不在 xikarioz 白名单内**（其 golden 为 616.64）—— 见 §2.4 |
-| **HAGS（硬件加速 GPU 计划）** | **未设置**（注册表 `HwSchMode` 不存在） | ⚠️⚠️ 上游明确 `hags.state=off` 是帧生成**不生效的首要原因**；这是 Stage 8 实机验证前必须解决的环境前置条件（见 R-14） |
+| **HAGS（硬件加速 GPU 计划）** | **已启用**：`HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\HwSchMode = 2`（枚举 `1`=关 / `2`=开） | ✅ 上游明确 `hags.state=off` 是帧生成**不生效的首要原因**；本机已满足该环境前置条件（见下方勘误块与 R-14） |
+
+> ### ⚠️ 勘误：HAGS 结论更正（2026-09-26）
+>
+> 本表**早期版本**曾记录「HAGS **未设置**（注册表 `HwSchMode` 不存在）」——**该结论错误，现予更正**。
+>
+> | 项 | 内容 |
+> |---|---|
+> | **错误结论** | HAGS 未设置（`HwSchMode` 不存在） |
+> | **错误成因** | 早期只做单次注册表读取，且**未区分「读取失败」与「键确实不存在」**，把探测面的失败当成了系统事实 |
+> | **更正后的实测值** | `HwSchMode = 2`（开）。用两条独立路径重测，结果一致：①PowerShell `Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers' -Name HwSchMode`；②`reg query`（同机同轮） |
+> | **旧检测为何不可靠** | 单信号探测无法区分 `Unsupported` / `SupportedDisabled` / `ConfiguredOn` / `ConfiguredOnRebootRequired` / `Enabled` / `Unknown` / `ConflictingSignals` 七种状态，「读不到」被直接等同于「关」 |
+> | **新的检测规则（后续实现必须遵守）** | **禁止**由「`HwSchMode` 缺失」推断「HAGS 关闭」。判定须以**注册表配置 + GPU/WDDM 能力 + 重启状态/运行时证据**组合而成；**在未取得运行时生效证据前，一律如实返回 `ConfiguredOn`，不得对外宣称 `Enabled`**（设计见 [`ARCHITECTURE_PLAN.md`](ARCHITECTURE_PLAN.md) §36.1） |
+>
+> **连带影响**：R-14 由「**高**风险 + 需用户操作」降级为「**已满足前置条件**，仅需在实机验证时确认运行时生效」；上游 `hags.state=off` 这条首要原因的排查项在本机不再适用，但**仍须在代码中保留检测与提示**（用户机器不一定与本机相同）。
 
 > **v5 §76 的意义**：本机具备 RTX 30 GPU，因此**不得**再以「无硬件」为由跳过实机验证；但自动测试通过**仍不等于**实机验证通过，报告时必须严格区分（见 `ARCHITECTURE_PLAN.md` §33）。
+
+### 0.2.1 工具链、仓库与基线（2026-09-26 实测）`[E1]`
+
+**工具链（已具备）**：
+
+| 工具 | 版本 | 绝对路径 |
+|---|---|---|
+| .NET SDK | **8.0.425**（`dotnet --list-sdks` → `8.0.425 [...\sdk]`） | `C:\Users\linxi\AppData\Local\Microsoft\dotnet\dotnet.exe` |
+| GitHub CLI | **2.101.0**（2026-09-15 构建），已登录 `PLA0185` | `C:\Users\linxi\AppData\Local\Programs\gh\gh.exe` |
+
+`DOTNET_ROOT`（用户级）= `C:\Users\linxi\AppData\Local\Microsoft\dotnet`。
+
+> ⚠️ **本机环境陷阱（已实测踩到）**：**DSH 后端进程的环境变量是启动时的快照**，因此即使用户级 `PATH` 已包含上述两个目录，**由它派生的新 `pwsh` 里 `dotnet` / `gh` 仍可能报 `CommandNotFoundException`**。
+> **对策**：脚本与自动化一律**用绝对路径调用**，或在使用前显式刷新：
+> ```powershell
+> $env:PATH = [Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + [Environment]::GetEnvironmentVariable('PATH','User')
+> ```
+
+**仓库状态**：
+
+| 项 | 值 |
+|---|---|
+| 仓库 | **`PLA0185/RTX30-FrameGen-Manager`**（PUBLIC，默认分支 `main`） |
+| `origin` | `https://github.com/PLA0185/RTX30-FrameGen-Manager.git`（用户仓库，v5 §59 的交付目标） |
+| `upstream` | `https://github.com/BUNNY-19C/DLSSG-30s-manager.git`（**只读参考，不自动合并**） |
+| 基线提交 | **`b0a6424`** `chore: import upstream BUNNY baseline and add Phase 0 deliverables`，本地与远端 SHA 一致 |
+| 未上传内容 | `_research/`（证据快照）、`extra-proxies/d3d12.dll`、`PROJECT_MEMORY.md`（均在 `.gitignore` 内，已确认未被推送） |
+
+**基线构建与测试（原始输出摘录，2026-09-26 复测）**：
+
+```
+$ dotnet build DLSSGManager.sln -c Release
+  DLSSGManager -> ...\src\DLSSGManager\bin\Release\net8.0-windows\DLSSGManager.dll
+  Harness      -> ...\test\Harness\bin\Release\net8.0-windows\Harness.dll
+已成功生成。
+    0 个警告
+    0 个错误
+已用时间 00:00:02.97
+
+$ dotnet ...\test\Harness\bin\Release\net8.0-windows\Harness.dll
+===== 通过 343 · 失败 0 · 跳过 10 =====
+（跳过的 10 项需要 Mod 文件，运行 Harness.exe --fetch 获取后重试）
+```
+
+> **解读边界（v5 §76）**：上表是**基线（未修改的上游代码）**的构建与自动测试结果，属 `Automated Tests Passed`，**不构成**任何实机功能验证结论。跳过的 10 项需先获取 Mod 文件。另注：Harness 的 TFM 为 **`net8.0-windows`**（非 `net8.0`），路径写错会报 `无法执行，因为找不到指定的命令或文件`。
 
 ### 0.3 配额策略（实际执行）
 
@@ -486,7 +545,7 @@ NVIDIA 官方驱动 README（第 39 章 `nvpresent`）原文：
 | **U-06** | Ground Branch 的渲染 EXE / API / 代理模式 | §48 首批测试目标 | **实机测试**；上游零命中，不得引用 |
 | **U-07** | `310.1` 与 `310.9` 变体对 RTX 20（SM75）的适用差异 | 变体选择逻辑 | 读 `docs/INSTALL.md` 的 `## Two build variants` |
 | **U-08** | `fg_gate_*` 日志的 JSONL 字段 schema | 运行验证能否程序化解析 | 实机产生一份 Level 2/3 日志 |
-| **U-09** | 本机**无 .NET SDK** | 阻塞 Stage 2 起全部开发 | 安装 .NET 8 SDK 或换栈（**需用户决策**） |
+| **U-09** | ~~本机**无 .NET SDK**~~ | ~~阻塞 Stage 2 起全部开发~~ | ✅ **已解决**（2026-09-26）：.NET 8 SDK **8.0.425** 已按官方方式安装，构建与测试实测通过 |
 | **U-10** | ~~除 NPI 与 RHI 外，是否还有第三个独立来源确认上述 6 个 ID~~ | — | ✅ **已解决**：已找到 **4 个独立来源**（NPI、RHI、NVPIRevamped、DLSS5-Feeder），其中 2 个核心 ID 由 4 源确认，见 §3.2 |
 | **U-11** | MFG 的 INI 键名与 zip 内部清单（未下载二进制） | Smooth Provider 的文件布局 | 需在获得合法样本后核对 |
 | **U-12** | **RTX 30 上驱动是否实际执行这些 DRS 设置** —— 无任何单一来源记录 | 直接决定 Profile 写入能否真正生效；也是 v5 §69「Latest Compatible」的判据基础 | **本机实机自测**（现已具备 RTX 3070 Ti Laptop 条件）；在取得证据前一律按 `Experimental` 处理 |
@@ -537,7 +596,7 @@ NVIDIA 官方驱动 README（第 39 章 `nvpresent`）原文：
 
 | ID | 风险 | 等级 | 依据 | 缓解 |
 |---|---|---|---|---|
-| **R-01** | 本机**无 .NET SDK**，原项目无法构建与测试 | **阻塞** | §0.2 实测 | 优先解决工具链；否则 Stage 2 无法开始 |
+| **R-01** | ~~本机**无 .NET SDK**，原项目无法构建与测试~~ → **已消解**（2026-09-26） | ~~**阻塞**~~ → **已关闭** | §0.2 实测 | 已装 .NET 8 SDK **8.0.425**（Microsoft 官方源）；实测 `dotnet build -c Release` → **0 警告 / 0 错误**（2.97 s），Harness → **343 通过 / 0 失败 / 10 跳过**（跳过项需 Mod 文件） |
 | **R-02** | 版本判定在非 SemVer 仓库必然失败（MFG tag 全无语义） | **高** | §4.3 | Provider 专属 `IVersionParser`；**禁止**全局 `new Version(tag)` |
 | **R-03** | `/releases` 顺序与时间字段均不可靠 | **高** | §4.2 T1–T3 | 显式版本解析 + 交叉校验 + 平台/预发布过滤 |
 | **R-04** | 选错 Asset（Linux 包 / Manual / Benchmark / Xbox / GamePass） | **高** | §4.2 T5、§4.4 | Provider 级 `SelectReleaseAsset()` + 排除词表 + 单元测试 |
@@ -550,8 +609,8 @@ NVIDIA 官方驱动 README（第 39 章 `nvpresent`）原文：
 | **R-11** | Undocumented Setting ID 的稳定性 | 中 | §3.4 | 标记 `Undocumented`；写入前读取原值、支持精确恢复；失败回退 |
 | **R-12** | 许可证污染（GPL-3.0 代码混入 MIT；上游二进制再分发） | 中 | §7 | `THIRD_PARTY_NOTICES.md`；**禁止打包任何上游二进制** |
 | **R-13** | 写 DRS 需要管理员权限的假设未证实 | 中 | 官方文档零权限声明 | **运行时探测**，不写死假设 |
-| **R-14** | **本机 HAGS 未启用**（注册表 `HwSchMode` 不存在） | **高** | 本次实测 + 上游定性（`hags.state=off` 是帧生成不生效的首要原因） | **需用户操作**：Windows 设置 → 系统 → 显示 → 图形 → 硬件加速 GPU 计划；未解决前，实机验证结果不具判别力 |
-| **R-15** | **GitHub 仓库地址未提供**（v5 §59 要求最终必须推送） | **高**（阻塞交付） | v5 §59.4 明确「不得自行创建陌生仓库」 | **需用户提供** `GitHub repository` + `Target branch` |
+| **R-14** | ~~**本机 HAGS 未启用**（注册表 `HwSchMode` 不存在）~~ → **已消解**（2026-09-26 更正：`HwSchMode = 2`，HAGS **已启用**） | ~~**高**~~ → **已关闭**（保留检测能力） | 两条独立路径重测一致（`Get-ItemProperty` + `reg query`）；上游定性仍成立但本机不适用 | **无需用户操作**。实机验证时仅需确认运行时生效——`ConfiguredOn` 是配置层事实，**不等于**已证明 `Enabled`（见 §0.2 勘误块与 `ARCHITECTURE_PLAN.md` §36.1） |
+| **R-15** | ~~**GitHub 仓库地址未提供**~~ → **已消解**：仓库 `PLA0185/RTX30-FrameGen-Manager`（PUBLIC，默认分支 `main`） | ~~**高**（阻塞交付）~~ → **已关闭** | 基线提交 `b0a6424` 已推送，本地与远端 SHA 一致；`origin`=用户仓库、`upstream`=BUNNY 原仓库 | **无需用户提供**。后续按 `origin` 推送，**禁止** `git push --force`（除非用户明确授权） |
 | **R-16** | Self Update 依赖本项目自身的 Release 链路（Actions + Tag） | 中 | v5 §61、§65 | 与 R-15 同解；发布资产命名规则须在流程中固定 |
 | **R-17** | 本机驱动 617.14 相对社区白名单偏新 | 中 | §2.4 | 实机验证时记录**精确驱动指纹**入兼容库；xikarioz 类 Provider 会按设计 fail-closed，属预期行为而非缺陷 |
 
@@ -565,6 +624,15 @@ NVIDIA 官方驱动 README（第 39 章 `nvpresent`）原文：
 - [`docs/phase0-manager-audit.md`](phase0-manager-audit.md) —— 原管理器源码审计附录
 
 **进入 Stage 2 的前置条件**：
-1. 解决 **R-01**（工具链），否则无法编码与测试
-2. 消解 **U-01 / U-02 / U-09**（实机验证与用户决策）
-3. 建立「签名校验链完整性」的失败测试（针对原管理器下载路径的校验缺口）
+
+| # | 条件 | 状态（2026-09-26） |
+|---|---|---|
+| 1 | 解决 **R-01**（工具链），否则无法编码与测试 | ✅ **已满足**：.NET 8 SDK **8.0.425** 已装；实测 `build -c Release` **0 警告 / 0 错误**，Harness **343 通过 / 0 失败 / 10 跳过** |
+| 2 | 消解 **U-01 / U-02 / U-09**（实机验证与用户决策） | ⏳ **部分**：涉及「需用户拍板」的部分已由本轮指令解除（见下方四项阻塞结论）；技术未知项仍见 §6，须靠实机自测 |
+| 3 | 建立「签名校验链完整性」的失败测试（针对原管理器下载路径的校验缺口） | ⏳ **Stage 2 实施项**（`ModFetcher.Verify` `:817-871` 缺 `WinVerifyTrust`，且官方源指纹不匹配仅告警放行） |
+| 4 | 交付仓库（原 R-15） | ✅ **已满足**：`PLA0185/RTX30-FrameGen-Manager`，基线提交 `b0a6424` 已推送 |
+| 5 | HAGS 环境前置（原 R-14） | ✅ **已满足**：`HwSchMode = 2`（配置层）；**运行时生效仍待实机确认**，不得写成已验证 |
+
+**四项阻塞的处理结论（2026-09-26）**：.NET 8 SDK 按官方方式安装；HAGS 经重测**更正为已启用**；GitHub 仓库已建立并完成首次推送；代理部署策略已形成设计（见 [`ARCHITECTURE_PLAN.md`](ARCHITECTURE_PLAN.md) §37），**均不再作为待用户决策项**。
+
+**Stage 2 起点约束**：先抽取 Core（哈希 / 签名 / 路径 / 模型）**再**拆分程序集——因 `ModSource ⇄ ModFetcher ⇄ DeploymentService` 目前依赖同程序集（`ModSource.cs:103/266`、`ModFetcher.cs:206/914`、`DeploymentService.cs:924`）。
