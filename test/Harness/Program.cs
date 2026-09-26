@@ -4663,6 +4663,36 @@ public static class Program
         Check("解包结果落在目标目录", File.Exists(Path.Combine(goodDir, "sub", "ok.txt")));
         Check("成功后无 staging 残留", Directory.GetDirectories(goodDir, ".staging-*").Length == 0);
 
+        // ---- 第二轮 §9：故障注入 —— commit 之前任何失败都不改动 destination ----
+        // The property under test is not "extraction fails" but "a failure leaves nothing behind". Seeding the
+        // destination first is what makes that observable: an empty folder cannot show damage, so every earlier
+        // assertion about a rejected archive was consistent with having written and then cleaned up.
+        var seededDir = Path.Combine(work, "zip-seeded");
+        Directory.CreateDirectory(seededDir);
+
+        var sentinel = Path.Combine(seededDir, "existing.txt");
+        File.WriteAllText(sentinel, "untouched");
+
+        // An archive whose first entry is perfectly fine and whose second escapes: a validator that checks while
+        // extracting would have written ok.txt before noticing.
+        var injectZip = MakeZip(zipDir, "inject", a =>
+        {
+            AddEntry(a, "ok.txt", "fine");
+            AddEntry(a, "../escape.txt", "bad");
+        });
+
+        Check("注入故障：含逃逸条目的归档被拒绝",
+            !SafeZip.TryExtract(injectZip, seededDir, out var injectError), injectError);
+
+        Check("注入故障：目标目录里原有文件保持原样",
+            File.Exists(sentinel) && File.ReadAllText(sentinel) == "untouched");
+
+        Check("注入故障：合法条目也没有被部分写入",
+            !File.Exists(Path.Combine(seededDir, "ok.txt")));
+
+        Check("注入故障：没有 staging 残留",
+            Directory.GetDirectories(seededDir, ".staging-*").Length == 0);
+
         // ---- K 遗留：运行结果写入配方记忆 ----
         var recipes = new RecipeMemoryStore(Path.Combine(work, "recipe-memory.json"));
 
