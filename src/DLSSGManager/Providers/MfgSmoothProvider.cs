@@ -360,7 +360,13 @@ public sealed class MfgSmoothProvider : IPatchProvider, IReleaseVersionResolver
 
                 var leaf = Path.GetFileName(file);
 
-                if (!ModSource.IsKnownProxyName(leaf)) continue;
+                // 判据与 planner 保持一致：用**可部署名**（ProxyCandidates），不用扫描名（IsKnownProxyName
+                // 还含 winhttp.dll）。两处不一致的后果是具体的：canonical 里会出现一个计划永远不会选、
+                // Deploy 也找不到的入口；而若 payload 里只有 winhttp.dll 这类扫描名，canonical 里就会
+                // **一个可部署入口都没有**，计划选定的名字在源目录里不存在，部署直接失败。
+                // 一个判据、两个地方，必须同一个集合。
+                if (!ModSource.ProxyCandidates.Contains(leaf, StringComparer.OrdinalIgnoreCase)) continue;
+
                 if (found.Any(f => f.Leaf.Equals(leaf, StringComparison.OrdinalIgnoreCase))) continue;
 
                 found.Add((leaf, file));
@@ -378,7 +384,10 @@ public sealed class MfgSmoothProvider : IPatchProvider, IReleaseVersionResolver
 
             foreach (var (leaf, path) in found)
             {
-                if (ReferenceEquals(leaf, primary.Leaf)) continue;
+                // 明确的字符串比较。`ReferenceEquals` 对 string 不是「同一个条目」的正确表达 ——
+                // 它现在恰好成立，只因为值元组复制的是引用；任何一次重构（例如把 found 换成记录类型、
+                // 或在中间插入一次字符串处理）都会让它悄悄失效，后果是主入口被重复写进 altnative/。
+                if (string.Equals(leaf, primary.Leaf, StringComparison.OrdinalIgnoreCase)) continue;
 
                 File.Copy(path, Path.Combine(canonical, "altnative", leaf), overwrite: true);
             }
