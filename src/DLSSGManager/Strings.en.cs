@@ -448,6 +448,11 @@ public static partial class Strings
         // ── Provider selection ──────────────────────────────────────
         ["Toolbar.Provider"] = "Provider",
         ["Toolbar.ProviderTip"] = "Which provider configures games. The built-in dlssg-sm86 is the default; a change applies to later runs.",
+
+        // ── Batch plan summary ──────────────────────────────────────
+        ["Batch.PlanHeader"] = "What this run would do:",
+        ["Batch.PlanBlocked"] = "{0} game(s) cannot be deployed as things stand (plan blocked):",
+        ["Batch.PlanNeedsConfirm"] = "{0} game(s) need your explicit confirmation before they can continue:",
         ["Path.NotExecutable"] = "not an executable",
 
         // ── Errors ───────────────────────────────────────────────────

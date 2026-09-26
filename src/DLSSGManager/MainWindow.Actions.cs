@@ -337,6 +337,50 @@ public partial class MainWindow
         // Protected games stay in the list: the user asked for a batch, and the scan cannot know whether
         // this game's protection lets the chosen entry name survive. They are flagged as a risk and
         // deployed on the strength of this one confirmation.
+        // ── Preview every game first. The confirmation below is then about what will actually happen, built from
+        //    the plans rather than from the game list: a blocked plan should be visible *before* the user agrees,
+        //    not reported as a failure afterwards. This is the batch's version of "show the plan first".
+        var provider = SelectedProvider();
+        var previews = new List<(GameEntry Game, ConfigurationOutcome Outcome)>();
+
+        foreach (var game in targets)
+        {
+            try
+            {
+                previews.Add((game, await Configuration.PreviewAsync(
+                    new ConfigurationRequest(
+                        Game: game, Provider: provider,
+                        ProviderVersion: provider.GetInstalledVersion(game) ?? game.Deployment?.ModVersion ?? "",
+                        PayloadDirectory: SourcePath,
+                        GpuName: _data.GpuName, DriverVersion: _data.GpuDriver, Store: game.Store,
+                        HasKernelAntiCheat: game.HasKernelAntiCheat,
+                        UserConfirmedUnverified: true,
+                        ProfileSettings: new[] { SmoothMotionSettings.Feature, SmoothMotionSettings.Apis }))
+                    .ConfigureAwait(true)));
+            }
+            catch (Exception ex)
+            {
+                _log.Write($"  ⚠ {game.Name}：预览失败 —— {ex.Message}");
+            }
+        }
+
+        var blockedPlans = previews
+            .Where(p => p.Outcome.Plan is { } pl && pl.Blockers.Count > 0)
+            .Select(p => $"· {p.Game.Name} — {string.Join("；", p.Outcome.Plan!.Blockers)}")
+            .ToList();
+
+        var needConfirm = previews.Where(p => p.Outcome.NeedsUserConfirmation).ToList();
+
+        var planSummary = new System.Text.StringBuilder();
+
+        if (blockedPlans.Count > 0)
+            planSummary.Append(Loc.T("Batch.PlanBlocked", blockedPlans.Count)).Append('\n')
+                       .Append(string.Join("\n", blockedPlans)).Append('\n');
+
+        if (needConfirm.Count > 0)
+            planSummary.Append(Loc.T("Batch.PlanNeedsConfirm", needConfirm.Count)).Append('\n')
+                       .Append(string.Join("\n", needConfirm.Select(p => "· " + p.Game.Name))).Append('\n');
+
         var body = protectedGames.Count == 0
             ? Loc.T("Batch.DeployConfirm", targets.Count,
                 string.Join("\n", targets.Select(t => "· " + t.Name)))
@@ -345,6 +389,11 @@ public partial class MainWindow
                 string.Join("\n", targets.Select(t => "· " + t.Name)),
                 protectedGames.Count,
                 string.Join("\n", protectedGames.Select(t => $"· {t.Name} — {t.Protection!.Products}")));
+
+        // The plans are appended to the risk text rather than replacing it: the anti-cheat warning is about the
+        // games, and the plan summary is about this run. Both are things the user is agreeing to.
+        if (planSummary.Length > 0)
+            body += "\n\n" + Loc.T("Batch.PlanHeader") + "\n" + planSummary;
 
         if (MessageBox.Show(body, Loc.T("Batch.DeployTitle"), MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
             return;
@@ -357,8 +406,6 @@ public partial class MainWindow
         try
         {
             var ok = 0;
-            var source = CurrentSource();
-            var provider = SelectedProvider();
 
             foreach (var game in targets)
             {

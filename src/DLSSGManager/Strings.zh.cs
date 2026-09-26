@@ -448,6 +448,11 @@ public static partial class Strings
         // ── Provider 选择 ────────────────────────────────────────────
         ["Toolbar.Provider"] = "配置方式",
         ["Toolbar.ProviderTip"] = "选择用哪个 Provider 配置游戏。内置 dlssg-sm86 是默认值；切换后对之后的操作生效。",
+
+        // ── 批量部署的计划摘要 ───────────────────────────────────────
+        ["Batch.PlanHeader"] = "本次计划摘要：",
+        ["Batch.PlanBlocked"] = "以下 {0} 个游戏当前无法部署（计划被阻止）：",
+        ["Batch.PlanNeedsConfirm"] = "以下 {0} 个游戏需要你明确确认后才能继续：",
         ["Path.NotExecutable"] = "不是可执行文件",
 
         // ── 错误与异常 ───────────────────────────────────────────────
