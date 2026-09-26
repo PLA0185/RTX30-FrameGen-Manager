@@ -66,4 +66,30 @@
     <SolidColorBrush x:Key="StatusBadBrush" Color="#C93B43" />
     <SolidColorBrush x:Key="StatusIdleBrush" Color="#98A1AB" />
 
+    <!--
+        与深色主题保持同一组隐式样式：没有隐式样式的控件会落回 WPF 内置模板，其前景色来自系统
+        主题而非本字典。两个主题都必须覆盖同样的控件类型，否则切换主题会让这些控件停在系统配色上。
+    -->
+    <Style TargetType="ToolTip">
+        <Setter Property="Background" Value="{DynamicResource PopupBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="8,5" />
+    </Style>
+
+    <Style TargetType="ListBox">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderThickness" Value="0" />
+    </Style>
+
+    <Style TargetType="Expander">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+    </Style>
+
+    <Style TargetType="ToggleButton">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+    </Style>
+
 </ResourceDictionary>

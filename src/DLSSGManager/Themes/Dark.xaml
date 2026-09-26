@@ -72,4 +72,32 @@
     <SolidColorBrush x:Key="StatusBadBrush" Color="#F0959A" />
     <SolidColorBrush x:Key="StatusIdleBrush" Color="#5C6670" />
 
+    <!--
+        没有隐式样式的控件会落回 WPF 内置模板，而内置模板的前景色来自系统主题、不参与本字典。
+        ToolTip / ListBox / Expander / ToggleButton 都属于这一类：导航栏、工具栏与列表上的提示文字
+        因此会在深色界面上渲染成黑字。这里给它们与其余控件同源的最小样式。
+    -->
+    <Style TargetType="ToolTip">
+        <Setter Property="Background" Value="{DynamicResource PopupBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="8,5" />
+    </Style>
+
+    <!-- 默认模板给 ListBox 的是浅色底，在深色界面上会整块发白 -->
+    <Style TargetType="ListBox">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderThickness" Value="0" />
+    </Style>
+
+    <Style TargetType="Expander">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+    </Style>
+
+    <Style TargetType="ToggleButton">
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+    </Style>
+
 </ResourceDictionary>
