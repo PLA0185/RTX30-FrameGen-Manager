@@ -708,6 +708,28 @@ public static class Program
                     ? $"NOT_DETERMINED —— 计划状态为 {planOnly.Status}，本次没有得出「该写哪些文件」的结论"
                     : $"PASS —— 计划只列出真正需要落地的文件（{planOnly.FilesToDeploy.Count} / {payloadFiles.Count}）";
 
+            // §13/§14/§15：把来源与一致性钉在这里 —— 这是**真正经过 InstallPlanner.Plan 的计划**。
+            //
+            // 别把它挂到测试手工构造的 plan 上：那种 plan 的 PlannedFiles 是默认空数组，而 FilesToDeploy
+            // 有值，两个视图立刻分叉 —— 那本身就是 §15 要防的情形，所以断言必须落在 planner 的真实产物上。
+            var fromPayload = planOnly.PlannedFiles.Count(f => f.SourceKind == DeploymentFileSource.Payload);
+
+            var generated = planOnly.PlannedFiles
+                .Where(f => f.SourceKind == DeploymentFileSource.Generated)
+                .Select(f => f.TargetRelativePath)
+                .ToList();
+
+            Check("计划区分 payload 文件与生成文件（§13）",
+                fromPayload > 0 && generated.Contains(ModSource.IniName),
+                $"payload={fromPayload} generated=[{string.Join("、", generated)}]");
+
+            Check("FilesToDeploy 与 PlannedFiles 完全一致（§15 同源派生）",
+                planOnly.FilesToDeploy.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                    .SequenceEqual(planOnly.PlannedFiles.Select(f => f.TargetRelativePath)
+                        .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)),
+                $"[{string.Join("、", planOnly.FilesToDeploy)}] vs " +
+                $"[{string.Join("、", planOnly.PlannedFiles.Select(f => f.TargetRelativePath))}]");
+
             Console.WriteLine($"  判定             : {verdict}");
 
             foreach (var b in planOnly.Blockers) Console.WriteLine($"  Blocked 原因     : {b}");
@@ -5498,6 +5520,11 @@ public static class Program
         // The defect this covers: the plan listed only the payload, so the proxy DLL — the entire point of the
         // install — was missing from the list of files the plan said it would write. The executor's own check then
         // reported that proxy as an unexpected file, and every correctly-planned run failed.
+        // ---- §13：生成的文件不能被拿去要求它存在于 payload ----
+        //
+        // dlssg_sm86.ini 由管理器生成、payload 里没有它；代理 DLL 则必须真的来自 payload。两者若都用
+        // 字符串表示，安装前的存在性检查会把生成的文件也拿去 payload 里找、然后报「缺少」—— 那是
+        // 真实发生过的误判（E 与 G 是同一处缺陷的两面）。
         Check("计划把选定的代理入口一并列入待部署文件",
             vResult.Plan?.ProxyChoice is null ||
             vResult.Plan.FilesToDeploy.Any(f => string.Equals(

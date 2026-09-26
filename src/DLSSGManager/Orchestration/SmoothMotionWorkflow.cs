@@ -489,15 +489,25 @@ public sealed class SmoothMotionWorkflow
             // The plan was built before the payload existed, so its file list may have come from the fallback.
             // Now that the bytes are on disk, compare the two: a plan that names files the payload does not
             // contain describes an installation that cannot happen.
+            //
+            // §13：**只有来自 payload 的文件才参与这个比对。** dlssg_sm86.ini 是管理器自己生成的，它必然
+            // 不在 payload 里 —— 把它算进来，每一次正常安装都会在这里被判成「payload 缺少文件」。
+            // 这就是 E 项与 G 项是同一处缺陷的原因。
             var downloaded = request.Provider.ManifestOf(payloadDirectory);
             if (downloaded is not null)
             {
-                var absent = plan.FilesToDeploy
-                    .Where(f => !string.IsNullOrWhiteSpace(f) && !downloaded.Contains(f))
+                var expectedFromPayload = plan.PlannedFiles
+                    .Where(f => f.SourceKind == DeploymentFileSource.Payload)
+                    .Select(f => f.SourcePath ?? f.TargetRelativePath)
+                    .Where(f => !string.IsNullOrWhiteSpace(f))
+                    .ToList();
+
+                var absent = expectedFromPayload
+                    .Where(f => !downloaded.Contains(f))
                     .ToList();
 
                 steps.Add(new WorkflowStep("核对 payload 清单", absent.Count == 0,
-                    $"payload 实际含 {downloaded.Files.Count} 个文件。" +
+                    $"payload 实际含 {downloaded.Files.Count} 个文件；计划要求其中 {expectedFromPayload.Count} 个。" +
                     (absent.Count == 0 ? "" : "缺少：" + string.Join("、", absent))));
 
                 if (absent.Count > 0)

@@ -379,6 +379,43 @@ public sealed record InstallPlanInput(
 ///
 /// Holds no file handles and performs no writes — it is a value the caller can inspect, show and refuse.
 /// </summary>
+/// <summary>计划里的一个文件是从哪来的 —— 它决定了安装前该不该要求它在 payload 里存在。</summary>
+public enum DeploymentFileSource
+{
+    /// <summary>来自 payload 解压目录。安装前可以（也应当）检查它存在。</summary>
+    Payload,
+
+    /// <summary>
+    /// **由程序生成**（例如 <c>dlssg_sm86.ini</c>）。
+    ///
+    /// <para>它<b>不在 payload 里</b>，所以任何「payload 中缺少计划要求的文件」式的检查都必须跳过它 ——
+    /// 否则一个由我们自己写出来的文件会被拿去要求它在下载包里存在。这正是本项目真实发生过的误判：
+    /// 第三轮为修 P1-16 把 <c>dlssg_sm86.ini</c> 放进了 <c>FilesToDeploy</c>，而工作流在安装前的存在性
+    /// 检查会因为它不在 payload 里而报「缺少」。</para>
+    /// </summary>
+    Generated,
+
+    /// <summary>游戏目录里已经存在、可以复用的文件（例如其它 Mod 留下的代理入口）。</summary>
+    ExistingReusable,
+}
+
+/// <summary>
+/// 计划要写入的一个文件，带来源与角色。
+///
+/// <para><b>为什么不能只存文件名。</b><c>dlssg_sm86.ini</c> 与 <c>version.dll</c> 在字符串层面没有区别，
+/// 但前者由程序生成、后者必须来自 payload —— 安装前的存在性检查、以及安装后的一致性比对，对两者的要求
+/// 完全不同。只存字符串会让这两种情况无法区分，于是「生成的文件」被迫去通过「payload 文件」的检查。</para>
+/// </summary>
+public sealed record PlannedFile(
+    string TargetRelativePath,
+    DeploymentFileSource SourceKind,
+
+    /// <summary>payload 里的相对路径；<see cref="DeploymentFileSource.Generated"/> 时为 null。</summary>
+    string? SourcePath = null,
+
+    /// <summary>这个文件扮演什么角色（代理入口 / 配置 / 载荷），用于报告与校验分组。</summary>
+    string? Role = null);
+
 public sealed record InstallPlan(
     PlanStatus Status,
     string? TargetRendererExe,
@@ -422,6 +459,17 @@ public sealed record InstallPlan(
     public bool CanExecute =>
         Status == PlanStatus.Ready ||
         (Status == PlanStatus.NeedsConfirmation && UserApprovedUnverified);
+
+    /// <summary>
+    /// 计划要写入的每一个文件，带来源与角色 —— **最终校验以它为准**。
+    ///
+    /// <para><see cref="InstallPlan.FilesToDeploy"/> 是它的目标路径视图，保留下来是为了不破坏既有调用点；
+    /// 但凡需要区分「这个文件从哪来」的地方（安装前的存在性检查、安装后的一致性比对），必须读这一个。</para>
+    ///
+    /// <para>默认空数组而不是 null：这个 record 的构造参数很多且都是必填，加一个必填参数会波及所有调用点，
+    /// 而「没有文件」本身就是一个合法状态（例如 Blocked 的计划）。</para>
+    /// </summary>
+    public IReadOnlyList<PlannedFile> PlannedFiles { get; init; } = Array.Empty<PlannedFile>();
 }
 
 /// <summary>
@@ -442,6 +490,56 @@ public static class InstallPlanner
     /// <para>放行的是「可能被写入」而不是「一定被写入」：部署侧还会写入 0.3.3+ payload 里的待机代理，
     /// 那些名字 planner 事先不知道。宁可放行得宽一点，也不能让真实的写入被自己的校验判成意外文件。</para>
     /// </summary>
+    /// <summary>
+    /// 计划要写入的文件清单，带来源。
+    ///
+    /// <para><b>这里是 §13 那个区分的落点。</b><c>dlssg_sm86.ini</c> 由管理器生成、<b>不在 payload 里</b>；
+    /// payload 里的代理 DLL 则必须真的存在。两者若都用字符串表示，「安装前检查文件是否存在」这一步就会把
+    /// 生成的文件也拿去 payload 里找，然后报「缺少」—— 那是本项目真实发生过的误判。</para>
+    /// </summary>
+    private static IReadOnlyList<PlannedFile> BuildPlannedFiles(
+        IReadOnlyList<string> payloadFiles, string? proxyChoice, string? asiChoice)
+    {
+        static string Leaf(string path) => Path.GetFileName(path.Replace('/', '\\'));
+
+        var result = new List<PlannedFile>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void Add(string target, DeploymentFileSource kind, string? source, string role)
+        {
+            if (!seen.Add(target)) return;
+
+            result.Add(new PlannedFile(target, kind, source, role));
+        }
+
+        // payload 里命中已知代理入口名的文件 —— 0.3.3+ 会把这些作为「待机代理」一并写入，planner 事先
+        // 不知道具体是哪几个，所以按名字放行（判据是项目既有的 ModSource.IsKnownProxyName，不是目录结构）。
+        foreach (var file in payloadFiles)
+        {
+            var leaf = Leaf(file);
+
+            if (ModSource.IsKnownProxyName(leaf))
+                Add(leaf, DeploymentFileSource.Payload, file, "proxy");
+        }
+
+        // INI 是**生成**的：它由管理器写出来，payload 里没有这个文件。
+        Add(ModSource.IniName, DeploymentFileSource.Generated, null, "config");
+
+        // 选定值可能是 payload 里没有的（例如本地导入的入口），所以单独补。
+        foreach (var chosen in new[] { proxyChoice, asiChoice })
+        {
+            if (chosen is null) continue;
+
+            // 已经登记过的（含上面那条生成类）不重复登记。
+            if (result.Any(f => string.Equals(f.TargetRelativePath, chosen, StringComparison.OrdinalIgnoreCase)))
+                continue;
+
+            Add(chosen, DeploymentFileSource.Payload, chosen, "proxy");
+        }
+
+        return result;
+    }
+
     private static IReadOnlyList<string> Summarize(
         IReadOnlyList<string> payloadFiles, string? proxyChoice, string? asiChoice)
     {
@@ -611,7 +709,9 @@ public static class InstallPlanner
             // 保留三类：选定的代理 · INI · payload 里其它**已知代理入口名**的文件 —— 0.3.3+ 会把这些作为
             // 「待机代理」一并写入，planner 事先不知道具体是哪几个，所以必须按名字放行，否则单向校验会把
             // 那些文件判成「计划外的意外文件」，把一次成功的安装判成失败。
-            FilesToDeploy: Summarize(input.ProviderPayloadFiles, proxyChoice, asi),
+            FilesToDeploy: BuildPlannedFiles(input.ProviderPayloadFiles, proxyChoice, asi)
+                .Select(f => f.TargetRelativePath)
+                .ToList(),
             ProxyChoice: proxyChoice,
             AsiChoice: asi,
             NvidiaProfileRequirements: profile,
@@ -620,7 +720,12 @@ public static class InstallPlanner
             Warnings: warnings,
             Blockers: blockers,
             Compatibility: input.Compatibility,
-            RollbackRequirements: rollback);
+            RollbackRequirements: rollback)
+        {
+            // §13/§14/§15：每个文件的来源必须显式记录，而 FilesToDeploy 从**同一个方法**派生 ——
+            // 两者必然一致，不存在「计划列了 A、校验看的是 B」的余地。
+            PlannedFiles = BuildPlannedFiles(input.ProviderPayloadFiles, proxyChoice, asi),
+        };
     }
 
     /// <summary>
