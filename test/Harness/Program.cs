@@ -255,7 +255,13 @@ public static class Program
             Console.WriteLine();
             Console.WriteLine("往返测试：");
 
-            var target = SmoothMotionSettings.Feature;
+            // 往返测试的目标必须是一个**驱动真的接受写入**的设置。
+            //
+            // 这里曾经用 SmoothMotionSettings.Feature（0xB0D384C0），而实测表明它在临时 Profile 上返回
+            // NVAPI_SETTING_NOT_FOUND（-160）—— **即使提权也一样**。用它做往返，自检在结构上就不可能通过，
+            // 于是「写入未证明」这个结论里混进了一个与写入能力无关的原因。
+            // 换成 0xB0CC0875：提权后实测 写1/写0/删除 全部 code=0。
+            var target = SmoothMotionSettings.Apis;
             var original = adapter.ReadFrom(profile, target.Id);
 
             Console.WriteLine($"  目标 0x{target.Id:X8}，原始 {original.State}");
