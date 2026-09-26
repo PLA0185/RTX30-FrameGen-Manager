@@ -6145,6 +6145,97 @@ public static class Program
             !zwMissing.Ok && !zwMissing.FilesWritten,
             $"ok={zwMissing.Ok} written={zwMissing.FilesWritten}");
 
+        // §17 P1-1（Pass B 报出）：**「Deploy 写了、又自己回滚了」的运行，不得被外层按上一次的记录再回滚一次。**
+        //
+        // 缺陷的形状：`Deploy` 在 try 第一行置 `FilesWritten = true`（早于任何真实写入），而 catch 里
+        // **已经自己调用了 `Rollback(...)`** 把写下的代理与 INI 恢复原状 —— 却不收回那个标志。于是调用方
+        // 见「写过盘、且失败」就再回滚一次，**而回滚用的是上一次的部署记录**（`game.Deployment` 只在成功
+        // 路径被替换）⇒ 删掉的是**用户上一次装好的、正在用的安装**，而报告写「已回滚」。
+        //
+        // 触发方式刻意走**真实路径**：用 `FileShare.None` 独占源 DLL，让事务内的复制失败。
+        // （`ProbeSignature` 对这个文件判 `NotSigned`，两个 provider 都接受，所以流程能走到 `Deploy`。）
+        var holdPayload = Path.Combine(work, "wf-hold-payload");
+        Directory.CreateDirectory(holdPayload);
+        File.WriteAllText(Path.Combine(holdPayload, "version.dll"), "payload");
+        File.WriteAllText(Path.Combine(holdPayload, ModSource.IniName), "[DLSSG SM86]" + Environment.NewLine);
+
+        var holdParts = Build(work, "wfHoldSource");
+        var holdGame = new GameEntry { Name = "wfHoldSource", RenderDir = MakeGameDir(work, "wfHoldGame") };
+
+        // 第一次：正常装好，建立「用户既有的可用安装」。
+        var holdFirst = holdParts.Workflow.RunAsync(
+            MakeRequest("wfHoldSource", holdPayload, holdParts.Provider, holdGame),
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("（前置）先建立一次成功的安装（§17 P1-1）",
+            holdFirst.Outcome == WorkflowOutcome.Succeeded,
+            holdFirst.Outcome + " / " + string.Join("; ", holdFirst.Errors));
+
+        var holdProxy = Path.Combine(holdGame.RenderDir, "version.dll");
+        var holdIni = Path.Combine(holdGame.RenderDir, ModSource.IniName);
+        var hadRecord = holdGame.Deployment is not null;
+
+        // 第二次：独占源 DLL，让 `Deploy` 在事务内失败并自回滚。
+        var holdIncomplete = false;
+        var holdSucceeded = false;
+
+        using (new FileStream(Path.Combine(holdPayload, "version.dll"),
+                   FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var holdSecond = holdParts.Workflow.RunAsync(
+                MakeRequest("wfHoldSource", holdPayload, holdParts.Provider, holdGame),
+                null, CancellationToken.None).GetAwaiter().GetResult();
+
+            holdIncomplete = holdSecond.RollbackIncomplete;
+            holdSucceeded = holdSecond.Outcome == WorkflowOutcome.Succeeded;
+        }
+
+        Check("源 DLL 被独占时第二次运行不成功（§17 P1-1 的前置）", !holdSucceeded);
+
+        // **这三条是核心断言。** 修复前：外层的二次回滚会把第一次装好的文件删掉，
+        // 而 `filesRolledBack` 返回 true、报告写「已回滚」—— 用户失去一个本来能用的安装。
+        //
+        // ⚠️ 注意：这一段**不能只靠 workflow 层触发**。实测表明：第一次装好之后，planner 会因为入口已被
+        // 自己占用而 fail-closed，于是第二次运行**在计划阶段就失败、根本没进 `Deploy` 的 try** ——
+        // 我最初就是这样写的，而「回退修复后断言仍全绿」证明了那样写抓不到缺陷。
+        // 所以下面直接对 `Deploy` 断言：那是 `FilesWritten` 与 `RollbackHandled` 真正产生的地方。
+        var holdSource = new ModSource(holdPayload);
+
+        // 先成功部署一次，建立「用户既有的可用安装」与部署记录。
+        var holdFirstDeploy = DeploymentService.Deploy(holdGame, holdSource);
+
+        Check("（前置）直接部署一次成功（§17 P1-1）",
+            holdFirstDeploy.Ok && holdFirstDeploy.FilesWritten,
+            $"ok={holdFirstDeploy.Ok} written={holdFirstDeploy.FilesWritten} / {holdFirstDeploy.Message}");
+
+        var holdProxyExists = File.Exists(holdProxy);
+        var holdRecordAfterFirst = holdGame.Deployment;
+
+        // 再部署一次，但独占源 DLL，让事务内的复制失败 → catch 自回滚。
+        using (new FileStream(Path.Combine(holdPayload, "version.dll"),
+                   FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var holdSecondDeploy = DeploymentService.Deploy(holdGame, holdSource);
+
+            Check("源 DLL 被独占时部署失败（§17 P1-1 的前置）", !holdSecondDeploy.Ok, holdSecondDeploy.Message);
+
+            // **这两条是修复的语义本身**：写了但已自己回滚 ⇒ 不再要求调用方回滚，同时留下「已自回滚」的痕迹。
+            Check("自回滚的部署必须收回「需要调用方回滚」这个结论（§17 P1-1）",
+                !holdSecondDeploy.FilesWritten,
+                $"written={holdSecondDeploy.FilesWritten} handled={holdSecondDeploy.RollbackHandled}");
+
+            Check("自回滚的部署必须记录「我们自己收过尾」（§17 P1-1）",
+                holdSecondDeploy.RollbackHandled,
+                $"handled={holdSecondDeploy.RollbackHandled}");
+        }
+
+        Check("自回滚的失败不得删掉用户既有的安装（§17 P1-1）",
+            holdProxyExists && File.Exists(holdProxy) && File.Exists(holdIni),
+            $"proxy={File.Exists(holdProxy)} ini={File.Exists(holdIni)}");
+
+        Check("自回滚的失败不得清掉上一次的部署记录（§17 P1-1）",
+            holdRecordAfterFirst is not null && holdGame.Deployment is not null);
+
         // **这条是 P1-2 的核心断言**：用户第一次装好的文件必须还在。
         Check("零写入的失败不得删掉既有安装（§17 P1-2）",
             File.Exists(installedProxy) && File.Exists(installedIni),
