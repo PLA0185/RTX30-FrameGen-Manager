@@ -513,6 +513,13 @@ public sealed class SmoothMotionWorkflow
                 errors.Add(execution.Message);
                 foreach (var detail in execution.Steps) errors.Add(detail);
 
+                // P0-08: Install() may already have written files before this failure. `filesWritten` used to stay
+                // false here, so Finish() — which rolls back when files were written — did nothing at all, and the
+                // game directory kept whatever the failed install had left behind while the report said the run had
+                // written nothing. The executor now says whether files reached the disk rather than leaving it to be
+                // inferred from its verdict; Finish() still owns the rollback itself.
+                filesWritten = execution.FilesWereWritten;
+
                 return Finish(WorkflowOutcome.Failed, SmoothMotionEvidence.None, steps, plan, request, errors,
                     filesWritten, profileWritten, journal: profileJournal);
             }
