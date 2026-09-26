@@ -4023,6 +4023,19 @@ public static class Program
         foreach (var file in input.ProviderPayloadFiles)
             File.WriteAllText(Path.Combine(execDir, file), "payload");
 
+        // 夹具必须与**真实布局**同形：非 version.dll 的代理入口在 altnative/ 下。
+        //
+        // 这里原来只按 input.ProviderPayloadFiles 扁平铺文件，而下面把 ProxyChoice 设成 "winmm.dll" ——
+        // 于是「计划里的 winmm.dll」在 source 根目录**根本不存在**。以前替身 VerifyPackage 恒返回
+        // Accepted 且完全不看路径，所以这一整套 executor 测试全绿；而两个真实 provider 对不存在的文件
+        // 都返回 Accepted = false，真实安装因此必然被拒（§17 P0）。
+        //
+        // §21 要求 Fake 不得比真实实现宽松 —— 把替身改严之后，这 8 项立刻暴露，暴露的正是**夹具本身
+        // 不是真实形状**。补上 altnative/ 之后，它们从「靠宽松替身通过」变成「真的在测真实布局」。
+        var execAlt = Path.Combine(execDir, ModSource.AltDirName);
+        Directory.CreateDirectory(execAlt);
+        File.WriteAllText(Path.Combine(execAlt, "winmm.dll"), "payload");
+
         var planSource = new ModSource(execDir);
         var execPlan = plan with { Status = PlanStatus.Ready, ProxyChoice = "winmm.dll" };
         var execGame = new GameEntry { Name = "ExecGame", RenderDir = MakeGameDir(work, "execGame") };
@@ -4264,7 +4277,17 @@ public static class Program
         /// provider uses — so a test can flip it to model a file that must be refused.
         /// </summary>
         public Func<string, PackageVerification> Verification { get; set; } =
-            _ => new PackageVerification(true, SignatureStatus.NotSigned, "未签名（测试替身默认接受）。");
+            // **默认行为刻意与真实 provider 一致：文件不存在就拒绝。**
+            //
+            // 这里曾经无条件返回 Accepted = true 且完全不看路径 —— 而两个真实 provider 对不存在的文件都
+            // 返回 Accepted = false。那个更宽松的替身**正是 §17 P0 得以藏身的地方**：Executor 用扁平路径
+            // 拼代理（非 version.dll 的入口其实在 altnative/），路径指向不存在的文件，而替身照样放行 ——
+            // 于是 9 处 executor 测试全绿，真实安装却必然被拒。
+            //
+            // §21 说得很清楚：**Fake 不得比真实实现宽松。** 现在与真实实现同形。
+            path => File.Exists(path)
+                ? new PackageVerification(true, SignatureStatus.NotSigned, "未签名（测试替身默认接受）。")
+                : new PackageVerification(false, SignatureStatus.Unknown, $"测试替身：文件不存在（{path}）。");
 
         /// <summary>
         /// 校验收到的每一个路径。**这是「代理入口按哪条布局解析」唯一可观察的地方** ——
