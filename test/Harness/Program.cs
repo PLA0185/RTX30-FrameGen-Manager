@@ -4397,7 +4397,7 @@ public static class Program
             }).HasTraceableProvenance);
 
         // ---- shared harness for the runs below ----
-        static (SmoothMotionWorkflow Workflow, FakeWorkflowDetector Detector, FakeDrsAdapter Drs, CompatibilityMatrixStore Matrix, MfgSmoothProvider Provider, FakeAssetFetcher Fetcher) Build(string work, string name)
+        static (SmoothMotionWorkflow Workflow, FakeWorkflowDetector Detector, FakeDrsAdapter Drs, CompatibilityMatrixStore Matrix, IPatchProvider Provider, FakeAssetFetcher Fetcher) Build(string work, string name)
         {
             var detector = new FakeWorkflowDetector();
             var drs = new FakeDrsAdapter();
@@ -4420,8 +4420,12 @@ public static class Program
                     detector, drs, matrix, provider, fetcher);
         }
 
-        static WorkflowRequest MakeRequest(string name, string payloadDir, MfgSmoothProvider provider, GameEntry game) =>
-            new(game, provider, "2.9.0", VersionPolicy.None, ReleaseChannel.Stable, payloadDir,
+        // `providerVersion` is optional on purpose: passing null is what makes the workflow go and ask the
+        // provider for a version. Handing it "2.9.0" short-circuits that — which is why no test could ever
+        // observe CheckLatestAsync being called.
+        static WorkflowRequest MakeRequest(string name, string payloadDir, IPatchProvider provider, GameEntry game,
+            string? providerVersion = "2.9.0") =>
+            new(game, provider, providerVersion, VersionPolicy.None, ReleaseChannel.Stable, payloadDir,
                 GpuName: "RTX 3070 Ti", DriverVersion: "617.14", Store: StoreKind.Steam,
                 LaunchMode: "normal", InstallMode: InstallMode.DirectProxy);
 
@@ -4704,10 +4708,34 @@ public static class Program
             versionIdx >= 0 && compatIdx >= 0 && versionIdx < compatIdx,
             $"版本 {versionIdx} / 兼容性 {compatIdx}");
 
-        // 这里**无法**断言「Provider 真的被问过」：`Build(work, name)` 提供的是真实的 MfgSmoothProvider，
-        // 而 RecordingProvider 只出现在计划执行器的测试里（`Build` 是 `TestSmoothMotionWorkflow` 的局部函数，
-        // 其它测试方法看不到它，见 `ROUND2_TEST_COVERAGE.md` 的 Profile Wiring 行）。
-        // `RecordingProvider.CheckLatestCalls` 已经就位，等 `Build` 被提取成可复用方法后即可接上。
+        // 「步骤存在」与「Provider 真的被问过」是两件事：那一步无论成功、失败，还是因为请求里已经带了版本
+        // 而跳过，都会被写下来。下面这条才是 P0-06 的实质 —— 版本必须来自解析。
+        //
+        // 它能写出来，靠的是这一轮的两个改动：`MakeRequest` 的 providerVersion 变成可选（传 null 才会走
+        // 「去问 provider」那条路），以及 `Build` 的 Provider 字段放宽到 IPatchProvider（于是可以塞进
+        // RecordingProvider）。`SmoothMotionWorkflow` 自己不持有 provider，用的是 request.Provider。
+        var asked = new RecordingProvider();
+        var askedParts = Build(work, "wfVersionAsked");
+
+        askedParts.Workflow.RunAsync(
+            MakeRequest("wfVersionAsked", Path.Combine(work, "wf-version-asked-payload"), asked,
+                new GameEntry { Name = "wfVersionAsked", RenderDir = MakeGameDir(work, "wfVersionAskedGame") },
+                providerVersion: null),
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("请求未带版本时，真的向 Provider 查询了版本",
+            asked.CheckLatestCalls > 0, $"调用 {asked.CheckLatestCalls} 次");
+
+        // 反向：请求里已经带了版本时就不该再问一遍 —— 否则「已确认的版本」会被一次网络查询悄悄覆盖。
+        var notAsked = new RecordingProvider();
+
+        askedParts.Workflow.RunAsync(
+            MakeRequest("wfVersionAsked", Path.Combine(work, "wf-version-asked-payload"), notAsked,
+                new GameEntry { Name = "wfVersionAsked", RenderDir = MakeGameDir(work, "wfVersionAskedGame") }),
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("请求已带版本时不再向 Provider 查询",
+            notAsked.CheckLatestCalls == 0, $"调用 {notAsked.CheckLatestCalls} 次");
 
         Check("计划携带了解析出的 Provider 版本字段",
             vResult.Plan is null || vResult.Plan.ProviderVersion is not null ||
