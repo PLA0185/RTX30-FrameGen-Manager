@@ -3991,6 +3991,21 @@ public static class Program
 
         var executed = InstallPlanExecutor.Execute(recording, execPlan, execGame, planSource);
         Check("计划可执行时安装成功", executed.Ok, executed.Message);
+
+        // §17 P0：校验代理时必须用项目规定的布局 —— 非 version.dll 的入口在 altnative/，
+        // 而不是扁平拼接到 payload 根目录。
+        //
+        // 这条断言守的是一个**真实存在过的 P0**：Executor 曾经用 Path.Combine(source.Root, file) 校验，
+        // 于是任何非 version.dll 的入口都被指到一个不存在的路径 → 「校验不过」→ 拒绝安装。
+        // 触发条件恰是工具最该帮上忙的场景：游戏自带的 version.dll 被占用，扫描器按设计换用下一个空闲入口。
+        //
+        // 它之所以需要「记录路径」这种间接手段，是因为替身 VerifyPackage 恒接受、不看文件存在性 ——
+        // 路径拼错在替身路径上不会失败。**如果断言写成「winmm.dll 结尾」，回退到扁平拼接也能通过，
+        // 那就成了一条恒真断言**；必须要求它落在 altnative/ 下。
+        Check("校验代理时用 altnative/ 布局，而不是扁平拼接到根目录（§17 P0）",
+            recording.VerifiedPaths.Any(p =>
+                p.EndsWith(Path.Combine("altnative", "winmm.dll"), StringComparison.OrdinalIgnoreCase)),
+            string.Join(" | ", recording.VerifiedPaths));
         Check("计划选定的入口被真正采用", execGame.PreferredProxy == "winmm.dll", execGame.PreferredProxy);
         Check("安装调用确实发生", recording.InstallCount == 1);
 
@@ -4207,7 +4222,19 @@ public static class Program
         public Func<string, PackageVerification> Verification { get; set; } =
             _ => new PackageVerification(true, SignatureStatus.NotSigned, "未签名（测试替身默认接受）。");
 
-        public PackageVerification VerifyPackage(string path) => Verification(path);
+        /// <summary>
+        /// 校验收到的每一个路径。**这是「代理入口按哪条布局解析」唯一可观察的地方** ——
+        /// 真实 provider 会按文件是否存在给出 `Accepted = false`，而替身默认恒接受，
+        /// 所以「路径拼错了」在替身路径上不会表现为失败，只能记录路径再断言。
+        /// </summary>
+        public List<string> VerifiedPaths { get; } = new();
+
+        public PackageVerification VerifyPackage(string path)
+        {
+            VerifiedPaths.Add(path);
+
+            return Verification(path);
+        }
 
         /// <summary>
         /// What the fake install records as deployed, or null to record nothing.

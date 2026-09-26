@@ -138,7 +138,23 @@ public static class InstallPlanExecutor
             PackageVerification verification;
             try
             {
-                verification = provider.VerifyPackage(Path.Combine(source.Root, file));
+                // §17 P0：代理入口**不一定在 payload 根目录** —— 项目规定非 version.dll 的入口位于
+                // altnative/，ModSource.ResolveDllPath 就是这条规定的实现，而 DeploymentService 用的正是它。
+                // 这里曾经用 Path.Combine(source.Root, file) 扁平拼接，于是**任何非 version.dll 的入口**都被
+                // 指到一个不存在的路径 → 「校验不过」→ 拒绝安装。
+                //
+                // 触发条件恰恰是工具最该帮上忙的场景：游戏目录里的 version.dll 被游戏自带或其它 mod 占用，
+                // 扫描器按设计换用下一个空闲入口（winmm.dll / dinput8.dll …），然后装不上。
+                //
+                // 而被 901 项全绿掩盖的原因也很具体：替身 RecordingProvider.VerifyPackage 恒 Accepted 且
+                // 不看文件是否存在，且测试的 payload 清单恰好只写 version.dll —— 输入里永远不会出现第二个入口名。
+                //
+                // 非代理文件（INI 等）本来就在根目录，不能套用 DllPath（那会把它解析到 altnative/）。
+                var target = ModSource.ProxyCandidates.Contains(file, StringComparer.OrdinalIgnoreCase)
+                    ? source.DllPath(file)
+                    : Path.Combine(source.Root, file);
+
+                verification = provider.VerifyPackage(target);
             }
             catch (Exception ex)
             {
