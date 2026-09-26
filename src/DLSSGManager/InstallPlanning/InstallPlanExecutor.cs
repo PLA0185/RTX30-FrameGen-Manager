@@ -68,6 +68,14 @@ public static class InstallPlanExecutor
         //       proxy it is has already been decided above, and the payload check that follows covers the rest.
         var missing = new List<string>();
 
+        // 这里刻意用**扫描**集合（`KnownProxyNames`）而不是可部署集合：本步问的是「这个名字是不是一个代理
+        // 入口」，而 `winhttp.dll` 确实是一个代理入口（0.3.0 起不再部署，但旧安装里可能残留），它若出现在
+        // 计划里也不该被要求「存在于 payload」—— 代理由 mod source 提供，不从 payload 取。
+        //
+        // **注意：这一步与下面第 4 步（校验代理）用的判据不同，那是有意的。** 第 4 步问「该到哪里找这个
+        // 文件」，那里必须用可部署集合（`ProxyCandidates`），因为路径解析要按项目布局走（非 `version.dll`
+        // 的入口在 `altnative/`）。本项目已经因为「同一个概念在两处用了不同集合」出现过四次真实缺陷 ——
+        // 所以这两处的差异必须写在这里，而不是留给人猜。
         static bool IsProxyName(string name) =>
             ModSource.KnownProxyNames.Contains(Path.GetFileName(name), StringComparer.OrdinalIgnoreCase);
 
