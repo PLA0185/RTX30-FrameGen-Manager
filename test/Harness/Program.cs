@@ -6081,6 +6081,27 @@ public static class Program
 
         Check("配置了配方记忆时运行会留下记录", recipes.Count > 0, "记录数 " + recipes.Count);
 
+        // **反向配对：预览不该留下记录。**
+        //
+        // 上面那条证明「真的尝试过 → 有记录」；这条证明「什么都没做 → 没有记录」。
+        // **少了它，一个无条件记录的实现也能满足上面那条** —— 而那种实现会把一次批量预览变成一批
+        // 「成功过」的记忆，让将来的 `RankFor` 基于**不存在的事实**排序。
+        var previewRecipes = new RecipeMemoryStore(Path.Combine(work, "recipe-preview-memory.json"));
+        var pvParts = Build(work, "wfRecipePreviewMatrix");
+
+        var pvWorkflow = new SmoothMotionWorkflow(
+            pvParts.Detector, new NvidiaProfileService(pvParts.Drs, () => false), pvParts.Matrix, previewRecipes);
+
+        var pvGame = new GameEntry { Name = "wfRecipePreview", RenderDir = MakeGameDir(work, "wfRecipePreviewGame") };
+
+        pvWorkflow.RunAsync(
+            MakeRequest("wfRecipePreview", Path.Combine(work, "wf-recipe-preview-payload"), pvParts.Provider, pvGame)
+                with { PreviewOnly = true },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("预览不留下配方记录（§17 · 从未发生的运行不是历史证据）",
+            previewRecipes.Count == 0, "记录数 " + previewRecipes.Count);
+
         var recorded = recipes.All.FirstOrDefault();
         Check("配方记录不冒充 ProjectVerified",
             recorded is null || recorded.Validation != ValidationLevel.ProjectVerified,
