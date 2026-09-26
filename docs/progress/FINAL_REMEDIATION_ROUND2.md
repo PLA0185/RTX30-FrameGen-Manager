@@ -33,7 +33,7 @@
 | §2 | NVAPI AccessViolation 专项 | ❌ **未做** | — |
 | §10 | `--mfg-asset-smoke` 真实下载 | ✅ **已完成**（真实下载 312 文件 / exit 0） | `882ab9b` |
 | — | **额外修掉**：`ModFetcher.AllowedHosts` 缺 `release-assets.githubusercontent.com` | ✅ 真实下载此前**不可能完成**（每一跳都做白名单检查） | `882ab9b` |
-| §12 | Updates/Downloads/Diagnostics 接真实状态 | ❌ **未做** | — |
+| §12 | Updates/Downloads/Diagnostics 接真实状态 | ✅ **已完成**（三页改为报告真实状态，不再是描述自身的占位文本） | `239f806` |
 | §13 | 补测试（确认流程/Profile Wiring/Read-back/ProviderVersion/Payload 隔离/Verification/Plan 精确执行/Batch/Restore/Store/SafeZip） | ⚠️ **部分**（各修复项已随附断言，并补了 Store 默认值 / `PreviewAsync` / `PreviewOnly` 三项；**清单式逐项核对未做完**） | `82bfac5` |
 | P0-09 | 预览汇总接入确认框 | ✅ **已完成**（确认前逐个预览，把「被阻止的计划」与「需要确认的计划」追加进确认正文） | `8ea5438` |
 
@@ -47,10 +47,10 @@ Real MFG Asset Smoke:               PASS（真实下载 mfg-smooth 2.8.2 → 312
 dotnet test:                        exit 0
 RC Packaging:                       PASS（scripts/package-release.ps1 exit 0）
 UI Process Smoke:                   PASS（从最终 ZIP 解压到全新临时目录，进程稳定 20 秒，句柄非 0，日志无 Exception/Fatal/Unhandled，只终止本次 PID，未误杀其他进程）
-EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,061,093 B）
+EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,061,628 B）
 ZIP:                                artifacts/RTX30-FrameGen-Manager-win-x64-1.9.3.zip（57.7 MB）
-SHA256 (EXE):                       0C4EA8B7CB0D649A8F5B7D8D8A0A909E8C909F13D73F9956B7205A1C860E67DA
-SHA256 (ZIP):                       37E0CC6068BA343F765A7AF3FDB9FFBA0E60407B4C1F703688B0546537B32113
+SHA256 (EXE):                       8DE1DA1A2A043A66C7C3FB11A49FD5D8235521CCDAB40465D355BE459A8F619B
+SHA256 (ZIP):                       2D21264050B5294399EE8B26C49F93A384980BC8F188FEB917AAE7AC03C4FAD3
 发布目录内容:                        恰好 4 个文件（EXE + LICENSE + README.md + THIRD_PARTY_NOTICES.txt）
 ```
 
