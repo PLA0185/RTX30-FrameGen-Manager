@@ -364,6 +364,10 @@ public sealed class SmoothMotionWorkflow
         InstallPlanInput MakeInput(CompatibilityDecision d) => new(
             Game: request.Game,
             Renderer: renderer,
+
+            // The same source the profile step writes from. Passing it here is what lets the plan state which driver
+            // settings this run needs, instead of leaving that to a recipe's free-text notes.
+            ProfileSettings: request.ProfileSettings,
             // The plan receives the API actually in play. The evidence behind the detector's own reading is kept
             // as-is: it records what was observed, and rewriting it to match the decision would destroy the very
             // disagreement the user is being asked about.

@@ -335,6 +335,21 @@ public enum PlanStatus
     Blocked,
 }
 
+/// <summary>
+/// One driver setting the plan says must be written for the payload to do anything.
+///
+/// <para><b>Typed on purpose.</b> A bare name like "Smooth Motion Enable" cannot be checked against anything — the
+/// plan could list a setting that does not exist and a reader could not tell. Carrying the
+/// <see cref="NvidiaProfile.ProfileSetting"/> itself means the planner and the profile writer refer to the same
+/// thing, and <see cref="ValueResolver"/> records <i>how</i> a value is decided rather than fixing one here.</para>
+/// </summary>
+public sealed record ProfileSettingRequirement(
+    NvidiaProfile.ProfileSetting Setting,
+    string ValueResolver,
+    bool Required,
+    GraphicsApi ApplicableApi,
+    string Reason);
+
 /// <summary>Everything the planner is allowed to look at. Assembled by the caller, never fetched inside.</summary>
 public sealed record InstallPlanInput(
     GameEntry Game,
@@ -348,7 +363,16 @@ public sealed record InstallPlanInput(
     InstallRecipe? Recipe,
     bool HasKernelAntiCheat,
     bool AllowProtected,
-    InstallMode RequestedMode = InstallMode.Unknown);
+    InstallMode RequestedMode = InstallMode.Unknown,
+
+    /// <summary>
+    /// The settings the caller intends to write, or null for none.
+    ///
+    /// <para>This is what lets the plan state its requirements from the same source the writer actually uses,
+    /// instead of from a recipe's free-text notes — which is how a run could install a payload whose driver
+    /// settings the plan never mentioned.</para>
+    /// </summary>
+    IReadOnlyList<NvidiaProfile.ProfileSetting>? ProfileSettings = null);
 
 /// <summary>
 /// The plan itself: what would be done, what would be changed, and what must be true beforehand.
@@ -367,6 +391,14 @@ public sealed record InstallPlan(
     string? ProxyChoice,
     string? AsiChoice,
     IReadOnlyList<string> NvidiaProfileRequirements,
+
+    /// <summary>
+    /// The same requirements in the typed form the profile writer can act on.
+    ///
+    /// <para>Both are carried: the string list is what the interface and existing recipes speak, and this one is
+    /// what can be checked against an actual setting. New callers should read this one.</para>
+    /// </summary>
+    IReadOnlyList<ProfileSettingRequirement> ProfileRequirements,
     IReadOnlyList<string> LaunchArguments,
     IReadOnlyList<string> Warnings,
     IReadOnlyList<string> Blockers,
@@ -474,6 +506,28 @@ public static class InstallPlanner
         var strategy = input.Recipe?.ProxyStrategy ?? ProxyStrategy.Unknown;
         string? asi = null;
 
+        // Typed requirements, built from the settings this run intends to write. The recipe's free-text notes stay
+        // alongside rather than being replaced: those describe a documented procedure, these describe what is
+        // actually about to happen — and only these can be checked against a real setting.
+        var typedProfile = new List<ProfileSettingRequirement>();
+
+        if (input.ProfileSettings is { Count: > 0 })
+        {
+            var api = input.Api.Api;
+
+            foreach (var write in NvidiaProfile.SmoothMotionSettings.EnableWrites(api))
+            {
+                if (!input.ProfileSettings.Any(s => s.Id == write.Setting.Id)) continue;
+
+                typedProfile.Add(new ProfileSettingRequirement(
+                    Setting: write.Setting,
+                    ValueResolver: "按设置定义与本次 API 推导（未知 API 时只写主开关）",
+                    Required: write.Required,
+                    ApplicableApi: api,
+                    Reason: write.Reason));
+            }
+        }
+
         if (input.Recipe is not null)
         {
             profile.AddRange(input.Recipe.NvidiaProfileChanges);
@@ -517,6 +571,7 @@ public static class InstallPlanner
             ProxyChoice: proxyChoice,
             AsiChoice: asi,
             NvidiaProfileRequirements: profile,
+            ProfileRequirements: typedProfile,
             LaunchArguments: launch,
             Warnings: warnings,
             Blockers: blockers,
@@ -554,6 +609,9 @@ public static class InstallPlanner
             ProxyChoice: null,
             AsiChoice: null,
             NvidiaProfileRequirements: profile,
+
+            // A blocked plan writes nothing, so it requires nothing typed either.
+            ProfileRequirements: Array.Empty<ProfileSettingRequirement>(),
             LaunchArguments: launch,
             Warnings: warnings,
             Blockers: blockers,

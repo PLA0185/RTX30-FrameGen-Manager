@@ -4027,6 +4027,20 @@ public static class Program
 
         Check("日志条目带可读写的回滚状态（供重试只处理未成功项）",
             typeof(NvidiaProfile.ProfileJournalEntry).GetProperty("State") is { CanRead: true, CanWrite: true });
+
+        // ---- 第二轮 §7：计划必须以 Typed 形式说明它需要哪些驱动设置 ----
+        // The defect this covers: the plan's driver requirements came only from a recipe's free-text notes, so a run
+        // could install a payload whose driver settings the plan never mentioned. The end-to-end version of this
+        // lives in the orchestration section, where a preview run can be built without writing anything.
+        Check("计划带有 Typed 驱动要求字段（与字符串列表并存）",
+            typeof(InstallPlan).GetProperty("ProfileRequirements") is not null);
+
+        Check("Typed 要求携带设置对象、取值方式、必需性、适用 API 与原因",
+            typeof(ProfileSettingRequirement).GetProperty("Setting") is not null &&
+            typeof(ProfileSettingRequirement).GetProperty("ValueResolver") is not null &&
+            typeof(ProfileSettingRequirement).GetProperty("Required") is not null &&
+            typeof(ProfileSettingRequirement).GetProperty("ApplicableApi") is not null &&
+            typeof(ProfileSettingRequirement).GetProperty("Reason") is not null);
         Check("MFG 标记为实验性", provider.Metadata.Experimental);
 
         // ---- registry ----
