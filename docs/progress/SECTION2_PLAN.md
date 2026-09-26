@@ -46,6 +46,18 @@ CanWrite          : False
 
 ### 2.2 改动清单
 
+> **这是 5 处联动改动，必须一次做完。** 任何一处未完成都会让工作区不可编译，因此不要拆成多个提交或分多次编辑。精确落点（`NvApiDrsAdapter.cs`，行号以 `dff61be` 为准）：
+>
+> | # | 落点 | 改动 |
+> |---|---|---|
+> | 1 | **L469–L505** | 删除 `NvDrsSetting` 结构体与全部 `[MarshalAs]` 特性 |
+> | 2 | **L507–L520** | `NewSetting` 由 `new NvDrsSetting { … }` 改为分配 + 清零 + 写 `version`，**返回 `IntPtr`** |
+> | 3 | **L236–L273**（`Read`） | 改为手工内存：分配 → 写 `version`/`settingId` → 调用 → 按偏移读回 → `finally` 释放 |
+> | 4 | **L275–L302**（`Write`） | 同上；先取回现有结构（保留 type / location / name），只改值（偏移 8220）与 `isCurrentPredefined`（4112） |
+> | 5 | **L559 / L562**（两个委托）+ **L422–L449**（`VerifyLayout`） | 委托第四/第三参数 `ref NvDrsSetting` → `IntPtr`；`VerifyLayout` 改为断言常量自洽性 |
+>
+> 现有 `NewSetting` 写入的字段（供改造时对照，语义都要保留）：`Version = SettingVersion` · `SettingName = new ushort[UnicodeStringLength]` · `SettingId = settingId` · `SettingType = TypeDword` · `SettingLocation = LocationCurrentProfile` · `IsCurrentPredefined = 0` · `IsPredefinedValid = 0` · `PredefinedValueLength = 0` · `CurrentValueLength = value`。
+
 1. **委托签名**：`GetSetting` 与 `SetSetting` 的第四个/第三个参数由 `ref NvDrsSetting` 改为 `IntPtr`。**两处都要改**（`GetSetting` 传 `ref setting`，`SetSetting` 传 `ref setting`）。
 2. **删除 `NvDrsSetting` 结构体**（L469–L500 附近）与其 `[MarshalAs]` 特性。
 3. **`NewSetting`** 改为返回 `IntPtr`：`AllocHGlobal(SettingSize)` + 清零（`Marshal.Copy(new byte[SettingSize], 0, ptr, SettingSize)`）+ 写 `version = SettingVersion`，其余字段按需写。
