@@ -418,6 +418,17 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// <summary>
     /// Checks the marshalled layout against the numbers the official header implies. Returns null when it
     /// matches, or a reason when it does not.
+    ///
+    /// <para><b>What this does not prove.</b> <c>Marshal.SizeOf</c> and <c>Marshal.OffsetOf</c> only compute the
+    /// managed side's idea of the layout — they never run the marshaler's call path. A structure can pass every
+    /// check here and still be unsafe to pass across the boundary: the copy-in/copy-out happens during the
+    /// P/Invoke call, and nothing in this method exercises it.</para>
+    ///
+    /// <para>That is exactly the state this adapter is in. This method returns null, and a real read still fails
+    /// with <c>AccessViolationException</c> on the <i>second</i> call. The failing shape points at the temporary
+    /// buffer rather than at a wrong offset — a wrong offset would fail on the first call — which is why the
+    /// suspected cause is the <c>ByValArray</c> marshalling on the three large arrays below, and why the intended
+    /// fix is to stop using the marshaler for this structure at all.</para>
     /// </summary>
     private static string? VerifyLayout()
     {
