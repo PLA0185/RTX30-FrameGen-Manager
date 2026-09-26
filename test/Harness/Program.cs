@@ -422,11 +422,18 @@ public static class Program
                 ? "  判定            : 往返封送未再崩溃 —— 满足开 gate 的条件"
                 : "  判定            : 未通过（有异常，或驱动未被触达）—— gate 必须保持关闭");
 
-            // P0-04: locating a profile by the renderer executable. Read-only, and exercised here for the same
-            // reason the diagnostic loop exists — nothing else reaches this code path yet.
-            var lookup = adapter.FindApplication("nvngx_dlssg.dll");
+            // P0-03: 三件事分开报告。「调用没崩」与「业务上找到了」是不同的状态 —— 混在一行里，一次成功的
+            // ABI 调用看起来就像一次成功的 Profile 定位，而 `-166` 恰恰说明什么都没找到。
+            //
+            // 用 FindApplicationProfile：它自己拥有会话生命周期，不需要调用者先 Open。
+            var lookup = adapter.FindApplicationProfile("nvngx_dlssg.dll");
 
-            Console.WriteLine($"应用查找（只读）: {(lookup.Found ? "找到" : "未找到")} —— {lookup.Message}");
+            Console.WriteLine("应用查找（只读，状态分开）:");
+            Console.WriteLine("  ABI Call Smoke    : PASS（调用返回了结果，未抛异常）");
+            Console.WriteLine($"  Application Found : {(lookup.Found ? "PASS" : "NOT_FOUND")}");
+            Console.WriteLine($"  Profile Info      : {(lookup.Found ? "PASS" : "NOT_RUN")}"
+                + (lookup.Found ? "" : "（未找到应用，无从查询 Profile 名）"));
+            Console.WriteLine($"  说明              : {lookup.Message}");
 
             if (lookup.Found) Console.WriteLine($"  匹配的 Profile  : {lookup.ProfileName}");
             Console.WriteLine();
