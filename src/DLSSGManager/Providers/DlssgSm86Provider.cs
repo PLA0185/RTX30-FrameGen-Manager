@@ -165,9 +165,24 @@ public sealed class DlssgSm86Provider : IPatchProvider
 
         var status = DeploymentService.ProbeSignature(path);
 
-        return status == SignatureStatus.Intact
-            ? new PackageVerification(true, status, "签名完整。")
-            : new PackageVerification(false, status, $"签名校验未通过（{status}）。");
+        return status switch
+        {
+            SignatureStatus.Intact => new PackageVerification(true, status, "签名完整。"),
+
+            // **未签名：接受，但必须说明「不视为已验证」。** 这是本项目的红线 ——
+            // 上游 payload 里未签名的 DLL 是常态，一律拒绝会把可用的包全部挡掉；
+            // 但接受 ≠ 已验证，所以措辞必须如实。
+            //
+            // 这里曾经是 `status == Intact ? 接受 : 拒绝`，于是未签名的 DLL 被拒，而 `MfgSmoothProvider`
+            // 对同一份文件是**接受**的。**同一个概念在两个 provider 上语义相反**：用户换一个 provider 就会
+            // 遇到「同样的文件，一个能装一个不能装」，而且没有任何提示说明为什么。
+            SignatureStatus.NotSigned => new PackageVerification(true, status,
+                "未签名：接受该文件，但不视为已验证 —— 其完整性只能由 payload 清单的哈希覆盖。"),
+
+            // 其余（`BadDigest` / `Unknown`）：拒绝。**内容与签名不符必须全源拒绝**，这是红线，
+            // 不受「未签名可接受」这一条的影响 —— 两者的区别正是「从未签过」与「签过之后被改过」。
+            _ => new PackageVerification(false, status, $"签名校验未通过（{status}）。"),
+        };
     }
 
     /// <summary>

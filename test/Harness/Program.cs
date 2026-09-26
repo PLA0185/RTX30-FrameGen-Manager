@@ -4886,6 +4886,29 @@ public static class Program
             new MfgSmoothProvider().PrepareCanonicalPayload(onlyScanNames) is null,
             "winhttp.dll 是扫描名而非可部署名；正规化必须拒绝产出一个没有可部署入口的目录");
 
+        // §17 P2：**两个 provider 对同一份「未签名二进制」的判定必须一致。**
+        //
+        // 这里曾经相反：`MfgSmoothProvider` 接受未签名（红线要求「`NotSigned` 接受但不视为已验证」），
+        // 而 `DlssgSm86Provider` 只接受 `Intact` —— 于是用户换一个 provider 会遇到「同样的文件，一个能装
+        // 一个不能装」，且没有任何提示说明为什么。
+        //
+        // 真实上游 DLL 是**自签名且完整**的（实测 `ProbeSignature = Intact`），所以两者**当前**都接受；
+        // 分叉只在签名方式变化或用户导入未签名 DLL 时才显现 —— 而这正是需要断言的地方，也是此前
+        // 「900 项全绿却掩盖着它」的原因。
+        var unsignedProbe = Path.Combine(work, "unsigned-probe.dll");
+        File.WriteAllText(unsignedProbe, "not a PE image, therefore no signature block");
+
+        var dlssgVerdict = new DlssgSm86Provider().VerifyPackage(unsignedProbe);
+        var mfgVerdict = new MfgSmoothProvider().VerifyPackage(unsignedProbe);
+
+        Check("两个 provider 对未签名二进制都接受（§17 P2 · 红线：NotSigned 接受）",
+            dlssgVerdict.Accepted && mfgVerdict.Accepted,
+            $"dlssg={dlssgVerdict.Accepted} mfg={mfgVerdict.Accepted}");
+
+        Check("接受未签名时措辞不把它说成已验证（§17 P2）",
+            !dlssgVerdict.Message.Contains("已验证") || dlssgVerdict.Message.Contains("不视为已验证"),
+            dlssgVerdict.Message);
+
         Check("dlssg-sm86 提供帧生成但不要求 Smooth Motion DRS",
             dlssgOnly.ProvidesDlssFrameGeneration && !dlssgOnly.RequiresSmoothMotionDrs
                 && !dlssgOnly.SupportsSmoothMotionDrs,
