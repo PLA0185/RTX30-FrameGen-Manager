@@ -671,8 +671,13 @@
                                 </StackPanel>
                             </Border>
 
-                            <!-- 卡片：插帧配置 -->
-                            <Border Style="{StaticResource SectionCard}">
+                            <!-- 卡片：高级参数（默认折叠）──────────────────────────────
+                                 插帧档位、最大帧数、日志级别与旧版内核参数都是调优项，不是首次使用
+                                 要走的路。收起而非隐藏：需要时随时可以展开。
+                                 代理入口（在上面那张卡片里）保持可见——它决定"装到哪个入口"，
+                                 属于「装到哪里」而非「怎么调」。 -->
+                            <Expander Header="{loc:Tr Nav.Advanced}" IsExpanded="False" Margin="0,0,0,10">
+                            <Border Style="{StaticResource SectionCard}" Margin="0,6,0,0">
                                 <StackPanel>
                                     <TextBlock Text="{loc:Tr Detail.GroupFg}" Style="{StaticResource SectionTitle}" />
 
@@ -761,6 +766,7 @@
                                     </StackPanel>
                                 </StackPanel>
                             </Border>
+                            </Expander>
 
                             <!-- 卡片：操作 -->
                             <Border Style="{StaticResource SectionCard}">
