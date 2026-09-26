@@ -133,15 +133,33 @@ public sealed class DlssgSm86Provider : IPatchProvider
         _downloader.DownloadAsync(destination, progress, ct);
 
     /// <summary>
-    /// Applies this provider's verification rule to a single file.
+    /// Applies this provider's verification rule to a single file — <b>the rule that fits the file</b>.
     ///
-    /// Delegates to the Stage 2 primitive rather than repeating it. Note the division of labour: this
-    /// answers "are these bytes the signed bytes" for one file, while the subject and pinned-thumbprint
-    /// checks stay in the shared download path, which is also where a tampered payload is refused
-    /// outright.
+    /// <para>Delegates the signature question to the Stage 2 primitive rather than repeating it. Note the
+    /// division of labour: this answers "are these bytes the signed bytes" for one file, while the subject and
+    /// pinned-thumbprint checks stay in the shared download path, which is also where a tampered payload is
+    /// refused outright.</para>
+    ///
+    /// <para><b>Configuration files take a different rule on purpose.</b> <c>dlssg_sm86.ini</c> is not a PE
+    /// image and has never been signed, so asking for its signature would refuse every payload the provider
+    /// ships. What can honestly be checked is that it exists and carries content; its integrity is covered by
+    /// the payload manifest's hashes.</para>
     /// </summary>
     public PackageVerification VerifyPackage(string path)
     {
+        if (PayloadFiles.Classify(path) == PayloadFileKind.Config)
+        {
+            if (!File.Exists(path))
+                return new PackageVerification(false, SignatureStatus.Unknown, "配置文件不存在。");
+
+            var length = new FileInfo(path).Length;
+
+            return length > 0
+                ? new PackageVerification(true, SignatureStatus.NotSigned,
+                    $"配置文件按内容校验（{length} 字节）；文本文件不适用 Authenticode，其完整性由 payload 清单的哈希覆盖。")
+                : new PackageVerification(false, SignatureStatus.Unknown, "配置文件为空。");
+        }
+
         var status = DeploymentService.ProbeSignature(path);
 
         return status == SignatureStatus.Intact

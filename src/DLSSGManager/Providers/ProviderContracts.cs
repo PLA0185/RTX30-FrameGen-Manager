@@ -203,3 +203,35 @@ public interface IPatchProvider
     /// </summary>
     PayloadManifest? ManifestOf(string payloadDirectory) => null;
 }
+
+/// <summary>What a payload file is, which decides how it may be verified.</summary>
+public enum PayloadFileKind
+{
+    /// <summary>A PE image. Authenticode is meaningful here.</summary>
+    Binary,
+
+    /// <summary>
+    /// A text configuration file.
+    ///
+    /// <para>Authenticode does not apply: these are not PE images and are never signed. Demanding a signature
+    /// would reject every payload that contains one — which is exactly what happened to
+    /// <c>dlssg_sm86.ini</c>. Their integrity is covered by the payload manifest's hashes instead.</para>
+    /// </summary>
+    Config,
+}
+
+/// <summary>Classifies payload files by the rule that can legitimately be applied to them.</summary>
+public static class PayloadFiles
+{
+    /// <summary>
+    /// Classifies by extension rather than by content, because the question being answered is "may a signature
+    /// check be required of this file at all" — and for a configuration file the answer is no, regardless of
+    /// what its bytes happen to look like.
+    /// </summary>
+    public static PayloadFileKind Classify(string path) =>
+        System.IO.Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".dll" or ".exe" or ".sys" or ".node" => PayloadFileKind.Binary,
+            _ => PayloadFileKind.Config,
+        };
+}

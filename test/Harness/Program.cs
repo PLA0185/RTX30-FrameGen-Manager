@@ -4375,6 +4375,33 @@ public static class Program
         Check("Adapter 接口仍可读（读回能力是前提，不是可选）",
             typeof(NvidiaProfile.IDrsAdapter).GetProperty("CanRead") is not null);
 
+        // ---- 第二轮 P0-05：校验规则必须与文件角色匹配 ----
+        // The defect this covers: every file in the plan was put through Authenticode, and dlssg_sm86.ini is not
+        // a PE image and has never been signed — so the payload this provider actually ships could never pass
+        // its own verification, and every install would be refused.
+        Check("INI 按配置文件分类", PayloadFiles.Classify("dlssg_sm86.ini") == PayloadFileKind.Config);
+        Check("DLL 按二进制分类", PayloadFiles.Classify("dxgi.dll") == PayloadFileKind.Binary);
+        Check("EXE 按二进制分类", PayloadFiles.Classify("nvngx_dlssg.exe") == PayloadFileKind.Binary);
+
+        var roleDir = Path.Combine(work, "verify-by-role");
+        Directory.CreateDirectory(roleDir);
+
+        var iniPath = Path.Combine(roleDir, "dlssg_sm86.ini");
+        File.WriteAllText(iniPath, "[Settings]" + Environment.NewLine + "Enabled=1" + Environment.NewLine);
+
+        var emptyIni = Path.Combine(roleDir, "empty.ini");
+        File.WriteAllText(emptyIni, "");
+
+        Check("非 PE 的配置文件不会被 Authenticode 拒绝",
+            AppProviders.Patch.VerifyPackage(iniPath).Accepted,
+            AppProviders.Patch.VerifyPackage(iniPath).Message);
+
+        Check("配置文件仍会被检查内容（空文件被拒）",
+            !AppProviders.Patch.VerifyPackage(emptyIni).Accepted);
+
+        Check("不存在的配置文件被拒",
+            !AppProviders.Patch.VerifyPackage(Path.Combine(roleDir, "missing.ini")).Accepted);
+
         // ---- H: the configuration service the window now calls (整改 H) ----
         var hParts = Build(work, "wfHMatrix");
         var hService = new GameConfigurationService(hParts.Workflow);
