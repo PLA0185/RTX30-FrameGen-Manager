@@ -54,6 +54,11 @@ public static class Program
         if (args.Length > 0 && args[0] == "--nvapi-smoke")
             return NvApiSmoke(args.Length > 1 && args[1] == "--loop");
 
+        // The write smoke is its own command on purpose: it is the only thing in this project that writes to a real
+        // driver profile, so it must never run as a side effect of anything else.
+        if (args.Length > 0 && args[0] == "--nvapi-write-smoke")
+            return NvApiWriteSmoke();
+
         // Explicit, opt-in network smoke test for the release-asset path.
         if (args.Length > 0 && args[0] == "--network-smoke")
             return NetworkSmoke().GetAwaiter().GetResult();
@@ -150,6 +155,190 @@ public static class Program
     /// stops at reading. The write path is exercised only by an explicit user action in the application,
     /// never by a test command.</para>
     /// </summary>
+    /// <summary>
+    /// Creates a throwaway DRS profile, tries to prove the write path on it, then dismantles it.
+    ///
+    /// <para>This is the only place in the project that writes to a real driver profile, and it writes only to a
+    /// profile it created itself under a name no real game uses. It never touches a profile that belongs to the user,
+    /// and never touches Ground Branch.</para>
+    ///
+    /// <para>Carries diagnostics because the first run returned <c>-160</c> from <c>NvAPI_DRS_SetSetting</c> and that
+    /// code is not defined in any official header available here. Rather than guess what it means, the run varies one
+    /// thing at a time — setting id, then value — so the cause can be read off the results.</para>
+    /// </summary>
+    private static int NvApiWriteSmoke()
+    {
+        Console.WriteLine("=== NVAPI 临时 Profile 写入 Smoke ===");
+        Console.WriteLine();
+
+        var adapter = new NvApiDrsAdapter();
+
+        Console.WriteLine($"IsAvailable       : {adapter.IsAvailable}");
+        Console.WriteLine($"CanRead           : {adapter.CanRead}");
+        Console.WriteLine($"CanWrite          : {adapter.CanWrite}");
+        Console.WriteLine($"不可用原因        : {(adapter.UnavailableReason.Length == 0 ? "(无)" : adapter.UnavailableReason)}");
+        Console.WriteLine();
+
+        if (!adapter.IsAvailable)
+        {
+            Console.WriteLine("结论：本机无法加载 NVAPI。请在有 NVIDIA 驱动的机器上重跑本命令。");
+            return 0;
+        }
+
+        var profileName = "RTX30FGM-SMOKE-" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+        const string smokeExe = "RTX30FGM-SMOKE.exe";
+
+        Console.WriteLine($"临时 Profile 名    : {profileName}");
+        Console.WriteLine($"临时绑定 EXE       : {smokeExe}");
+        Console.WriteLine();
+
+        var opened = adapter.Open(null);
+
+        if (!opened.Ok)
+        {
+            Console.WriteLine($"打开会话失败：{opened.Message}");
+            return 1;
+        }
+
+        var profile = IntPtr.Zero;
+        var applicationCreated = false;
+        var profileCreated = false;
+        var failures = new List<string>();
+
+        try
+        {
+            var create = adapter.CreateProfile(profileName, out profile);
+
+            profileCreated = create.Ok;
+            Report("创建临时 Profile", create);
+
+            if (!create.Ok) return 1;
+
+            // A test executable no real game uses: this binding must never collide with anything the user has.
+            var bind = adapter.CreateApplication(profile, smokeExe);
+
+            applicationCreated = bind.Ok;
+            Report("绑定测试 EXE", bind);
+
+            if (!bind.Ok) return 1;
+
+            // ── 诊断：一次只变一个因素。换设置 ID，再换值 ──────────────────────────────────────────────
+            //
+            // 创建、绑定、解绑、删除都在同一会话、同一权限下成功了，所以「整体权限不足」这个解释很弱；真正
+            // 需要分辨的是「这个设置不能被写」还是「写入本身被拒」。
+            Console.WriteLine();
+            Console.WriteLine("诊断（逐个设置、逐个值）：");
+
+            foreach (var setting in SmoothMotionSettings.All.Take(3))
+            {
+                var before = adapter.ReadFrom(profile, setting.Id);
+
+                Console.WriteLine($"  0x{setting.Id:X8} {setting.Name}（写入前 {before.State}）");
+
+                foreach (var value in new uint[] { 1, 0 })
+                {
+                    var write = adapter.WriteTo(profile, setting.Id, value);
+
+                    Console.WriteLine($"      写 {value} → {(write.Ok ? "✓" : "×")} code={write.Code} {write.Message}");
+                }
+
+                var cleanup = adapter.DeleteFrom(profile, setting.Id);
+
+                Console.WriteLine($"      删除 → {(cleanup.Ok ? "✓" : "×")} code={cleanup.Code} {cleanup.Message}");
+            }
+
+            // ── 任务书要求的往返 ──────────────────────────────────────────────────────────────────────
+            Console.WriteLine();
+            Console.WriteLine("往返测试：");
+
+            var target = SmoothMotionSettings.Feature;
+            var original = adapter.ReadFrom(profile, target.Id);
+
+            Console.WriteLine($"  目标 0x{target.Id:X8}，原始 {original.State}");
+
+            var finalWrite = adapter.WriteTo(profile, target.Id, 1);
+
+            Report("写入受控值", finalWrite);
+
+            if (!finalWrite.Ok) failures.Add($"写入失败（code={finalWrite.Code}）");
+
+            var save = adapter.SaveUngated();
+
+            Report("保存", save);
+
+            if (!save.Ok) failures.Add($"保存失败（code={save.Code}）");
+
+            // 没有这一步，一个「保存成功」什么都证明不了：往返的全部意义就是驱动把它接受的值还回来。
+            var readBack = adapter.ReadFrom(profile, target.Id);
+
+            Console.WriteLine($"    读回            : {readBack.State} value={readBack.Value}（期望 ExplicitValue/1）");
+
+            if (readBack.State != ProfileSettingState.ExplicitValue || readBack.Value != 1)
+                failures.Add("读回值与写入值不一致");
+
+            var remove = adapter.DeleteFrom(profile, target.Id);
+
+            Report("删除测试设置", remove);
+
+            if (!remove.Ok) failures.Add($"删除失败（code={remove.Code}）");
+
+            var saveAgain = adapter.SaveUngated();
+
+            Report("再次保存", saveAgain);
+
+            if (!saveAgain.Ok) failures.Add($"再次保存失败（code={saveAgain.Code}）");
+
+            var restored = adapter.ReadFrom(profile, target.Id);
+
+            Console.WriteLine($"    恢复后状态      : {restored.State}（期望 Absent）");
+
+            if (restored.State != ProfileSettingState.Absent) failures.Add("删除后状态未回到 Absent");
+
+            // 只有完整往返才算证据；任何一步不成立，门就保持关闭。
+            var proven = failures.Count == 0;
+
+            NvApiDrsAdapter.WriteCallsProven = proven;
+            NvApiDrsAdapter.SaveCallsProven = proven;
+            NvApiDrsAdapter.DeleteCallsProven = proven;
+        }
+        finally
+        {
+            // 无论上面发生了什么都要清理：留下一个 Profile 比从未运行更糟 —— 那个残留对机器上其他东西来说
+            // 看起来就是一个真实 Profile。
+            if (applicationCreated && profile != IntPtr.Zero)
+                Report("解绑测试 EXE", adapter.DeleteApplication(profile, smokeExe));
+
+            if (profileCreated && profile != IntPtr.Zero)
+                Report("删除临时 Profile", adapter.DeleteProfile(profile));
+
+            Report("最后一次保存", adapter.SaveUngated());
+            adapter.Close();
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"WriteCallsProven  : {NvApiDrsAdapter.WriteCallsProven}");
+        Console.WriteLine($"SaveCallsProven   : {NvApiDrsAdapter.SaveCallsProven}");
+        Console.WriteLine($"DeleteCallsProven : {NvApiDrsAdapter.DeleteCallsProven}");
+
+        if (failures.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("失败项：");
+            foreach (var f in failures) Console.WriteLine($"  · {f}");
+
+            Console.WriteLine();
+            Console.WriteLine("结论：写入路径未被证明，能力门保持关闭。");
+            return 1;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("结论：临时 Profile 的写入、保存、读回、删除与恢复全部通过，写能力门已开启。");
+        return 0;
+    }
+
+    private static void Report(string what, DrsStatus status) =>
+        Console.WriteLine($"  {(status.Ok ? "✓" : "×")} {what,-16}: code={status.Code} {status.Message}");
+
     private static int NvApiSmoke(bool runLoop)
     {
         Console.WriteLine("=== NVAPI / DRS 只读 Smoke ===");

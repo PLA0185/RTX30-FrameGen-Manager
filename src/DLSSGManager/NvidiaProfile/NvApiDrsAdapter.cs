@@ -714,7 +714,6 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// </summary>
     internal DrsStatus DeleteFrom(IntPtr profile, uint settingId)
     {
-        if (!CanDelete) return DrsStatus.Fail(-1, UnprovenAbi);
 
         EnsureLoaded();
         if (!_available) return DrsStatus.Fail(-1, _unavailableReason);
