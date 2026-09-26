@@ -4214,12 +4214,24 @@ public static class Program
         // 这条此前写不出来：RecordingProvider 的 Install 不写部署记录，于是执行器永远走「没有记录、无从核对」
         // 那条分支 —— 而「无从核对」与「不一致」是两件不同的事，只有后者才说明计划被绕过了。
         var extraGame = new GameEntry { Name = "ExtraDeployed", RenderDir = MakeGameDir(work, "extra") };
+        var extraProxyBefore = extraGame.PreferredProxy;
         var extraRunner = new RecordingProvider
         {
             RecordsDeployed = new List<string> { "version.dll", "not-planned.dll" },
         };
 
         var extra = InstallPlanExecutor.Execute(extraRunner, execPlan, extraGame, planSource);
+
+        // **P2-2（Pass C 报出）：失败路径必须把入口偏好恢复原值。**
+        //
+        // 这条路径返回 `FilesWereWritten = true` —— 也就是**调用方会去回滚文件**。既然如此，用户保存的
+        // 入口偏好也必须回到原值：否则会停在「文件已回到原样、偏好却指向一个从未成功过的入口」这种
+        // 不一致上，而下次 AutoProxy 部署会优先使用那个入口。
+        //
+        // **全仓此前没有一条在失败路径上断言 `PreferredProxy`** —— 这个副作用一直是盲区（成功路径有断言）。
+        Check("部署不一致时入口偏好回到原值（§17 P2-2）",
+            extraGame.PreferredProxy == extraProxyBefore,
+            $"now=\"{extraGame.PreferredProxy}\" before=\"{extraProxyBefore}\"");
 
         Check("部署了计划外的文件时按失败处理", !extra.Ok, extra.Message);
         Check("失败原因点名计划外的文件", extra.Message.Contains("not-planned.dll"), extra.Message);
@@ -4237,7 +4249,13 @@ public static class Program
         // 反向的一半：没有部署记录时，执行器必须如实报「无从核对」，而不是报「一致」。
         // 这正是项目里那条既有判据的现场验证 —— 没有可比对的数据时报「无法核对」，不报「一致」。
         var noneGame = new GameEntry { Name = "NoRecord", RenderDir = MakeGameDir(work, "norecord") };
+        var noneProxyBefore = noneGame.PreferredProxy;
         var none = InstallPlanExecutor.Execute(new RecordingProvider(), execPlan, noneGame, planSource);
+
+        // **同样的理由**：这条路径同样 `FilesWereWritten = true` ⇒ 偏好也必须回原值。
+        Check("没有部署记录时入口偏好回到原值（§17 P2-2）",
+            noneGame.PreferredProxy == noneProxyBefore,
+            $"now=\"{noneGame.PreferredProxy}\" before=\"{noneProxyBefore}\"");
 
         // P0-09 之后这条断言必须是失败，而不是「如实报无从核对但返回成功」。任务书点名的正是这个分支：
         // 注释写着 Not a pass，代码却返回 true。项目的承诺是「Plan = 实际写入」，核对不了就是失败。
