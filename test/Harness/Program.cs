@@ -4314,6 +4314,26 @@ public static class Program
         Check("回滚自行打开 Profile 会话（不依赖 Apply 已关闭的会话）", p.OpenCount > opensAfterApply);
         Check("journal 携带 ProfileName", rP.Journal.ProfileName == "RollbackProfile");
 
+        // P1-14：只记名字不够。回滚要能区分「这个 Profile / 绑定是我们建的」与「用户本来就有」—— 只有前者
+        // 才允许删除。默认必须是 false：把用户的 Profile 当成自己建的删掉，比留下一点残留严重得多。
+        Check("journal 默认不声称创建过 Profile 或应用绑定（保守默认，避免误删）",
+            !rP.Journal.WasProfileCreated && !rP.Journal.WasApplicationCreated,
+            $"profile={rP.Journal.WasProfileCreated} app={rP.Journal.WasApplicationCreated}");
+
+        // 另一半：这些字段必须真的能被记录进去 —— 否则「默认 false」只是因为它们永远是 false。
+        var withIdentity = new ProfileJournal("SomeProfile")
+        {
+            ApplicationExe = "Game.exe",
+            WasProfileCreated = true,
+            WasApplicationCreated = true,
+        };
+
+        Check("journal 能记录真实 Profile Identity（可执行文件名 + 两个创建标志）",
+            withIdentity.ApplicationExe == "Game.exe"
+                && withIdentity.WasProfileCreated
+                && withIdentity.WasApplicationCreated,
+            $"exe={withIdentity.ApplicationExe} profile={withIdentity.WasProfileCreated} app={withIdentity.WasApplicationCreated}");
+
         var deleteAfterFirst = p.DeleteCount;
         var doubleRollback = svcP.Rollback(rP.Journal);
         Check("同一 journal 不会被回滚两次", doubleRollback.Skipped && doubleRollback.Ok);
