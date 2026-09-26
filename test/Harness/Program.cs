@@ -4620,6 +4620,36 @@ public static class Program
         Check("工作流请求不再以字符串列表承载驱动设置",
             typeof(WorkflowRequest).GetProperty("ProfileSettings")?.PropertyType != typeof(IReadOnlyList<string>));
 
+        // 上面几条全是「字段还在不在」的反射断言 —— 它们只证明改造做了，不证明改造对。
+        // `pWithout` 与 `pWith` 此前只是被算出来就丢掉了：编译器不会警告「有副作用的调用结果未被使用」，
+        // 所以这个缺口一直是静默的。下面两条才把 P0-02 这条链接到底。
+        Check("未传 ProfileSettings 时不会走到 Profile 配置步骤",
+            !pWithout.Details.Any(d => d.Contains("配置 NVIDIA Profile")),
+            string.Join(" → ", pWithout.Details));
+
+        // 这才是 P0-02 的端到端链条本身：界面传来的两项驱动设置，经配置服务 → 工作流 → 计划，变成了计划里的
+        // 两条 Typed 要求。注意计划停在 NeedsConfirmation 时**仍然记下**它要做什么 —— 计划描述意图，执行看
+        // 状态，这两件事本就分开；把「计划不能执行」误读成「计划没有内容」会让这条链看起来是断的。
+        Check("传了 ProfileSettings 时计划记录下对应的两条 Typed 要求",
+            pWith.Plan is not null && pWith.Plan.ProfileRequirements.Count == 2,
+            pWith.Plan is null ? "(无计划)" : $"要求 {pWith.Plan.ProfileRequirements.Count} 项");
+
+        Check("未传 ProfileSettings 时计划不含任何 Profile 要求",
+            pWithout.Plan is null || pWithout.Plan.ProfileRequirements.Count == 0,
+            pWithout.Plan is null ? "(无计划)" : $"要求 {pWithout.Plan.ProfileRequirements.Count} 项");
+
+        Check("因此这次运行没有被标记为已写 Profile",
+            !pWith.Summary.Contains("Profile 已写入") || pWith.Plan is null || pWith.Plan.ProfileRequirements.Count == 0,
+            pWith.Summary);
+
+        // 反向的一半：给的是「主开关 + API 位掩码」两项，走到的就不该是零项，也不该被当成全部设置都写。
+        Check("传了 ProfileSettings 时写入的是计划里的 Typed 要求，而不是空集",
+            pWith.Plan is null || pWith.Plan.ProfileRequirements.Count == 0 ||
+            pWith.Plan.ProfileRequirements.Count ==
+                SmoothMotionSettings.EnableWrites(GraphicsApi.Dx12)
+                    .Count(w => new[] { SmoothMotionSettings.Feature, SmoothMotionSettings.Apis }.Any(s => s.Id == w.Setting.Id)),
+            pWith.Plan is null ? "(无计划)" : $"计划要求 {pWith.Plan.ProfileRequirements.Count} 项");
+
         // ---- 第二轮 P0-03：Read-back 必须在会话仍然打开时进行 ----
         // The defect this covers: Apply closed its session in a finally block, and only then did the workflow
         // call Adapter.Read. Under a real adapter that reads nothing at all — and the inevitable failure would
