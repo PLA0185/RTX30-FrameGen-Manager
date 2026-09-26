@@ -279,6 +279,15 @@ public interface IDrsAdapter
     /// <summary>Commits the session's changes.</summary>
     DrsStatus Save();
 
+    /// <summary>
+    /// 删除一个 Profile（以及可选的一个应用绑定），自己管会话生命周期。
+    ///
+    /// <para>**只供回滚「本次运行自己创建的东西」使用。** 调用方必须先确认该 Profile 由本次运行创建
+    /// （<c>ProfileJournal.WasProfileCreated</c>）—— <b>删掉用户原有的 Profile 比留下残留严重得多</b>，
+    /// 而名字本身无法区分这两种情况。不用它做「清理」，只用它撤销自己造成的变化。</para>
+    /// </summary>
+    DrsStatus DeleteProfileByName(string profileName, string? executableName = null);
+
     /// <summary>Releases the session.</summary>
     void Close();
 }
@@ -387,6 +396,12 @@ public sealed class NvidiaProfileService
     /// </summary>
     public DrsApplicationLookup FindApplicationProfile(string executableName) =>
         _adapter.FindApplicationProfile(executableName);
+
+    /// <summary>
+    /// 删除一个 Profile 及其绑定。**调用方必须先确认它由本次运行创建** —— 见接口上的说明。
+    /// </summary>
+    public DrsStatus DeleteProfileByName(string profileName, string? executableName = null) =>
+        _adapter.DeleteProfileByName(profileName, executableName);
 
     public ProfileApplyResult Apply(string? profileName, IReadOnlyList<ProfileSettingWrite> writes)
     {
@@ -623,7 +638,34 @@ public sealed class NvidiaProfileService
             if (failed == 0 && skipped == 0) journal.MarkRolledBack();
         }
 
+        // 恢复设置之后，还要把本次运行**自己创建**的东西拆掉。只恢复设置会留下一个空的 RTX30FGM-* Profile
+        // 挂在用户机器上 —— 那不是回滚，那是残留。
+        //
+        // 两个标志是唯一的依据：只有确认「这是我们建的」才允许删除。**用户原有的 Profile 绝不经过这里** ——
+        // 删掉它比留下残留严重得多，而名字本身区分不了这两种情况。
+        //
+        // 位置在 finally 之后：DeleteProfileByName 自开自合会话，会打断外层那个。
+        var profileRemoved = false;
+
+        if (failed == 0 && journal.WasProfileCreated)
+        {
+            var removal = _adapter.DeleteProfileByName(journal.ProfileName ?? "", journal.ApplicationExe);
+
+            if (removal.Ok)
+            {
+                profileRemoved = true;
+                notes.Add($"已删除本次运行创建的 Profile「{journal.ProfileName}」。");
+            }
+            else
+            {
+                // 删不掉就是没回滚干净：留一个空 Profile 会一直出现在用户的驱动面板里。
+                failed++;
+                notes.Add($"删除本次运行创建的 Profile 失败（code {removal.Code}）：{removal.Message}");
+            }
+        }
+
         var summary = $"已恢复 {restored} 项";
+        if (profileRemoved) summary += "，并已删除本次创建的 Profile";
         if (skipped > 0) summary += $"，跳过 {skipped} 项（原值未知）";
         if (failed > 0) summary += $"，{failed} 项失败";
 

@@ -4142,6 +4142,19 @@ public static class Program
         /// split is that the low-level lookup needs an open session and this one does not, and a double that
         /// blurred them would hide exactly the defect the split exists to prevent.
         /// </summary>
+        /// <summary>
+        /// 回滚时被要求删除的 Profile 名。用于断言「只删自己建的那个」—— 删掉用户原有的 Profile
+        /// 比留下残留严重得多，所以这条记录本身就是断言材料。
+        /// </summary>
+        public List<string> DeletedProfiles { get; } = new();
+
+        public DrsStatus DeleteProfileByName(string profileName, string? executableName = null)
+        {
+            DeletedProfiles.Add(profileName);
+
+            return DrsStatus.Success;
+        }
+
         public DrsApplicationLookup FindApplicationProfile(string executableName) =>
             Open(null).Ok
                 ? FindApplication(executableName)

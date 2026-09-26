@@ -217,11 +217,11 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// <summary>
     /// 按名字删除一个 Profile 及其应用绑定，自己管会话生命周期。
     ///
-    /// <para>**只供回滚「本次运行自己创建的东西」使用。** 调用方必须先确认该 Profile 由本次运行创建
-    /// （<c>ProfileJournal.WasProfileCreated</c>）—— <b>删掉用户原有的 Profile 比留下残留严重得多</b>，
-    /// 而名字本身无法区分这两种情况。</para>
+    /// <para><b>接口要求它是 public，但语义上是受限的</b>：只供回滚「本次运行自己创建的东西」使用。
+    /// 调用方必须先确认该 Profile 由本次运行创建（<c>ProfileJournal.WasProfileCreated</c>）——
+    /// <b>删掉用户原有的 Profile 比留下残留严重得多</b>，而名字本身无法区分这两种情况。</para>
     /// </summary>
-    internal DrsStatus DeleteProfileByName(string profileName, string? executableName = null)
+    public DrsStatus DeleteProfileByName(string profileName, string? executableName = null)
     {
         if (string.IsNullOrWhiteSpace(profileName))
             return DrsStatus.Fail(-1, "未提供 Profile 名。");
@@ -1124,6 +1124,9 @@ public sealed class AbsentDrsAdapter : IDrsAdapter
     /// </summary>
     public DrsApplicationLookup FindApplicationProfile(string executableName) =>
         DrsApplicationLookup.NotFound(executableName ?? "", Reason);
+
+    public DrsStatus DeleteProfileByName(string profileName, string? executableName = null) =>
+        DrsStatus.Fail(-1, Reason);
 
     public DrsApplicationLookup FindApplication(string executableName) =>
         DrsApplicationLookup.NotFound(executableName, Reason);
