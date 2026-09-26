@@ -163,6 +163,18 @@ public sealed class DlssgSm86Provider : IPatchProvider
                 : new PackageVerification(false, SignatureStatus.Unknown, "配置文件为空。");
         }
 
+        // **二进制：先确认文件在。**
+        //
+        // `ProbeSignature` 把「打不开 / 不存在」一并判成 `NotSigned`，而 `NotSigned` 是**接受**的
+        // （红线：未签名可接受，但须说明不视为已验证）—— 两条合起来会让**不存在的文件「校验通过」**：
+        // 用户看到一行假话「「version.dll」校验通过（NotSigned）」，而失败被推后到 `Deploy` 里
+        // 变成 `FileNotFoundException`，那时错误信息已经离真正的原因很远了。
+        //
+        // `MfgSmoothProvider` 对同一输入是**拒绝**的（它先查存在性）—— **两个 provider 对同一事实
+        // 语义相反**。这里补上存在性检查与它对齐。（上面 Config 分支本来就有这一条，只有二进制分支没有。）
+        if (!File.Exists(path))
+            return new PackageVerification(false, SignatureStatus.Unknown, $"文件不存在，无法校验（{path}）。");
+
         var status = DeploymentService.ProbeSignature(path);
 
         return status switch

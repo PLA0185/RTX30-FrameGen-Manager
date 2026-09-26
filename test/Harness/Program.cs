@@ -4922,6 +4922,22 @@ public static class Program
             !dlssgVerdict.Message.Contains("已验证") || dlssgVerdict.Message.Contains("不视为已验证"),
             dlssgVerdict.Message);
 
+        // **反向配对：不存在的文件必须被拒绝。**
+        //
+        // 这条守的是一句**假话**：`ProbeSignature` 把「打不开 / 不存在」判成 `NotSigned`，而 `NotSigned`
+        // 是接受的（红线允许未签名）—— 两条合起来会让**不存在的文件「校验通过」**：用户看到
+        // 「「version.dll」校验通过（NotSigned）」，而失败被推后到 `Deploy` 里变成 `FileNotFoundException`。
+        //
+        // **与上面那条必须成对看**：「未签名」接受、「不存在」拒绝 —— 两者都会被 `NotSigned` 覆盖，
+        // 所以必须分别断言。只写一条的话，修好一个会掩盖另一个（这正是本条被漏掉的原因）。
+        var absentProbe = Path.Combine(work, "definitely-absent-probe.dll");
+
+        Check("两个 provider 对不存在的文件都拒绝（§17 P2 · 反向配对）",
+            !new DlssgSm86Provider().VerifyPackage(absentProbe).Accepted
+                && !new MfgSmoothProvider().VerifyPackage(absentProbe).Accepted,
+            $"dlssg={new DlssgSm86Provider().VerifyPackage(absentProbe).Accepted} " +
+            $"mfg={new MfgSmoothProvider().VerifyPackage(absentProbe).Accepted}");
+
         Check("dlssg-sm86 提供帧生成但不要求 Smooth Motion DRS",
             dlssgOnly.ProvidesDlssFrameGeneration && !dlssgOnly.RequiresSmoothMotionDrs
                 && !dlssgOnly.SupportsSmoothMotionDrs,
