@@ -98,6 +98,7 @@ public static class Program
             TestUpdateFramework(work);
             TestGameDetectionAndPlanning(work);
             TestNvidiaProfileService(work);
+            TestSmoothProvider(work);
         }
         catch (Exception ex)
         {
@@ -2469,7 +2470,8 @@ public static class Program
 
         var defaults = ProviderRegistry.CreateDefault();
         Check("默认注册表含 DlssgSm86Provider", defaults.Get(DlssgSm86Provider.ProviderId) is not null);
-        Check("默认注册表构造不触发网络", defaults.Count == 1, "实际: " + defaults.Count);
+        Check("默认注册表含 MfgSmoothProvider", defaults.Get(MfgSmoothProvider.ProviderId) is not null);
+        Check("默认注册表构造不触发网络", defaults.Count == 2, "实际: " + defaults.Count);
 
         // The entry point the window uses must resolve to the same provider.
         Check("应用级入口指向 dlssg-sm86", AppProviders.Patch.Id == DlssgSm86Provider.ProviderId, AppProviders.Patch.Id);
@@ -3484,5 +3486,178 @@ public static class Program
             SmoothMotionSettings.FeatureEnabled == 0xB0D384C0 &&
             SmoothMotionSettings.EnabledApis == 0xB0CC0875 &&
             SmoothMotionSettings.DebugBars == 0xB01B8B02);
+    }
+
+    /// <summary>Asset fetcher double, so provider behaviour is testable without a network.</summary>
+    private sealed class FakeAssetFetcher : IReleaseAssetFetcher
+    {
+        public int Calls { get; private set; }
+        public string? LastUrl { get; private set; }
+        public string? LastExpectedSha { get; private set; }
+
+        public bool Fail { get; set; }
+        public DigestState DigestState { get; set; } = DigestState.Verified;
+
+        public Task<AssetFetchResult> FetchAndExtractAsync(
+            string url, string destinationDirectory, string? expectedSha256, IProgress<string>? progress, CancellationToken ct)
+        {
+            Calls++;
+            LastUrl = url;
+            LastExpectedSha = expectedSha256;
+
+            if (Fail) return Task.FromResult(AssetFetchResult.Failed("fake fetch failure"));
+
+            Directory.CreateDirectory(destinationDirectory);
+            File.WriteAllText(Path.Combine(destinationDirectory, "version.dll"), "payload");
+            File.WriteAllText(Path.Combine(destinationDirectory, "dlssg_sm86.ini"), "; fake");
+
+            return Task.FromResult(new AssetFetchResult(true, "fake ok", destinationDirectory,
+                new DigestCheck(DigestState, expectedSha256, expectedSha256, "fake")));
+        }
+    }
+
+    /// <summary>
+    /// Stage 7: the MFG provider.
+    ///
+    /// The version rules are tested against the naming the upstream repository actually uses (observed
+    /// 2026-09-26), because the whole reason this provider needs its own parser is that its tags are
+    /// labels rather than versions.
+    /// </summary>
+    private static void TestSmoothProvider(string work)
+    {
+        Section("MFG Provider（Stage 7）");
+
+        static ReleaseEntry MfgRelease(string tag, params ReleaseAssetInfo[] assets) =>
+            new(MfgSmoothProvider.Repository, 1, tag, false, false, null, null, assets);
+
+        // ---- version rule ----
+        Check("从真实 asset 名解析出版本",
+            MfgSmoothProvider.ParseVersionFromAssetName("SmoothMotion-2.8.2-R3-GP8-Xbox-Detection.zip") == "2.8.2");
+        Check("两位数段版本可解析",
+            MfgSmoothProvider.ParseVersionFromAssetName("SmoothMotion-1.10.3.zip") == "1.10.3");
+        Check("无版本号的 asset 名返回 null",
+            MfgSmoothProvider.ParseVersionFromAssetName("SmoothMotion-latest.zip") is null);
+        Check("空名返回 null", MfgSmoothProvider.ParseVersionFromAssetName(null) is null);
+
+        var realTags = new[] { "smxbox", "smfix", "smdriverupdate", "SMMANUAL", "sm75", "SM", "asi" };
+        Check("上游真实 tag 集不被当作版本号",
+            realTags.All(t => ReleaseVersion.Compare(t, "2.8.2") == VersionOrder.Unordered));
+        Check("非版本 tag 不导致解析异常",
+            realTags.All(t => MfgSmoothProvider.ParseVersionFromAssetName(t) is null));
+
+        // ---- payload selection ----
+        var single = MfgRelease("smxbox",
+            new ReleaseAssetInfo(1, "SmoothMotion-2.8.2-R3-GP8-Xbox-Detection.zip", 100, "sha256:" + new string('a', 64)));
+        Check("唯一 zip 被选为 payload", MfgSmoothProvider.SelectPayloadAsset(single) is not null);
+        Check("无 asset 的 Release 无 payload",
+            MfgSmoothProvider.SelectPayloadAsset(MfgRelease("sm86", Array.Empty<ReleaseAssetInfo>())) is null);
+        Check("多个候选时不猜",
+            MfgSmoothProvider.SelectPayloadAsset(MfgRelease("asi",
+                new ReleaseAssetInfo(1, "SmoothMotion-1.0.0.zip", 1, null),
+                new ReleaseAssetInfo(2, "SmoothMotion-1.0.1.zip", 1, null))) is null);
+        Check("非 zip 资产不作为 payload",
+            MfgSmoothProvider.SelectPayloadAsset(MfgRelease("sm75",
+                new ReleaseAssetInfo(1, "SmoothMotion-1.0.0.7z", 1, null))) is null);
+
+        // ---- unrecognised structure stops automatic installation ----
+        var brokenClient = new FakeReleaseClient(OkReleases(
+            MfgRelease("sm86", Array.Empty<ReleaseAssetInfo>()),
+            MfgRelease("sm75", new ReleaseAssetInfo(1, "SmoothMotion-1.0.0.7z", 1, null))));
+        var broken = new MfgSmoothProvider(brokenClient, new FakeAssetFetcher());
+
+        Check("结构不可识别时不返回版本",
+            broken.CheckLatestAsync(false, CancellationToken.None).GetAwaiter().GetResult() is null);
+        Check("结构不可识别时报 ReleaseFormatChanged",
+            broken.Health.State == ProviderHealthState.ReleaseFormatChanged, broken.Health.State.ToString());
+        Check("结构不可识别时停止自动安装",
+            !broken.DownloadAsync(Path.Combine(work, "mfg-bad"), null, CancellationToken.None).GetAwaiter().GetResult().Ok);
+
+        // ---- normal resolution across tags ----
+        var client = new FakeReleaseClient(OkReleases(
+            MfgRelease("smfix", new ReleaseAssetInfo(1, "SmoothMotion-2.8.2-R3-GP8-Xbox-Detection.zip", 100, "sha256:" + new string('a', 64))),
+            MfgRelease("smxbox", new ReleaseAssetInfo(2, "SmoothMotion-2.9.0-R1.zip", 100, null))));
+        var fetcher = new FakeAssetFetcher();
+        var provider = new MfgSmoothProvider(client, fetcher);
+
+        var info = provider.CheckLatestAsync(false, CancellationToken.None).GetAwaiter().GetResult();
+        Check("跨 tag 选出最高版本", info?.Version == "2.9.0", info?.Version ?? "(null)");
+        Check("解析成功后健康状态可用", provider.Health.IsUsable, provider.Health.Reason);
+
+        var download = provider.DownloadAsync(Path.Combine(work, "mfg-dl"), null, CancellationToken.None)
+            .GetAwaiter().GetResult();
+        Check("下载委托给资产获取器", download.Ok && fetcher.Calls == 1, download.Message);
+        Check("下载走 GitHub 规范发布路径",
+            fetcher.LastUrl is not null && fetcher.LastUrl.Contains("/releases/download/"), fetcher.LastUrl ?? "(null)");
+
+        // ---- metadata ----
+        Check("MFG 分发模型为 ReleaseAsset", provider.Metadata.Distribution == DistributionModel.ReleaseAsset);
+        Check("MFG 许可证按 API 实测记为 MIT",
+            provider.Metadata.License == LicenseClass.Mit, provider.Metadata.License.ToString());
+        Check("许可证说明保留 Phase 0 更正记录", provider.Metadata.LicenseNote.Contains("Phase 0"));
+        Check("MFG 不写 NVIDIA Profile", !provider.Metadata.WritesNvidiaProfile);
+        Check("MFG 标记为实验性", provider.Metadata.Experimental);
+
+        // ---- registry ----
+        var registry = ProviderRegistry.CreateDefault();
+        Check("默认注册表含两个 Provider", registry.Count == 2, "实际: " + registry.Count);
+        Check("MFG 可从注册表取回", registry.Get(MfgSmoothProvider.ProviderId) is not null);
+        Check("应用级入口可访问 MFG", AppProviders.Mfg is not null);
+        Check("两个 Provider 的 ID 不同", DlssgSm86Provider.ProviderId != MfgSmoothProvider.ProviderId);
+
+        // ---- install/restore still run through the shared paths ----
+        var source = new ModSource(MakeSyntheticModSource(work));
+        var dir = MakeGameDir(work, "MfgGame");
+        var game = new GameEntry { Name = "MfgGame", RenderDir = dir };
+
+        var install = provider.Install(game, source);
+        Check("MFG 安装走共享事务部署", install.Ok, install.Message);
+        Check("MFG 安装建立部署记录", game.Deployment is not null);
+        Check("MFG 报告已安装版本", provider.GetInstalledVersion(game) == source.Version);
+
+        Check("MFG 恢复走共享路径", provider.Restore(game, false).Ok);
+        Check("恢复后代理已移除", !File.Exists(Path.Combine(dir, "version.dll")));
+
+        var signed = Path.Combine(Environment.SystemDirectory, "kernel32.dll");
+        if (File.Exists(signed))
+            Check("MFG VerifyPackage 复用共享签名原语", provider.VerifyPackage(signed).Accepted);
+
+        // ---- zip safety ----
+        var zipRoot = Path.Combine(work, "zip-safe");
+        Directory.CreateDirectory(zipRoot);
+        Check("目标目录之外被识别为不安全",
+            !SafeZip.IsInside(zipRoot, Path.Combine(zipRoot, "..", "escaped.txt")));
+        Check("目标目录之内视为安全", SafeZip.IsInside(zipRoot, Path.Combine(zipRoot, "sub", "ok.txt")));
+
+        var evilZip = Path.Combine(work, "evil.zip");
+        using (var fs = File.Create(evilZip))
+        using (var archive = new System.IO.Compression.ZipArchive(fs, System.IO.Compression.ZipArchiveMode.Create))
+        {
+            using var writer = new StreamWriter(archive.CreateEntry("../escaped.txt").Open());
+            writer.Write("pwned");
+        }
+
+        var outDir = Path.Combine(work, "zip-out");
+        var extracted = SafeZip.TryExtract(evilZip, outDir, out var zipError);
+        Check("zip slip 被拒绝", !extracted && zipError.Length > 0, zipError);
+        Check("zip slip 未写出逃逸文件", !File.Exists(Path.Combine(work, "escaped.txt")));
+
+        var goodZip = Path.Combine(work, "good.zip");
+        using (var fs = File.Create(goodZip))
+        using (var archive = new System.IO.Compression.ZipArchive(fs, System.IO.Compression.ZipArchiveMode.Create))
+        {
+            using var writer = new StreamWriter(archive.CreateEntry("sub/file.dll").Open());
+            writer.Write("payload");
+        }
+
+        Check("正常压缩包可解压",
+            SafeZip.TryExtract(goodZip, outDir, out _) && File.Exists(Path.Combine(outDir, "sub", "file.dll")));
+
+        // ---- host policy ----
+        Check("Release Asset 重定向主机已在白名单",
+            ModFetcher.IsAllowedAddress(new Uri("https://objects.githubusercontent.com/x"), proxyRouted: true));
+        Check("未在白名单的主机被拒绝",
+            !ModFetcher.IsAllowedAddress(new Uri("https://evil.example.com/x"), proxyRouted: true));
+        Check("非 HTTPS 被拒绝",
+            !ModFetcher.IsAllowedAddress(new Uri("http://github.com/x"), proxyRouted: true));
     }
 }

@@ -38,6 +38,10 @@ public static class ModFetcher
         "codeload.github.com",
         "raw.githubusercontent.com",
         "api.github.com",
+        // Where GitHub redirects release-asset downloads. Added when the MFG provider started fetching
+        // release assets, because every hop is re-checked and a redirect to an unlisted host is refused —
+        // without this entry the download could not complete at all.
+        "objects.githubusercontent.com",
         // Third-party mirrors. Accepted only with a matching certificate pin, because a mirror is not
         // the authority for this content — see Verify().
         "cdn.jsdelivr.net",

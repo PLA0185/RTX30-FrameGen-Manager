@@ -25,4 +25,12 @@ public static class AppProviders
     public static IPatchProvider Patch =>
         Registry.Get(DlssgSm86Provider.ProviderId)
         ?? throw new InvalidOperationException($"默认 Provider 未注册：{DlssgSm86Provider.ProviderId}");
+
+    /// <summary>
+    /// The MFG community build, when it is registered.
+    ///
+    /// Nullable rather than throwing: unlike the built-in provider above, this one is an optional
+    /// addition, and a caller asking for it should be able to tell "not available" from "broken".
+    /// </summary>
+    public static IPatchProvider? Mfg => Registry.Get(MfgSmoothProvider.ProviderId);
 }

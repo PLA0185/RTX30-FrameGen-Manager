@@ -107,6 +107,7 @@ public sealed class ProviderRegistry
     {
         var registry = new ProviderRegistry();
         registry.Register(new DlssgSm86Provider());
+        registry.Register(new MfgSmoothProvider());
         return registry;
     }
 }
