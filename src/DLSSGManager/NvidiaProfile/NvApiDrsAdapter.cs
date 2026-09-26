@@ -245,7 +245,19 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
                 var unbind = DeleteApplication(_profile, executableName);
 
                 // 绑定本来就不存在不算失败 —— 目标状态已经达成。
-                if (!unbind.Ok && unbind.Code != NvApiSettingNotFound) return unbind;
+                //
+                // **判据从单一的 -160 放宽到「找不到」这一类。** 官方 `nvapi.h` 对 `NvAPI_DRS_DeleteApplication`
+                // 只文档化 `NVAPI_OK` / `NVAPI_ERROR` / `NVAPI_EXECUTABLE_PATH_IS_AMBIGUOUS` —— **-160 并不在其中**。
+                //
+                // 用一个大方没承诺会返回的码做豁免，风险是**反的**：真机若返回另一个「找不到」的码
+                // （例如 `NVAPI_EXECUTABLE_NOT_FOUND` = -166），这里会 `return unbind`，于是
+                // **Profile 不会被删除、驱动上留下残留**，而调用方把它计为回滚失败 —— 用户看到的是一次
+                // 失败的清理，却不知道为什么。
+                //
+                // 放宽到 `IsNotFound` 覆盖 -160 与 -166 两个语义（「没有这个设置」/「没有这个可执行文件」），
+                // 二者对「解绑一个本来就不存在的绑定」都是合理回应。**这是有意放宽，不是放宽校验**：
+                // 真正的失败（权限不足、路径歧义、驱动错误）仍然照常向上报。
+                if (!unbind.Ok && !NvApiStatus.IsNotFound(unbind.Code)) return unbind;
             }
 
             var removed = DeleteProfile(_profile);
@@ -351,7 +363,9 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// <summary>NVAPI_OK. Every other value is a failure and is reported by number, never swallowed.</summary>
     private const int NvApiOk = 0;
 
-    private const int NvApiSettingNotFound = -160;
+    // 这里曾经有一个 `private const int NvApiSettingNotFound = -160;` —— 它与 `NvApiStatus.SettingNotFound`
+    // 重复。重复的定义会漂移（有人只改一处），而所有状态码的唯一来源应当是 `NvApiStatus`（其中每个值都在
+    // 官方头文件里逐行核对过）。现在两处调用点都用 `NvApiStatus.IsNotFound(...)`。
 
     // ── Struct numbers implied by the header (NVDRS_SETTING_V1, #pragma pack(push, 4)) ─────────────
     //
@@ -605,7 +619,10 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         {
             var status = _getSetting(_session, profile, settingId, setting);
 
-            if (status == NvApiSettingNotFound)
+            // 用 `NvApiStatus` 的判据而不是本文件里另立一个常量：**同一个概念只能有一个来源**。
+            // 本项目已经因为「一个判据、两个集合」出过四次真实缺陷，这里虽然只是常量重复，
+            // 但重复的定义会漂移（有人只改一处），而 `IsNotFound` 同时覆盖 -160 与 -166。
+            if (NvApiStatus.IsNotFound(status))
             {
                 // The setting is not in this profile at all: the driver would use its predefined value.
                 // This is genuinely different from "set to 0", and it is the state deletion restores.
