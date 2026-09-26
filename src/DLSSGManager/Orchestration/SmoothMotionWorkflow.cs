@@ -284,6 +284,17 @@ public sealed class SmoothMotionWorkflow
         _profile = profile;
         _matrix = matrix;
         _recipes = recipes;
+
+        // **把已有的配方记忆读进来。**
+        //
+        // 这里曾经什么都不做 —— `RecipeMemoryStore` 的 `Load()` 是**显式方法**（构造函数不会调它），
+        // 而全仓**没有任何生产代码调用它**：`MainWindow.Actions.cs` 只 `new` 了一个 store 就交出去。
+        // 于是 `%APPDATA%\DLSSGManager\recipe-memory.json` **永远不会被读取**（下面 `Persist` 那处
+        // 解释了它同样不会被写出）—— 类文档承诺的「Remembers which recipes worked, per game」在成品里
+        // 从未发生。
+        //
+        // 放在构造函数里是因为：**读的时机没有选择** —— 越早读到，越多的运行能用到它。
+        _recipes?.Load();
     }
 
     /// <summary>Runs the sequence and reports what actually happened.</summary>
@@ -747,10 +758,22 @@ public sealed class SmoothMotionWorkflow
                 store: request.Store,
                 proxyAsi: request.Game.PreferredProxy,
                 mode: request.InstallMode);
+
+            // **记完就落盘。**
+            //
+            // `Record` 只写内存字典 —— 这里曾经**没有** `Persist()`，而全仓也没有别的地方调它，
+            // 于是配方记忆**永远不会出现在磁盘上**：类文档承诺的「Persistence follows the same rules as
+            // the compatibility matrix: versioned, atomic」在成品里从未发生，而 `_recipes.Record` 的
+            // 效果只活在这一次进程里、退出即丢。
+            //
+            // 放在这里（而不是每次 `Finish`）是因为：**没有记录就没必要写盘**，而 `Record` 刚刚成功
+            // 说明这次内存状态确实变了。
+            _recipes.Persist();
         }
         catch
         {
             // Remembering is a convenience; failing to remember must not fail a run that worked.
+            // （`Persist` 自己吞异常并记日志，所以它失败也不会走到这里；这一层是给 `Record` 兜底的。）
         }
     }
 

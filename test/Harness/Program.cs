@@ -6133,6 +6133,39 @@ public static class Program
         Check("预览不留下配方记录（§17 · 从未发生的运行不是历史证据）",
             previewRecipes.Count == 0, "记录数 " + previewRecipes.Count);
 
+        // **持久化的两端都必须真的发生。**
+        //
+        // 上面几条只证明「记进内存了」——**证明不了「写出来了」与「读回来了」**。而全仓曾经没有任何
+        // 生产代码调用 `Load()`/`Persist()`：`MainWindow.Actions.cs` 只 `new` 一个 store 就交出去，
+        // `Record` 只写内存字典 ⇒ `recipe-memory.json` 永不创建。**一个只测类内部一致性的套件对这条
+        // 接缝完全无感**（组合根不在 Harness 编译白名单里）。
+        //
+        // 这里跑的是生产里真实的那条路径：用同一个 store 跑一次 → 新建一个 store 把它读回来
+        // ——**正是「关掉程序再打开」**。
+        var persistPath = Path.Combine(AppPaths.Root, "recipe-memory-persist-test.json");
+        if (File.Exists(persistPath)) File.Delete(persistPath);
+
+        var persistParts = Build(work, "wfRecipePersistMatrix");
+        var persistRecipes = new RecipeMemoryStore(persistPath);
+        var persistWorkflow = new SmoothMotionWorkflow(
+            persistParts.Detector, new NvidiaProfileService(persistParts.Drs, () => false),
+            persistParts.Matrix, persistRecipes);
+
+        var persistGame = new GameEntry { Name = "wfRecipePersist", RenderDir = MakeGameDir(work, "wfRecipePersistGame") };
+
+        persistWorkflow.RunAsync(
+            MakeRequest("wfRecipePersist", Path.Combine(work, "wf-recipe-persist-payload"),
+                persistParts.Provider, persistGame) with { UserConfirmedUnverified = true },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("配方记忆会被写到磁盘（§17 P1-1）", File.Exists(persistPath), persistPath);
+
+        var reloadedRecipes = new RecipeMemoryStore(persistPath);
+        reloadedRecipes.Load();
+
+        Check("配方记忆会被读回来（§17 P1-1 · 「关掉再打开」那条路径）",
+            reloadedRecipes.Count > 0, "重载后记录数 " + reloadedRecipes.Count);
+
         var recorded = recipes.All.FirstOrDefault();
         Check("配方记录不冒充 ProjectVerified",
             recorded is null || recorded.Validation != ValidationLevel.ProjectVerified,
