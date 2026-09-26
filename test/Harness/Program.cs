@@ -714,6 +714,21 @@ public static class Program
 
             Console.WriteLine("  说明             : 本步骤只生成计划，未安装、未写入任何游戏目录。");
 
+            // ---- §11 / E 项：真实 MFG payload 与通用 ModSource 的布局是否兼容 ----
+            //
+            // ModSource 期望 **canonical 扁平布局**（根目录有 dlssg_sm86.ini、代理 DLL 在根目录或
+            // altnative/），而真实 MFG payload 是**嵌套发行包**。这一条实测两者差多少 —— 靠读源码推断
+            // 只能得到「大概不兼容」，而 §3 Layer 5 要求能安全执行的真实路径必须真跑。
+            var asGenericSource = new ModSource(extractDir);
+
+            Console.WriteLine();
+            Console.WriteLine("ModSource 兼容性检查（§11 / E 项）:");
+            Console.WriteLine($"  IsValid           : {asGenericSource.IsValid}");
+            Console.WriteLine($"  校验消息          : {(asGenericSource.ValidationMessage.Length == 0 ? "(无)" : asGenericSource.ValidationMessage)}");
+            Console.WriteLine($"  可用代理条目      : {asGenericSource.AvailableProxies.Count}");
+            Console.WriteLine($"  版本              : {(asGenericSource.Version.Length == 0 ? "(空)" : asGenericSource.Version)}");
+            Console.WriteLine("  说明              : ModSource 期望扁平 canonical 布局；MFG payload 是嵌套发行包。");
+
             return files.Count > 0 ? 0 : 1;
         }
         catch (Exception ex)
