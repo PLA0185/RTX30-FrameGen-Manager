@@ -371,9 +371,25 @@ public sealed record InstallPlan(
     IReadOnlyList<string> Warnings,
     IReadOnlyList<string> Blockers,
     CompatibilityDecision Compatibility,
-    IReadOnlyList<string> RollbackRequirements)
+    IReadOnlyList<string> RollbackRequirements,
+
+    /// <summary>
+    /// Set only when the user was shown why the run stopped and chose to continue anyway.
+    ///
+    /// <para>This makes a <see cref="PlanStatus.NeedsConfirmation"/> plan executable <b>without changing what
+    /// the plan says</b>: the status stays <c>NeedsConfirmation</c> and the compatibility state stays whatever
+    /// it was, because consent is not evidence. Recording it as "Compatible" — or as verified — would turn
+    /// "the user accepted the risk" into "this was checked".</para>
+    /// </summary>
+    bool UserApprovedUnverified = false)
 {
-    public bool CanExecute => Status == PlanStatus.Ready;
+    /// <summary>
+    /// Whether execution may proceed: a cleared plan, or one the user explicitly approved despite it needing
+    /// confirmation first. Everything else stays refused.
+    /// </summary>
+    public bool CanExecute =>
+        Status == PlanStatus.Ready ||
+        (Status == PlanStatus.NeedsConfirmation && UserApprovedUnverified);
 }
 
 /// <summary>

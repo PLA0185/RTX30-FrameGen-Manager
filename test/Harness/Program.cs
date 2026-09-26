@@ -4294,6 +4294,28 @@ public static class Program
             confirmed.Plan is null || confirmed.Plan.Compatibility.State != CompatibilityState.Compatible,
             confirmed.Plan?.Compatibility.State.ToString() ?? "(无计划)");
 
+        // ---- 第二轮 P0-01：用户确认后的计划必须真正可执行 ----
+        // The dead end this covers: the run stopped for confirmation, the user said yes, the workflow ran again
+        // — and the plan was still NeedsConfirmation, so the executor refused it. Consent has to make the plan
+        // executable, and it must do so without changing what the plan claims.
+        Check("未确认时计划不可执行",
+            unconfirmed.Plan is null || !unconfirmed.Plan.CanExecute,
+            unconfirmed.Plan?.Status.ToString() ?? "(无计划)");
+
+        Check("确认后计划可执行", confirmed.Plan is not null && confirmed.Plan.CanExecute,
+            confirmed.Plan?.Status.ToString() ?? "(无计划)");
+
+        Check("确认后计划状态仍是 NeedsConfirmation（未伪装成 Ready）",
+            confirmed.Plan is not null && confirmed.Plan.Status == PlanStatus.NeedsConfirmation,
+            confirmed.Plan?.Status.ToString() ?? "(无计划)");
+
+        Check("确认后的计划带 UserApprovedUnverified 标记",
+            confirmed.Plan is not null && confirmed.Plan.UserApprovedUnverified);
+
+        Check("确认后兼容性仍为 Unknown（同意不是证据）",
+            confirmed.Plan is not null && confirmed.Plan.Compatibility.State == CompatibilityState.Unknown,
+            confirmed.Plan?.Compatibility.State.ToString() ?? "(无计划)");
+
         // ---- H: the configuration service the window now calls (整改 H) ----
         var hParts = Build(work, "wfHMatrix");
         var hService = new GameConfigurationService(hParts.Workflow);

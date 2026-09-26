@@ -392,10 +392,17 @@ public sealed class SmoothMotionWorkflow
 
         if (needsConfirmation)
         {
-            // Consent, not evidence. The compatibility state keeps saying whatever it said — recording a
-            // confirmation as "Compatible" would turn "the user accepted the risk" into "this was verified".
+            // Consent, not evidence. The approval makes the plan executable and changes nothing it claims:
+            // the status stays NeedsConfirmation, and the compatibility state keeps saying whatever it said.
+            // Recording a confirmation as "Compatible" would turn "the user accepted the risk" into "checked".
+            var before = plan.Status;
+
+            if (plan.Status == PlanStatus.NeedsConfirmation)
+                plan = plan with { UserApprovedUnverified = true };
+
             steps.Add(new WorkflowStep("用户确认继续", true,
-                $"用户已知情确认在兼容性为 {plan.Compatibility.State} 的情况下继续；该状态保持不变，不作为已验证。"));
+                $"用户已知情确认在兼容性为 {plan.Compatibility.State} 的情况下继续" +
+                $"（计划状态保持 {before}，该状态不作为已验证）。"));
         }
 
         // From here on something is actually written, so every failure path must undo what it did.
