@@ -491,9 +491,10 @@ public sealed class SmoothMotionWorkflow
 
                 profileJournal = apply.Journal;
 
-                // "Saved" is not "saved as asked". The save call says the driver accepted the request; only a
-                // read-back distinguishes the two, and a mismatch must not be reported as applied.
-                var readBack = apply.Ok && ReadBackMatches(writes);
+                // The read-back already happened inside Apply, while the session was still open. Doing it here
+                // would be reading a closed session, and calling the inevitable failure "not confirmed" would be
+                // indistinguishable from a genuine mismatch.
+                var readBack = apply.Ok && apply.ReadBackConfirmed;
                 profileWritten = readBack;
 
                 steps.Add(new WorkflowStep("配置 NVIDIA Profile", apply.Ok, apply.Message));
@@ -678,33 +679,6 @@ public sealed class SmoothMotionWorkflow
         }
 
         return new WorkflowResult(outcome, evidence, steps, plan, report, errors, filesRolledBack, profileRolledBack);
-    }
-
-    /// <summary>
-    /// Confirms the driver kept what was written, by reading it back.
-    ///
-    /// <para>A successful save call says the driver accepted the request; it does not say the stored value is
-    /// the one that was asked for. Reading it back is the only thing that separates "saved" from "saved as
-    /// something else", and a mismatch is reported as not applied.</para>
-    ///
-    /// <para><b>Returns false when the adapter cannot read.</b> Without the ability to check, the claim cannot
-    /// be made — an unverifiable "applied" is precisely the state this project treats as unverified, so the
-    /// honest answer here is "not confirmed" rather than "probably fine".</para>
-    /// </summary>
-    private bool ReadBackMatches(IReadOnlyList<ProfileSettingWrite> writes)
-    {
-        if (writes.Count == 0) return false;
-        if (!_profile.Adapter.CanRead) return false;
-
-        foreach (var write in writes)
-        {
-            var after = _profile.Adapter.Read(write.Setting.Id);
-
-            if (after.State != ProfileSettingState.ExplicitValue || after.Value != write.Value)
-                return false;
-        }
-
-        return true;
     }
 
     private static IReadOnlyList<VerificationSignal> CollectSignals(

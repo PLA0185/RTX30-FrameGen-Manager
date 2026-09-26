@@ -200,11 +200,20 @@ public interface IDrsAdapter
 }
 
 /// <summary>Result of applying a set of settings.</summary>
+/// <param name="ReadBackConfirmed">
+/// True only when every written setting was read back and matched, <b>while the session was still open</b>.
+///
+/// <para>A successful save says the driver accepted the request; it does not say the stored value is the one
+/// that was asked for. The read-back happens inside <see cref="NvidiaProfileService.Apply"/> rather than in the
+/// caller because the session is closed on the way out — a read from outside would be reading nothing at all,
+/// and reporting that as "not confirmed" would be indistinguishable from a real mismatch.</para>
+/// </param>
 public sealed record ProfileApplyResult(
     bool Ok,
     string Message,
     ProfileJournal Journal,
-    IReadOnlyList<string> Notes)
+    IReadOnlyList<string> Notes,
+    bool ReadBackConfirmed = false)
 {
     public static ProfileApplyResult Failed(string message, ProfileJournal journal, IReadOnlyList<string> notes) =>
         new(false, message, journal, notes);
@@ -363,7 +372,23 @@ public sealed class NvidiaProfileService
                 return ProfileApplyResult.Failed("保存 Profile 失败，已回滚全部写入。", journal, notes);
             }
 
-            return new ProfileApplyResult(true, $"已写入并保存 {journal.Count} 项设置。", journal, notes);
+            // ── 6. Read back, while the session is still open (see ReadBackConfirmed).
+            var readBackConfirmed = true;
+
+            foreach (var (write, _) in plan)
+            {
+                var after = _adapter.Read(write.Setting.Id);
+
+                if (after.State != ProfileSettingState.ExplicitValue || after.Value != write.Value)
+                {
+                    readBackConfirmed = false;
+                    notes.Add($"读回「{write.Setting.Name}」（0x{write.Setting.Id:X8}）与写入值不一致：" +
+                              $"期望 {write.Value}，实际 {after.State} / {after.Value}。");
+                }
+            }
+
+            return new ProfileApplyResult(true, $"已写入并保存 {journal.Count} 项设置。", journal, notes,
+                ReadBackConfirmed: readBackConfirmed);
         }
         finally
         {

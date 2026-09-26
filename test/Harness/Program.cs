@@ -4360,6 +4360,21 @@ public static class Program
         Check("工作流请求不再以字符串列表承载驱动设置",
             typeof(WorkflowRequest).GetProperty("ProfileSettings")?.PropertyType != typeof(IReadOnlyList<string>));
 
+        // ---- 第二轮 P0-03：Read-back 必须在会话仍然打开时进行 ----
+        // The defect this covers: Apply closed its session in a finally block, and only then did the workflow
+        // call Adapter.Read. Under a real adapter that reads nothing at all — and the inevitable failure would
+        // have been indistinguishable from a genuine mismatch. The read-back now happens inside Apply, before
+        // Close, and its outcome travels back on the result.
+        Check("Apply 的结果带有 ReadBackConfirmed",
+            typeof(ProfileApplyResult).GetProperty("ReadBackConfirmed") is not null);
+
+        Check("工作流不再自行读回（读回已移入 Apply 的会话内）",
+            typeof(SmoothMotionWorkflow).GetMethod("ReadBackMatches",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance) is null);
+
+        Check("Adapter 接口仍可读（读回能力是前提，不是可选）",
+            typeof(NvidiaProfile.IDrsAdapter).GetProperty("CanRead") is not null);
+
         // ---- H: the configuration service the window now calls (整改 H) ----
         var hParts = Build(work, "wfHMatrix");
         var hService = new GameConfigurationService(hParts.Workflow);
