@@ -555,7 +555,13 @@ public sealed class SmoothMotionWorkflow
                 if (!lookup.Found)
                 {
                     // No fallback to the display name: that is the guess this change removes.
-                    steps.Add(new WorkflowStep("定位 NVIDIA Profile", false, lookup.Message));
+                    //
+                    // 策略在这里是显式的 NotFound：不猜其他 Profile，也不自动创建。任务书列的四个选项里，
+                    // Create 与 NeedsConfirmation 都不是「现在还做不到」而是「现在做不诚实」—— CreateProfile
+                    // 虽然已经实现（P0-06），但它是一次真实写入，在 WriteCallsProven 仍为 false 的当下走这条路
+                    // 只会被能力门拒绝。与其把它摆成可选项，不如把当前策略讲清楚。
+                    steps.Add(new WorkflowStep("定位 NVIDIA Profile", false,
+                        $"{lookup.Message}（策略：NotFound —— 不猜测其他 Profile，也不自动创建）"));
                     errors.Add(lookup.Message);
 
                     return Finish(WorkflowOutcome.Failed, SmoothMotionEvidence.None, steps, plan, request, errors,
