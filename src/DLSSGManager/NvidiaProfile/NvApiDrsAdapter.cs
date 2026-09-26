@@ -844,6 +844,9 @@ public sealed class AbsentDrsAdapter : IDrsAdapter
     /// No driver library, so no lookup. Says so explicitly rather than returning an empty match that a caller
     /// might mistake for "the profile has no name".
     /// </summary>
+    public DrsApplicationLookup FindApplicationProfile(string executableName) =>
+        DrsApplicationLookup.NotFound(executableName ?? "", Reason);
+
     public DrsApplicationLookup FindApplication(string executableName) =>
         DrsApplicationLookup.NotFound(executableName, Reason);
 

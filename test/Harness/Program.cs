@@ -3826,6 +3826,16 @@ public static class Program
         /// </summary>
         public DrsApplicationLookup? ApplicationLookup { get; set; }
 
+        /// <summary>
+        /// The session-owning entry point. Kept as its own member rather than aliased away: the whole point of the
+        /// split is that the low-level lookup needs an open session and this one does not, and a double that
+        /// blurred them would hide exactly the defect the split exists to prevent.
+        /// </summary>
+        public DrsApplicationLookup FindApplicationProfile(string executableName) =>
+            Open(null).Ok
+                ? FindApplication(executableName)
+                : DrsApplicationLookup.NotFound(executableName ?? "", "没有已打开的 DRS 会话。");
+
         public DrsApplicationLookup FindApplication(string executableName)
         {
             // Mirrors the real adapter's guard, so a test cannot pass on input the real one would refuse.

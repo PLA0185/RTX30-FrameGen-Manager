@@ -238,6 +238,15 @@ public interface IDrsAdapter
     /// </summary>
     DrsApplicationLookup FindApplication(string executableName);
 
+    /// <summary>
+    /// The same lookup, but the implementation owns the whole session lifetime.
+    ///
+    /// <para>Callers must not have to hold a session open for this to work. That requirement is exactly what made
+    /// the UI path fail: it never opened one, so every lookup returned "没有已打开的 DRS 会话" — and no test caught
+    /// it, because the double never modelled the requirement.</para>
+    /// </summary>
+    DrsApplicationLookup FindApplicationProfile(string executableName);
+
     /// <summary>Reads one setting, distinguishing the three states.</summary>
     ProfileSettingSnapshot Read(uint settingId);
 
@@ -354,6 +363,15 @@ public sealed class NvidiaProfileService
     /// </summary>
     public DrsApplicationLookup FindApplication(string executableName) =>
         _adapter.FindApplication(executableName);
+
+    /// <summary>
+    /// Locates a profile by the executable the driver knows it by, letting the adapter own the session.
+    ///
+    /// <para>This is the entry point callers should use: it does not depend on some other part of the program
+    /// having opened a session first.</para>
+    /// </summary>
+    public DrsApplicationLookup FindApplicationProfile(string executableName) =>
+        _adapter.FindApplicationProfile(executableName);
 
     public ProfileApplyResult Apply(string? profileName, IReadOnlyList<ProfileSettingWrite> writes)
     {

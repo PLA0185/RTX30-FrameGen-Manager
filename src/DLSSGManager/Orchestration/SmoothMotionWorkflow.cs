@@ -538,8 +538,11 @@ public sealed class SmoothMotionWorkflow
                     ? System.IO.Path.GetFileName(rendererPath)
                     : "";
 
+                // FindApplicationProfile owns the whole session lifetime (Open → FindApplicationByName →
+                // GetProfileInfo → Close). The low-level FindApplication would need a session this code never
+                // opens, so the UI path failed every time with "没有已打开的 DRS 会话".
                 var lookup = rendererExe.Length > 0
-                    ? _profile.FindApplication(rendererExe)
+                    ? _profile.FindApplicationProfile(rendererExe)
                     : DrsApplicationLookup.NotFound("", "计划未记录渲染器可执行文件，无法定位驱动 Profile。");
 
                 if (!lookup.Found)
