@@ -314,7 +314,16 @@ public partial class MainWindow
         {
             // Adoption trust-verifies every candidate DLL in the game folder, so it belongs off the
             // UI thread like deploy.
-            var result = await Task.Run(() => DeploymentService.Adopt(game));
+            // 接管必须记录**是谁接管的**：`ProviderForRestore` 会因为记录里没有 id 而**直接拒绝**
+            // （那是刻意的诚实选择），而 `Adopt.Confirm` 的文案却告诉用户「之后恢复只能按记录里的 SHA256
+            // 删除这些文件」—— **一个承诺了却必然失败的按钮。**
+            //
+            // 用 `SelectedProvider()`：它返回用户当前选中的 provider，没有选择时回落到应用级默认，
+            // 因此记下的 id 必然是注册表里存在的那个（`ProviderForRestore` 要求这一点）。
+            // 在 UI 线程上先取出 id 再传进去，避免跨线程读 UI 状态。
+            var adoptProviderId = SelectedProvider().Id;
+
+            var result = await Task.Run(() => DeploymentService.Adopt(game, adoptProviderId));
             _log.Details(result.Lines);
             _log.Result(result.Ok, result.Message);
             await FinishGameActionAsync(game);

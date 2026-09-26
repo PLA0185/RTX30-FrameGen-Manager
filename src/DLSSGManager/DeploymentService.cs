@@ -989,7 +989,7 @@ public static class DeploymentService
     }
 
     /// <summary>Takes over an installation that was copied in by hand, so the manager can restore it later.</summary>
-    public static OpResult Adopt(GameEntry game)
+    public static OpResult Adopt(GameEntry game, string providerId)
     {
         var r = new OpResult();
         if (!Directory.Exists(game.RenderDir))
@@ -1012,6 +1012,14 @@ public static class DeploymentService
         game.Deployment = new DeploymentInfo
         {
             ProxyName = proxy,
+
+            // **记录是谁接管的。**
+            //
+            // 没有它，恢复时的 `ProviderForRestore` 会因为 id 为空而**直接拒绝**（那是刻意的诚实选择：
+            // 不猜 provider，因为猜错会删掉错误的文件）—— 而 `Adopt.Confirm` 的文案却告诉用户
+            // 「之后恢复只能按记录里的 SHA256 删除这些文件」。
+            // **一个承诺了却必然失败的按钮，比没有按钮更糟：用户会以为接管之后还能撤销。**
+            ProviderId = providerId,
             ModVersion = (iniExists ? ModSource.ReadVersion(iniPath) : null) ?? Loc.T("ModSource.UnknownVersion"),
             DeployedAt = File.GetLastWriteTime(proxyPath).ToString("yyyy-MM-dd HH:mm:ss") + Loc.T("Adopt.AdoptedSuffix"),
             ProxySha256 = Sha256(proxyPath),

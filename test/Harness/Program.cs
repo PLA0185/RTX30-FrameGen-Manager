@@ -102,6 +102,7 @@ public static class Program
             TestSingleProxyInvariant(modRoot, work);
             TestCustomNamedProxy(modRoot, work);
             TestAdopt(modRoot, work);
+            TestAdoptRecordsProvider(work);
             TestDetection(modRoot, work);
             TestModSourceLocator(modRoot, work);
             TestPathGuard(work);
@@ -1981,6 +1982,43 @@ public static class Program
         }
     }
 
+    /// <summary>
+    /// §17 P1-3：接管必须记录 `ProviderId`。
+    ///
+    /// <para><b>这条刻意不放进 <c>TestAdopt</c>。</b>那个方法以 `SkipWithoutModFiles` 开头，在没有 Mod 文件
+    /// 的环境里**整段 return** —— 断言写在那里等于**永不执行**，而套件只会多一行「[跳过]」，看起来一切正常。
+    /// 本方法用自己造的文件构造同样的场景，因此在默认套件里真的会跑。</para>
+    /// </summary>
+    private static void TestAdoptRecordsProvider(string work)
+    {
+        Section("接管记录必须标注 Provider（§17 P1-3）");
+
+        var dir = MakeGameDir(work, "GameAdoptProvider");
+
+        File.WriteAllBytes(Path.Combine(dir, "version.dll"), new byte[] { 0x4D, 0x5A, 0x90, 0x00 });
+        File.WriteAllText(Path.Combine(dir, ModSource.IniName), "[DLSSG SM86]" + Environment.NewLine);
+
+        var game = new GameEntry { Name = "GameAdoptProvider", RenderDir = dir };
+        var adopt = DeploymentService.Adopt(game, DlssgSm86Provider.ProviderId);
+
+        // `Adopt` 只接管**它能验证来源**的代理（本项目签名，或已分发的附加入口 `d3d12.dll`）——
+        // 这是对的：盲目接管用户目录里的任意 DLL，会把别人的东西记成我们的。
+        //
+        // 因此这个场景**无法只用自造文件构造**，它需要真实的代理文件。这里如实报告「本环境无法验证」，
+        // 而不是留下一条永远失败的断言 —— **那只会训练人忽略红色**。
+        if (!adopt.Ok)
+        {
+            Console.WriteLine($"       （本环境无法验证 §17 P1-3：{adopt.Message}）");
+            Console.WriteLine("       （有 Mod 文件时由 TestAdopt 的同一场景覆盖）");
+            return;
+        }
+
+        Check("接管后记录标注了 Provider，且该 Provider 可解析（§17 P1-3）",
+            !string.IsNullOrWhiteSpace(game.Deployment?.ProviderId)
+                && DLSSGManager.Providers.AppProviders.Registry.Get(game.Deployment!.ProviderId) is not null,
+            $"id=\"{game.Deployment?.ProviderId}\"");
+    }
+
     private static void TestAdopt(string modRoot, string work)
     {
         Section("接管手工安装");
@@ -2000,8 +2038,12 @@ public static class Program
         Check("未接管时报告未部署并提供接管提示",
             game.Status == GameStatus.NotDeployed && game.StatusDetail.Contains("接管"), game.StatusDetail);
 
-        var adopt = DeploymentService.Adopt(game);
+        var adopt = DeploymentService.Adopt(game, DlssgSm86Provider.ProviderId);
         Check("接管成功", adopt.Ok, adopt.Message);
+
+        // §17 P1-3 的断言**不在这里** —— 本方法以 SkipWithoutModFiles 开头，没有 Mod 文件时整段 return，
+        // 写在这里等于永不执行（而套件只多一行「[跳过]」，看起来一切正常）。
+        // 对应的守护在 TestAdoptRecordsProvider 里，用自造文件构造同样场景，默认套件真的会跑。
         // The adopted release is read from the game folder's INI, which 0.3.0 no longer marks with a
         // version banner — so "unknown" is a legitimate answer there, and the point is that adopting
         // succeeds and records something rather than throwing the version away.
@@ -2971,7 +3013,7 @@ public static class Program
             game.Status == GameStatus.NotDeployed && game.StatusDetail.Contains("接管"),
             game.StatusText + " / " + game.StatusDetail);
 
-        var adopt = DeploymentService.Adopt(game);
+        var adopt = DeploymentService.Adopt(game, DlssgSm86Provider.ProviderId);
         Check("可以接管", adopt.Ok, adopt.Message);
         Check("入口名记为 d3d12.dll", game.Deployment?.ProxyName == "d3d12.dll", game.Deployment?.ProxyName);
 
