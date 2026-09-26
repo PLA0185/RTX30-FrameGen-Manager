@@ -531,7 +531,15 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// <summary>The handle NVAPI uses for the global profile: <c>((NvDRSProfileHandle) -1)</c>.</summary>
     private static readonly IntPtr GlobalProfile = new(-1);
 
-    public ProfileSettingSnapshot Read(uint settingId)
+    public ProfileSettingSnapshot Read(uint settingId) => ReadFrom(_profile, settingId);
+
+    /// <summary>
+    /// Reads one setting from a specific profile handle rather than the one this adapter is opened on.
+    ///
+    /// <para>Exists for the temporary-profile write smoke: proving that a write works must not require writing to a
+    /// profile that belongs to the user, so the smoke builds its own profile and drives it through this.</para>
+    /// </summary>
+    internal ProfileSettingSnapshot ReadFrom(IntPtr profile, uint settingId)
     {
         if (!CanRead) return ProfileSettingSnapshot.Unreadable(settingId, UnprovenAbi);
 
@@ -546,7 +554,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
         try
         {
-            var status = _getSetting(_session, _profile, settingId, setting);
+            var status = _getSetting(_session, profile, settingId, setting);
 
             if (status == NvApiSettingNotFound)
             {
