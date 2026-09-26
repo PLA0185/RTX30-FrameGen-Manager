@@ -4553,6 +4553,28 @@ public static class Program
         Check("真实适配器声明能力时必须同时给出原因",
             real.CanWrite || real.UnavailableReason.Length > 0, real.UnavailableReason);
 
+        // ---- §9：两种 Provider 的能力必须分开声明 ----
+        //
+        // 这一组守的是一个具体的误判：把「DRS 写门关闭」当成「这个 Provider 不能部署」。
+        // DRS 写入需要管理员权限（实测：非提权 -137 / 提权成功），而 dlssg-sm86 根本不碰 DRS ——
+        // 把两者绑在一起，会让一个完全可用的能力在非提权环境下被整体禁用。
+        var dlssgOnly = new DlssgSm86Provider();
+        var mfgSmooth = new MfgSmoothProvider();
+
+        Check("dlssg-sm86 提供帧生成但不要求 Smooth Motion DRS",
+            dlssgOnly.ProvidesDlssFrameGeneration && !dlssgOnly.RequiresSmoothMotionDrs
+                && !dlssgOnly.SupportsSmoothMotionDrs,
+            $"frame={dlssgOnly.ProvidesDlssFrameGeneration} requires={dlssgOnly.RequiresSmoothMotionDrs} supports={dlssgOnly.SupportsSmoothMotionDrs}");
+
+        Check("mfg-smooth 提供帧生成且要求 Smooth Motion DRS",
+            mfgSmooth.ProvidesDlssFrameGeneration && mfgSmooth.RequiresSmoothMotionDrs
+                && mfgSmooth.SupportsSmoothMotionDrs,
+            $"frame={mfgSmooth.ProvidesDlssFrameGeneration} requires={mfgSmooth.RequiresSmoothMotionDrs} supports={mfgSmooth.SupportsSmoothMotionDrs}");
+
+        // 反向的一半：如果两个 Provider 声明一样，上面两条就只是在验证「它们碰巧相同」。
+        Check("两种 Provider 对 DRS 的依赖确实不同（否则上面的区分没有意义）",
+            dlssgOnly.RequiresSmoothMotionDrs != mfgSmooth.RequiresSmoothMotionDrs);
+
         Check("未证明的 ABI 不声称任何写入能力",
             real.CanWrite == (real.CanRead && real.CanDelete && real.CanSave));
 

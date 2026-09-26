@@ -65,7 +65,15 @@ public partial class MainWindow
                 // Asked for explicitly, because without it a run would install files and leave the driver
                 // untouched. The workflow turns these into typed writes itself — it never invents a value, and
                 // a setting whose values are not established is dropped rather than guessed.
-                ProfileSettings: new[] { SmoothMotionSettings.Feature, SmoothMotionSettings.Apis });
+                // §9/§10：Profile 设置由 Provider 决定，UI 不再无条件传。
+                //
+                // dlssg-sm86 的 RequiresSmoothMotionDrs = false —— 它只把代理 DLL 与 INI 放进游戏目录，
+                // 驱动那边没有设置必须改。无条件传 Feature + Apis 会让它被强制走 Smooth Motion 路径，
+                // 于是在非提权环境下整体 fail-closed —— **而它本来完全可用**。
+                // 这正是「DRS 写门关闭 ≠ dlssg-sm86 不能部署」在代码里的落点。
+                ProfileSettings: provider.RequiresSmoothMotionDrs
+                    ? new[] { SmoothMotionSettings.Feature, SmoothMotionSettings.Apis }
+                    : Array.Empty<NvidiaProfile.ProfileSetting>());
 
             return await Configuration
                 .ConfigureAsync(request, new Progress<string>(s => BatchStatusText.Text = s))
@@ -360,7 +368,11 @@ public partial class MainWindow
                         GpuName: _data.GpuName, DriverVersion: _data.GpuDriver, Store: game.Store,
                         HasKernelAntiCheat: game.HasKernelAntiCheat,
                         UserConfirmedUnverified: true,
-                        ProfileSettings: new[] { SmoothMotionSettings.Feature, SmoothMotionSettings.Apis }))
+                        // §9/§10：与单游戏路径一致 —— 预览也必须按 Provider 决定要写哪些设置，
+                        // 否则预览里显示的 Profile 需求与真正执行时的不是同一件事。
+                        ProfileSettings: provider.RequiresSmoothMotionDrs
+                            ? new[] { SmoothMotionSettings.Feature, SmoothMotionSettings.Apis }
+                            : Array.Empty<NvidiaProfile.ProfileSetting>()))
                     .ConfigureAwait(true)));
             }
             catch (Exception ex)

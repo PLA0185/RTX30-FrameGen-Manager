@@ -176,6 +176,21 @@ public sealed class DlssgSm86Provider : IPatchProvider
     /// </summary>
     public bool SupportsProxyChoice => true;
 
+    /// <summary>dlssg-sm86 提供的是 DLSS 帧生成（代理 DLL 路线）。</summary>
+    public bool ProvidesDlssFrameGeneration => true;
+
+    /// <summary>
+    /// **不需要写 NVIDIA DRS Profile —— 这是它与 mfg-smooth 的根本区别。**
+    ///
+    /// <para>它只做一件事：把代理 DLL（如 <c>version.dll</c>）与 <c>dlssg_sm86.ini</c> 放进游戏目录。
+    /// 驱动那边没有任何设置必须改。因此 <b>「DRS 写门关闭」不等于「dlssg-sm86 不能部署」</b> ——
+    /// 非提权环境下它照常可用，只有 mfg-smooth 会 fail-closed。</para>
+    /// </summary>
+    public bool RequiresSmoothMotionDrs => false;
+
+    /// <summary>它也不写这些设置 —— 依赖与能力在这里都是「无」。</summary>
+    public bool SupportsSmoothMotionDrs => false;
+
     /// <summary>Installs through the shared transactional deployment path.</summary>
     public OpResult Install(GameEntry game, ModSource source, bool allowProtected = false) =>
         DeploymentService.Deploy(game, source, allowProtected);

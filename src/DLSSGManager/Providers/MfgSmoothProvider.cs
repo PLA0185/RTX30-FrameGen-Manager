@@ -297,6 +297,21 @@ public sealed class MfgSmoothProvider : IPatchProvider, IReleaseVersionResolver
     /// </summary>
     public bool SupportsProxyChoice => true;
 
+    /// <summary>MFG Smooth Motion 提供的是 DLSS 帧生成（代理 DLL 路线）。</summary>
+    public bool ProvidesDlssFrameGeneration => true;
+
+    /// <summary>
+    /// **不写 Smooth Motion 的 DRS 设置，这个 provider 的配置就不算完成。**
+    ///
+    /// <para>这是它与 <c>dlssg-sm86</c> 的根本区别：后者只把文件放进游戏目录，前者还必须让驱动为这个
+    /// 游戏启用 Smooth Motion。因此 DRS 写门关闭时，mfg-smooth 必须 fail-closed —— 而 dlssg-sm86
+    /// 不受影响。</para>
+    /// </summary>
+    public bool RequiresSmoothMotionDrs => true;
+
+    /// <summary>它确实会写这些设置（与「要求写」是两件事：这个是能力，上面那个是依赖）。</summary>
+    public bool SupportsSmoothMotionDrs => true;
+
     /// <summary>Installs through the shared transactional deployment path — the only write path.</summary>
     public OpResult Install(GameEntry game, ModSource source, bool allowProtected = false) =>
         DeploymentService.Deploy(game, source, allowProtected);

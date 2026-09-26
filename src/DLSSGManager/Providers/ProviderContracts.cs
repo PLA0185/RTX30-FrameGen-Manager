@@ -220,6 +220,38 @@ public interface IPatchProvider
     /// own expectations is then doing so knowingly rather than silently.</para>
     /// </summary>
     PayloadManifest? ManifestOf(string payloadDirectory) => null;
+
+    /// <summary>
+    /// 这个 provider 是否**要求**写 NVIDIA DRS Profile 才算配置完成。
+    ///
+    /// <para><b>为什么必须与「能不能部署文件」分开。</b>DRS 写入需要管理员权限（实测：非提权返回
+    /// <c>NVAPI_INVALID_USER_PRIVILEGE</c>，提权后成功）。如果所有 provider 共用一个「写门」，那么
+    /// <b>「DRS 写门关闭」就会被误读成「这个 provider 不能部署」</b> —— 而 <c>dlssg-sm86</c> 只是把代理
+    /// DLL 与 INI 放进游戏目录，**根本不需要碰 DRS**。把两者绑在一起，会让一个完全可用的能力在非提权
+    /// 环境下被整体禁用。</para>
+    ///
+    /// <para>默认 <b>true</b> 是保守的那一侧：不声明就不许悄悄跳过 Profile 配置。要拿到「不需要 DRS」
+    /// 这个结论，provider 必须显式说出来。</para>
+    /// </summary>
+    bool RequiresSmoothMotionDrs => true;
+
+    /// <summary>
+    /// 这个 provider 是否**会**在驱动可用时写 Smooth Motion 相关的 DRS 设置。
+    ///
+    /// <para>与 <see cref="RequiresSmoothMotionDrs"/> 的分工：一个是「不写就不算配置完成」，一个是
+    /// 「有能力写、且写了才生效」。两者都默认为保守值，避免 provider 靠沉默获得额外权限。</para>
+    /// </summary>
+    bool SupportsSmoothMotionDrs => false;
+
+    /// <summary>
+    /// 这个 provider 是否提供 DLSS 帧生成（代理 DLL 路线）。
+    ///
+    /// <para>它描述的是<b>能力</b>而不是<b>依赖</b>：<c>dlssg-sm86</c> 提供帧生成但不需要 DRS；
+    /// <c>mfg-smooth</c> 提供帧生成<b>且</b>需要 Smooth Motion DRS。把这两个事实拆成两个字段，
+    /// 规划层才能对「哪些设置必须写」与「写不了时是否还能继续」分别作答 —— 而不是用一句
+    /// 「这个 provider 需要 Profile」把两件事糊在一起。</para>
+    /// </summary>
+    bool ProvidesDlssFrameGeneration => false;
 }
 
 /// <summary>What a payload file is, which decides how it may be verified.</summary>
