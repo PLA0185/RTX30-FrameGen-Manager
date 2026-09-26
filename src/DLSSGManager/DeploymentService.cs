@@ -26,6 +26,24 @@ public sealed class OpResult
     /// </summary>
     public bool FilesWritten { get; set; }
 
+    /// <summary>
+    /// 这次操作**自己已经把写下去的东西撤销了**。
+    ///
+    /// <para><b>为什么必须与 <see cref="FilesWritten"/> 分开。</b>`Deploy` 的 `catch` 里已经调用
+    /// <c>Rollback(...)</c> 把本步骤写下的代理与 INI 恢复原状 —— 但它**曾经不收回 `FilesWritten`**，
+    /// 于是调用方看到「写过盘、且失败」就再回滚一次，**而回滚用的是上一次的部署记录**
+    /// （`game.Deployment` 只在成功路径被替换）—— 删掉的是**用户上一次装好的、正在用的安装**。</para>
+    ///
+    /// <para><b>两个字段各回答一个问题</b>：<see cref="FilesWritten"/> 回答「要不要调用方回滚」，
+    /// <see cref="RollbackHandled"/> 回答「我们自己已经收过尾了」。只看前者会把「写了又自己恢复」
+    /// 误当成「需要你再来一次」。</para>
+    ///
+    /// <para><b>触发面不小</b>：进入事务后、第一个游戏目录写入之前只写 `%RestoreRoot%` 下的快照 ——
+    /// 磁盘满、杀软锁、源 DLL 被独占、目标 DLL 被别的进程加载，都会走这条「catch 自回滚」的路径。
+    /// 而「改设置后重新部署」正好落在它上面。</para>
+    /// </summary>
+    public bool RollbackHandled { get; set; }
+
     public void Note(string text)
     {
         Lines.Add(text);
@@ -677,6 +695,17 @@ public static class DeploymentService
             var rollbackNotes = new List<string>();
             Rollback(proxyDest, rollbackProxy, proxyExisted, rollbackNotes);
             Rollback(iniDest, rollbackIni, iniExisted, rollbackNotes);
+
+            // **回收「需要调用方回滚」这个结论。**
+            //
+            // 上面两次 Rollback 已经把本步骤写下的东西恢复原状了，所以调用方**不再需要**回滚 ——
+            // 而它若仍然照做，用的会是**上一次**的部署记录（`game.Deployment` 只在成功路径被替换），
+            // 于是删掉的是用户上一次装好的、正在用的安装，报告还写「已回滚」。
+            //
+            // 曾经这里只留 `FilesWritten = true`（在 try 第一行设置），于是「写了又自己恢复」被当成
+            // 「写了、需要你再来一次」。**两个字段合起来才够：一个说要不要你回滚，一个说我们已经收过尾。**
+            r.FilesWritten = false;
+            r.RollbackHandled = true;
 
             r.Fail(Loc.T("Deploy.Failed", ex.Message));
             foreach (var note in rollbackNotes) r.Note(note);

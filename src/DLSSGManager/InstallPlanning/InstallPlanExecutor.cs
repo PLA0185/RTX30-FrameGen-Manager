@@ -201,6 +201,11 @@ public static class InstallPlanExecutor
             // 「宁可多回滚一次」这条推理在这里恰恰是错的：多回滚一次删掉的是**用户能用的东西**，不是
             // 我们自己的半成品。现在由 `Deploy` 如实回答（`OpResult.FilesWritten`：只有进入写入事务之后
             // 才为 true），假设不再代替回答。
+            // `Deploy` 在 catch 里已经自己回滚过时会**收回** `FilesWritten`（并置 `RollbackHandled`），
+            // 所以这里透传的是**最终结论**：写过、而且还没被撤销 —— 那才需要调用方回滚。
+            //
+            // 曾经 `Deploy` 只置 `FilesWritten` 而从不收回，于是「写了又自己恢复」被透传成「需要回滚」，
+            // 而回滚用的是**上一次**的部署记录 —— 删掉的是用户上一次装好的、正在用的安装。
             return new PlanExecutionResult(false, install.Message, steps, plan.ProxyChoice)
             {
                 FilesWereWritten = install.FilesWritten,
