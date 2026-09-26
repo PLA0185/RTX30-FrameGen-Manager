@@ -8,6 +8,7 @@ using DLSSGManager.GameDetection;
 using DLSSGManager.Compatibility;
 using DLSSGManager.InstallPlanning;
 using DLSSGManager.NvidiaProfile;
+using DLSSGManager.Orchestration;
 
 namespace DLSSGManager;
 
@@ -99,6 +100,7 @@ public static class Program
             TestGameDetectionAndPlanning(work);
             TestNvidiaProfileService(work);
             TestSmoothProvider(work);
+            TestSmoothMotionWorkflow(work);
         }
         catch (Exception ex)
         {
@@ -3659,5 +3661,208 @@ public static class Program
             !ModFetcher.IsAllowedAddress(new Uri("https://evil.example.com/x"), proxyRouted: true));
         Check("非 HTTPS 被拒绝",
             !ModFetcher.IsAllowedAddress(new Uri("http://github.com/x"), proxyRouted: true));
+    }
+
+    /// <summary>Detector double, so the workflow can be exercised without a real game folder.</summary>
+    private sealed class FakeWorkflowDetector : IWorkflowDetector
+    {
+        public RendererDetection Renderer { get; set; } =
+            new("C:\\fake\\Game.exe", EvidenceLevel.VerifiedDatabase, "fake verified", Array.Empty<ExecutableEvidence>());
+
+        public GraphicsApiDetection Api { get; set; } =
+            new(GraphicsApi.Dx12, EvidenceLevel.RuntimeDetection, "fake dx12", Array.Empty<GraphicsApiEvidence>());
+
+        public ProxyConflictReport Conflicts { get; set; } =
+            new(Array.Empty<ProxySlot>(), ModSource.KnownProxyNames.ToList(), Array.Empty<ProxySlot>());
+
+        public RendererDetection DetectRenderer(GameEntry game, string? userChoice) => Renderer;
+
+        public GraphicsApiDetection DetectApi(GameEntry game) => Api;
+
+        public ProxyConflictReport ScanProxyConflicts(GameEntry game) => Conflicts;
+    }
+
+    /// <summary>
+    /// Stage 8: the orchestration service.
+    ///
+    /// The central assertion of this section is negative: a successful file copy must not be reported as
+    /// a verified installation. The run also has to stop before writing anything when the plan is not
+    /// cleared, and undo what it did when a later stage fails.
+    /// </summary>
+    private static void TestSmoothMotionWorkflow(string work)
+    {
+        Section("自动 Smooth 编排（Stage 8）");
+
+        // ---- evidence ladder is derived, never assumed ----
+        Check("单条强信号不足以判为 Verified",
+            VerificationReport.FromSignals(new[] { new VerificationSignal("s", true, "", Strong: true) })
+                .Level != SmoothMotionEvidence.Verified);
+        Check("两条弱信号也不足以判为 Verified",
+            VerificationReport.FromSignals(new[]
+            {
+                new VerificationSignal(SignalNames.FilesInstalled, true, "", Strong: false),
+                new VerificationSignal(SignalNames.ProxyLoaded, true, "", Strong: false),
+            }).Level != SmoothMotionEvidence.Verified);
+        Check("无信号时为 None",
+            VerificationReport.FromSignals(Array.Empty<VerificationSignal>()).Level == SmoothMotionEvidence.None);
+        Check("弱证据最远只到 Installed",
+            VerificationReport.FromSignals(new[] { new VerificationSignal(SignalNames.FilesInstalled, true, "", false) })
+                .Level == SmoothMotionEvidence.Installed);
+        Check("两条信号且含强证据才判 Verified",
+            VerificationReport.FromSignals(new[]
+            {
+                new VerificationSignal(SignalNames.FilesInstalled, true, "", false),
+                new VerificationSignal(SignalNames.DebugBars, true, "", true),
+            }).Level == SmoothMotionEvidence.Verified);
+
+        // ---- shared harness for the runs below ----
+        static (SmoothMotionWorkflow Workflow, FakeWorkflowDetector Detector, FakeDrsAdapter Drs, CompatibilityMatrixStore Matrix, MfgSmoothProvider Provider, FakeAssetFetcher Fetcher) Build(string work, string name)
+        {
+            var detector = new FakeWorkflowDetector();
+            var drs = new FakeDrsAdapter();
+            var matrix = new CompatibilityMatrixStore(Path.Combine(work, name + "-matrix.json"));
+
+            matrix.Add(new CompatibilityRecord(
+                Gpu: "RTX 3070 Ti", Driver: "617.14", GraphicsApi: GraphicsApi.Dx12,
+                Game: name, Store: StoreKind.Steam, RendererExe: "Game.exe",
+                Provider: MfgSmoothProvider.ProviderId, ProviderVersion: "2.9.0",
+                InstallMode: InstallMode.DirectProxy, ProxyAsi: ModSource.KnownProxyNames[0],
+                LaunchMode: "normal", Validation: ValidationState.ReportedWorking));
+
+            var fetcher = new FakeAssetFetcher();
+            var provider = new MfgSmoothProvider(
+                new FakeReleaseClient(OkReleases(new ReleaseEntry(MfgSmoothProvider.Repository, 1, "smfix", false, false, null, null,
+                    new[] { new ReleaseAssetInfo(1, "SmoothMotion-2.9.0-R1.zip", 1, null) }))),
+                fetcher);
+
+            return (new SmoothMotionWorkflow(detector, new NvidiaProfileService(drs, () => false), matrix),
+                    detector, drs, matrix, provider, fetcher);
+        }
+
+        static WorkflowRequest MakeRequest(string name, string payloadDir, MfgSmoothProvider provider, GameEntry game) =>
+            new(game, provider, "2.9.0", VersionPolicy.None, ReleaseChannel.Stable, payloadDir,
+                GpuName: "RTX 3070 Ti", DriverVersion: "617.14", Store: StoreKind.Steam,
+                LaunchMode: "normal", InstallMode: InstallMode.DirectProxy);
+
+        // ---- 1. blocked: unknown API writes nothing ----
+        var blockedParts = Build(work, "wfBlocked");
+        var blockedDir = Path.Combine(work, "wf-blocked-payload");
+        var blockedGame = new GameEntry { Name = "wfBlocked", RenderDir = MakeGameDir(work, "wfBlockedGame") };
+        blockedParts.Detector.Api = GraphicsApiDetection.Unknown("no evidence");
+
+        var blocked = blockedParts.Workflow.RunAsync(
+            MakeRequest("wfBlocked", blockedDir, blockedParts.Provider, blockedGame), null, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Check("Unknown API 时编排被 Blocked", blocked.Outcome == WorkflowOutcome.Blocked, blocked.Outcome.ToString());
+        Check("Blocked 时不下载 payload", blockedParts.Fetcher.Calls == 0);
+        Check("Blocked 时不写文件", !File.Exists(Path.Combine(blockedGame.RenderDir, "version.dll")));
+        Check("Blocked 原因被保留", blocked.Errors.Any(e => e.Contains("UnknownApi")));
+
+        // ---- 2. needs confirmation: static-only renderer ----
+        var confirmParts = Build(work, "wfConfirm");
+        var confirmDir = Path.Combine(work, "wf-confirm-payload");
+        var confirmGame = new GameEntry { Name = "wfConfirm", RenderDir = MakeGameDir(work, "wfConfirmGame") };
+        confirmParts.Detector.Renderer = new RendererDetection("C:\\fake\\Game.exe", EvidenceLevel.StaticHeuristic,
+            "static only", Array.Empty<ExecutableEvidence>());
+
+        var confirm = confirmParts.Workflow.RunAsync(
+            MakeRequest("wfConfirm", confirmDir, confirmParts.Provider, confirmGame), null, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Check("仅静态证据时需要确认", confirm.Outcome == WorkflowOutcome.NeedsConfirmation, confirm.Outcome.ToString());
+        Check("需确认时不写文件", !File.Exists(Path.Combine(confirmGame.RenderDir, "version.dll")));
+
+        // ---- 3. happy path: files installed, but only Installed unless proven ----
+        var okParts = Build(work, "wfOk");
+        var okDir = Path.Combine(work, "wf-ok-payload");
+        var okGame = new GameEntry { Name = "wfOk", RenderDir = MakeGameDir(work, "wfOkGame") };
+
+        var ok = okParts.Workflow.RunAsync(
+            MakeRequest("wfOk", okDir, okParts.Provider, okGame), null, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Check("计划就绪时编排成功", ok.Outcome == WorkflowOutcome.Succeeded, ok.Outcome + " / " + string.Join("; ", ok.Errors));
+        Check("文件确实被部署", File.Exists(Path.Combine(okGame.RenderDir, "version.dll")));
+        Check("文件部署成功只到 Installed", ok.Evidence == SmoothMotionEvidence.Installed, ok.Evidence.ToString());
+        Check("文件复制成功不等于 Verified", ok.Evidence != SmoothMotionEvidence.Verified);
+        Check("未验证时报告说明原因", ok.Verification.Reason.Length > 0);
+        Check("步骤记录完整", ok.Steps.Count >= 6, "实际: " + ok.Steps.Count);
+
+        // ---- 4. verified requires corroboration ----
+        var verifiedParts = Build(work, "wfVerified");
+        var verifiedDir = Path.Combine(work, "wf-verified-payload");
+        var verifiedGame = new GameEntry { Name = "wfVerified", RenderDir = MakeGameDir(work, "wfVerifiedGame") };
+
+        var verified = verifiedParts.Workflow.RunAsync(
+            MakeRequest("wfVerified", verifiedDir, verifiedParts.Provider, verifiedGame)
+                with { ObservedDebugBars = true, ProxyLoadedInGame = true },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("多信号交叉后判为 Verified", verified.Evidence == SmoothMotionEvidence.Verified, verified.Evidence.ToString());
+
+        // ---- 5. deployment failure must not reach the driver ----
+        var failParts = Build(work, "wfFail");
+        var failDir = Path.Combine(work, "wf-fail-payload");
+        var failGame = new GameEntry { Name = "wfFail", RenderDir = MakeGameDir(work, "wfFailGame") };
+        failParts.Fetcher.Fail = true;
+
+        var failed = failParts.Workflow.RunAsync(
+            MakeRequest("wfFail", failDir, failParts.Provider, failGame), null, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Check("payload 获取失败时编排失败", failed.Outcome == WorkflowOutcome.Failed, failed.Outcome.ToString());
+        Check("失败时不配置 Profile", failParts.Drs.OpenCount == 0);
+        Check("失败原因被保留", failed.Errors.Count > 0);
+        Check("失败时未留下文件", !File.Exists(Path.Combine(failGame.RenderDir, "version.dll")));
+
+        // ---- 6. driver failure rolls the files back ----
+        var rbParts = Build(work, "wfRollback");
+        var rbDir = Path.Combine(work, "wf-rollback-payload");
+        var rbGame = new GameEntry { Name = "wfRollback", RenderDir = MakeGameDir(work, "wfRollbackGame") };
+
+        var settings = new[] { SmoothMotionSettings.All[0], SmoothMotionSettings.All[1] };
+        rbParts.Drs.FailWriteId = SmoothMotionSettings.EnabledApis;
+
+        var rolledBack = rbParts.Workflow.RunAsync(
+            MakeRequest("wfRollback", rbDir, rbParts.Provider, rbGame) with { ProfileSettings = settings },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("Profile 写入失败时编排失败", rolledBack.Outcome == WorkflowOutcome.Failed, rolledBack.Outcome.ToString());
+        Check("Profile 失败后回滚文件部署", rolledBack.FilesRolledBack, string.Join("; ", rolledBack.Steps.Select(s => s.Message)));
+        Check("回滚后代理已移除", !File.Exists(Path.Combine(rbGame.RenderDir, "version.dll")));
+        Check("回滚被记录为步骤", rolledBack.Steps.Any(s => s.Stage.Contains("回滚")));
+
+        // ---- 7. profile journal wiring ----
+        var jParts = Build(work, "wfJournal");
+        var jDir = Path.Combine(work, "wf-journal-payload");
+        var jGame = new GameEntry { Name = "wfJournal", RenderDir = MakeGameDir(work, "wfJournalGame") };
+
+        var withProfile = jParts.Workflow.RunAsync(
+            MakeRequest("wfJournal", jDir, jParts.Provider, jGame) with { ProfileSettings = new[] { SmoothMotionSettings.All[0] } },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("Profile 写入成功时编排成功", withProfile.Outcome == WorkflowOutcome.Succeeded, string.Join("; ", withProfile.Errors));
+        Check("Profile 成功后状态至少到 Requested",
+            withProfile.Evidence >= SmoothMotionEvidence.Requested, withProfile.Evidence.ToString());
+        Check("Profile 写入不等于 Verified",
+            withProfile.Evidence != SmoothMotionEvidence.Verified, withProfile.Evidence.ToString());
+
+        // ---- 8. cancellation propagates rather than being swallowed ----
+        var cancelParts = Build(work, "wfCancel");
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var cancelled = false;
+        try
+        {
+            cancelParts.Workflow.RunAsync(
+                MakeRequest("wfCancel", Path.Combine(work, "wf-cancel-payload"), cancelParts.Provider,
+                    new GameEntry { Name = "wfCancel", RenderDir = MakeGameDir(work, "wfCancelGame") }),
+                null, cts.Token).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException) { cancelled = true; }
+
+        Check("取消以取消结束而非静默成功", cancelled);
     }
 }
