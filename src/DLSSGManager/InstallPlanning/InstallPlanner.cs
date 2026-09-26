@@ -518,8 +518,16 @@ public static class InstallPlanner
         {
             var leaf = Leaf(file);
 
-            if (ModSource.IsKnownProxyName(leaf))
-                Add(leaf, DeploymentFileSource.Payload, file, "proxy");
+            // 判据必须是**可部署名**（ProxyCandidates），不是**扫描名**（IsKnownProxyName 还含 winhttp.dll ——
+            // 那是 0.3.0 起就不再部署、只在旧安装里可能残留的名字）。
+            //
+            // 两处判据不一致的后果是具体的：DeploymentService.PickFreeProxy 从 source.AvailableProxies 里找
+            // 计划选定的名字，而 AvailableProxies 基于 ProxyCandidates。若计划用 KnownProxyNames 判据收进一个
+            // winhttp.dll，Deploy 找不到它就会返回 null 并拒绝部署 —— **计划说会写、部署却拒绝**，
+            // 正是「Plan 与实际不一致」的一种（§15/§16）。
+            if (!ModSource.ProxyCandidates.Contains(leaf, StringComparer.OrdinalIgnoreCase)) continue;
+
+            Add(leaf, DeploymentFileSource.Payload, file, "proxy");
         }
 
         // INI 是**生成**的：它由管理器写出来，payload 里没有这个文件。
