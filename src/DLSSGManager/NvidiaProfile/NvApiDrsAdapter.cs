@@ -145,7 +145,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
             return status == NvApiOk
                 ? DrsStatus.Success
-                : DrsStatus.Fail(status, $"NvAPI_DRS_CreateProfile 返回 {status}。");
+                : DrsStatus.Fail(status, $"NvAPI_DRS_CreateProfile 返回 {NvApiStatus.Report(status)}");
         }
         finally
         {
@@ -166,7 +166,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
         return status == NvApiOk
             ? DrsStatus.Success
-            : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteProfile 返回 {status}。");
+            : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteProfile 返回 {NvApiStatus.Report(status)}");
     }
 
     /// <summary>Binds an executable to a profile. Assumes an open session.</summary>
@@ -191,7 +191,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
             return status == NvApiOk
                 ? DrsStatus.Success
-                : DrsStatus.Fail(status, $"NvAPI_DRS_CreateApplication 返回 {status}。");
+                : DrsStatus.Fail(status, $"NvAPI_DRS_CreateApplication 返回 {NvApiStatus.Report(status)}");
         }
         finally
         {
@@ -218,7 +218,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
         return status == NvApiOk
             ? DrsStatus.Success
-            : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteApplication 返回 {status}。");
+            : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteApplication 返回 {NvApiStatus.Report(status)}");
     }
 
     /// <summary>
@@ -313,7 +313,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
                 // The ABI call worked; the driver simply knows no such application. Those are two different facts,
                 // and only the first one is a success — the caller sees Found = false either way.
                 return DrsApplicationLookup.NotFound(executableName,
-                    $"NvAPI_DRS_FindApplicationByName 返回 {status}（-166 即 NVAPI_EXECUTABLE_NOT_FOUND）：" +
+                    $"NvAPI_DRS_FindApplicationByName 返回 {NvApiStatus.Report(status)}：" +
                     "该可执行文件尚未被分配到任何驱动 Profile。");
             }
 
@@ -614,7 +614,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
             }
 
             if (status != NvApiOk)
-                return ProfileSettingSnapshot.Unreadable(settingId, $"NvAPI_DRS_GetSetting 返回 {status}。");
+                return ProfileSettingSnapshot.Unreadable(settingId, $"NvAPI_DRS_GetSetting 返回 {NvApiStatus.Report(status)}");
 
             // A DWORD setting's value is the first four bytes of the union, which is where the length field sits —
             // the same thing the marshalled version read.
@@ -739,7 +739,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
             return status == NvApiOk
                 ? DrsStatus.Success
-                : DrsStatus.Fail(status, $"NvAPI_DRS_SetSetting 返回 {status}。");
+                : DrsStatus.Fail(status, $"NvAPI_DRS_SetSetting 返回 {NvApiStatus.Report(status)}");
         }
         finally
         {
@@ -772,7 +772,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         var status = _deleteProfileSetting(_session, profile, settingId);
         return status == NvApiOk
             ? DrsStatus.Success
-            : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteProfileSetting 返回 {status}。");
+            : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteProfileSetting 返回 {NvApiStatus.Report(status)}");
     }
 
     /// <summary>
@@ -794,7 +794,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
         return status == NvApiOk
             ? DrsStatus.Success
-            : DrsStatus.Fail(status, $"NvAPI_DRS_SaveSettings 返回 {status}。");
+            : DrsStatus.Fail(status, $"NvAPI_DRS_SaveSettings 返回 {NvApiStatus.Report(status)}");
     }
 
     public DrsStatus Save()
@@ -809,7 +809,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         var status = _saveSettings(_session);
         return status == NvApiOk
             ? DrsStatus.Success
-            : DrsStatus.Fail(status, $"NvAPI_DRS_SaveSettings 返回 {status}。");
+            : DrsStatus.Fail(status, $"NvAPI_DRS_SaveSettings 返回 {NvApiStatus.Report(status)}");
     }
 
     public void Close()

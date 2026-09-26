@@ -52,6 +52,7 @@
     <Compile Include="..\..\src\DLSSGManager\InstallPlanning\InstallPlanExecutor.cs" />
     <Compile Include="..\..\src\DLSSGManager\NvidiaProfile\NvidiaProfileService.cs" />
     <Compile Include="..\..\src\DLSSGManager\NvidiaProfile\NvApiDrsAdapter.cs" />
+    <Compile Include="..\..\src\DLSSGManager\NvidiaProfile\NvApiStatus.cs" />
     <Compile Include="..\..\src\DLSSGManager\Orchestration\SmoothMotionWorkflow.cs" />
     <Compile Include="..\..\src\DLSSGManager\Orchestration\AppWorkflowDetector.cs" />
     <Compile Include="..\..\src\DLSSGManager\Orchestration\GameConfigurationService.cs" />
