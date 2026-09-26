@@ -242,34 +242,43 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         if (_session == IntPtr.Zero) return ProfileSettingSnapshot.Unreadable(settingId, "没有已打开的 DRS 会话。");
         if (_getSetting is null) return ProfileSettingSnapshot.Unreadable(settingId, "NvAPI_DRS_GetSetting 未被解析。");
 
-        // NVDRS_SETTING is an in/out struct: the caller supplies the version and gets the values back.
+        // NVDRS_SETTING is an in/out struct: the caller supplies the version and gets the values back. It crosses
+        // the boundary as raw memory — see the delegate declarations for why.
         var setting = NewSetting(settingId, 0);
-        var status = _getSetting(_session, _profile, settingId, ref setting);
 
-        if (status == NvApiSettingNotFound)
+        try
         {
-            // The setting is not in this profile at all: the driver would use its predefined value.
-            // This is genuinely different from "set to 0", and it is the state deletion restores.
-            return new ProfileSettingSnapshot(settingId, ProfileSettingState.Absent, 0, false,
-                "设置不存在于该 Profile（驱动将使用预定义值）。");
+            var status = _getSetting(_session, _profile, settingId, setting);
+
+            if (status == NvApiSettingNotFound)
+            {
+                // The setting is not in this profile at all: the driver would use its predefined value.
+                // This is genuinely different from "set to 0", and it is the state deletion restores.
+                return new ProfileSettingSnapshot(settingId, ProfileSettingState.Absent, 0, false,
+                    "设置不存在于该 Profile（驱动将使用预定义值）。");
+            }
+
+            if (status != NvApiOk)
+                return ProfileSettingSnapshot.Unreadable(settingId, $"NvAPI_DRS_GetSetting 返回 {status}。");
+
+            // A DWORD setting's value is the first four bytes of the union, which is where the length field sits —
+            // the same thing the marshalled version read.
+            var currentValue = unchecked((uint)Marshal.ReadInt32(setting, OffsetCurrentValueLength));
+
+            // isCurrentPredefined says the value came from NVIDIA's table rather than the user, which is why it
+            // must not be treated as "the user's value".
+            var predefined = Marshal.ReadInt32(setting, OffsetIsCurrentPredefined) != 0;
+
+            return predefined
+                ? new ProfileSettingSnapshot(settingId, ProfileSettingState.InheritedDefault,
+                    currentValue, true, "当前值来自驱动预定义表。")
+                : new ProfileSettingSnapshot(settingId, ProfileSettingState.ExplicitValue,
+                    currentValue, false, "当前值为用户设置值。");
         }
-
-        if (status != NvApiOk)
-            return ProfileSettingSnapshot.Unreadable(settingId, $"NvAPI_DRS_GetSetting 返回 {status}。");
-
-        // settingLocation distinguishes a value that lives in the profile from one inherited from the
-        // global/default profile. isCurrentPredefined says the value came from NVIDIA's table rather than
-        // the user, which is why it must not be treated as "the user's value".
-        var predefined = setting.IsCurrentPredefined != 0;
-
-        if (predefined)
+        finally
         {
-            return new ProfileSettingSnapshot(settingId, ProfileSettingState.InheritedDefault,
-                setting.CurrentValueLength, true, "当前值来自驱动预定义表。");
+            Marshal.FreeHGlobal(setting);
         }
-
-        return new ProfileSettingSnapshot(settingId, ProfileSettingState.ExplicitValue,
-            setting.CurrentValueLength, false, "当前值为用户设置值。");
     }
 
     public DrsStatus Write(uint settingId, uint value)
@@ -284,21 +293,45 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         if (!CanDelete)
             return DrsStatus.Fail(-1, "当前不具备删除能力，拒绝写入：写入后无法撤回。");
 
-        // Build on whatever is already there, so the fields we are not changing (type, location, name) keep
-        // their real values. Inventing them would send the driver a request it never asked for.
+        // Build on whatever is already there, so the fields we are not changing (type, location, name) keep their
+        // real values. Inventing them would send the driver a request it never asked for.
         var setting = NewSetting(settingId, value);
-        var existing = NewSetting(settingId, 0);
-        if (_getSetting is not null && _getSetting(_session, _profile, settingId, ref existing) == NvApiOk)
-        {
-            setting = existing;
-            setting.CurrentValueLength = value;
-            setting.IsCurrentPredefined = 0;
-        }
 
-        var status = _setSetting(_session, _profile, ref setting);
-        return status == NvApiOk
-            ? DrsStatus.Success
-            : DrsStatus.Fail(status, $"NvAPI_DRS_SetSetting 返回 {status}。");
+        try
+        {
+            if (_getSetting is not null)
+            {
+                var existing = NewSetting(settingId, 0);
+
+                try
+                {
+                    if (_getSetting(_session, _profile, settingId, existing) == NvApiOk)
+                    {
+                        // Take the driver's own view of the setting and change only what we mean to change.
+                        // Marshal.Copy has no IntPtr→IntPtr overload, so the bytes go through a managed buffer.
+                        var bytes = new byte[SettingSize];
+                        Marshal.Copy(existing, bytes, 0, SettingSize);
+                        Marshal.Copy(bytes, 0, setting, SettingSize);
+                        Marshal.WriteInt32(setting, OffsetCurrentValueLength, unchecked((int)value));
+                        Marshal.WriteInt32(setting, OffsetIsCurrentPredefined, 0);
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(existing);
+                }
+            }
+
+            var status = _setSetting(_session, _profile, setting);
+
+            return status == NvApiOk
+                ? DrsStatus.Success
+                : DrsStatus.Fail(status, $"NvAPI_DRS_SetSetting 返回 {status}。");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(setting);
+        }
     }
 
     public DrsStatus Delete(uint settingId)
@@ -504,20 +537,47 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         public byte[] CurrentValueData;
     }
 
-    private static NvDrsSetting NewSetting(uint settingId, uint value) => new()
+    // ── Raw-memory access ───────────────────────────────────────────────────────────────────────────
+    //
+    // NVDRS_SETTING_V1 is built and read by hand. The offsets below are the ones the official header implies and
+    // the ones VerifyLayout() used to confirm against the marshalled struct; they are now the only description of
+    // the layout, so they must stay in step with SettingSize.
+
+    private const int OffsetVersion = 0;
+    private const int OffsetSettingId = 4100;
+    private const int OffsetSettingType = 4104;
+    private const int OffsetSettingLocation = 4108;
+    private const int OffsetIsCurrentPredefined = 4112;
+    private const int OffsetIsPredefinedValid = 4116;
+    private const int OffsetPredefinedValueLength = 4120;
+    private const int OffsetCurrentValueLength = 8220;
+
+    /// <summary>
+    /// Allocates a zeroed <c>NVDRS_SETTING_V1</c> and fills in the fields the caller supplies.
+    ///
+    /// <para><b>The caller owns the block and must free it.</b> Memory that the marshaler used to manage is now
+    /// managed here, which is the main new hazard of this change: every path that allocates must release in a
+    /// <c>finally</c>.</para>
+    /// </summary>
+    private static IntPtr NewSetting(uint settingId, uint value)
     {
-        Version = SettingVersion,
-        SettingName = new ushort[UnicodeStringLength],
-        SettingId = settingId,
-        SettingType = TypeDword,
-        SettingLocation = LocationCurrentProfile,
-        IsCurrentPredefined = 0,
-        IsPredefinedValid = 0,
-        PredefinedValueLength = 0,
-        PredefinedValueData = new byte[BinaryDataMax],
-        CurrentValueLength = value,
-        CurrentValueData = new byte[BinaryDataMax],
-    };
+        var block = Marshal.AllocHGlobal(SettingSize);
+
+        // Zeroed first: every byte this method does not write must still be a defined value for the driver.
+        // Marshal.WriteByte in a loop would be 12320 interop calls; Copy does it in one.
+        Marshal.Copy(new byte[SettingSize], 0, block, SettingSize);
+
+        Marshal.WriteInt32(block, OffsetVersion, unchecked((int)SettingVersion));
+        Marshal.WriteInt32(block, OffsetSettingId, unchecked((int)settingId));
+        Marshal.WriteInt32(block, OffsetSettingType, unchecked((int)TypeDword));
+        Marshal.WriteInt32(block, OffsetSettingLocation, unchecked((int)LocationCurrentProfile));
+        Marshal.WriteInt32(block, OffsetIsCurrentPredefined, 0);
+        Marshal.WriteInt32(block, OffsetIsPredefinedValid, 0);
+        Marshal.WriteInt32(block, OffsetPredefinedValueLength, 0);
+        Marshal.WriteInt32(block, OffsetCurrentValueLength, unchecked((int)value));
+
+        return block;
+    }
 
     /// <summary>
     /// Converts a managed string to the fixed-size UTF-16 buffer NVAPI expects, truncating at the buffer
@@ -556,10 +616,15 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     private delegate int DrsFindProfileByNameDelegate(IntPtr session, ushort[] profileName, out IntPtr profile);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int DrsGetSettingDelegate(IntPtr session, IntPtr profile, uint settingId, ref NvDrsSetting setting);
+    // The setting structure now crosses the boundary as raw memory this code fills in itself, instead of as a
+    // marshalled struct. Passing the marshalled struct is what crashed: every layout check passed, but
+    // Marshal.SizeOf / Marshal.OffsetOf only compute the managed side's view and never run the marshaler's call
+    // path — so the copy-in/copy-out was never exercised until a real call, where the second read faulted with
+    // AccessViolationException.
+    private delegate int DrsGetSettingDelegate(IntPtr session, IntPtr profile, uint settingId, IntPtr setting);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    private delegate int DrsSetSettingDelegate(IntPtr session, IntPtr profile, ref NvDrsSetting setting);
+    private delegate int DrsSetSettingDelegate(IntPtr session, IntPtr profile, IntPtr setting);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DrsDeleteProfileSettingDelegate(IntPtr session, IntPtr profile, uint settingId);
