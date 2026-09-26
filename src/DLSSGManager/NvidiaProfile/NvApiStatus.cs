@@ -49,6 +49,12 @@ public static class NvApiStatus
     public const int ExecutableAlreadyInUse = -167;
 
     /// <summary>该码是否表示「需要管理员权限」。**只认官方那一个码，不做数值推断。**</summary>
+    /// <remarks>
+    /// 设计意图是让上层在拿到这个码时能给出**可操作的**提示（而不只是报错）。当前生产代码里只有
+    /// <see cref="Report"/> 被使用 —— 它把「请以管理员身份重新运行」写进了文案，所以用户已经能看到下一步；
+    /// **这个判据本身暂无调用者**。保留它是因为分层更清晰（文案归文案、判断归判断），
+    /// 但**报告里不能写成「已用于决策」**。
+    /// </remarks>
     public static bool RequiresElevation(int code) => code == InvalidUserPrivilege;
 
     /// <summary>
@@ -57,6 +63,11 @@ public static class NvApiStatus
     /// <para>这类码必须与真正的失败分开报告：`SETTING_NOT_FOUND` 是三态里的 `Absent`，
     /// `EXECUTABLE_NOT_FOUND` 是「这个游戏没有绑定 Profile」。**把它们算作调用失败，会让正常状态看起来像故障。**</para>
     /// </summary>
+    /// <remarks>
+    /// **当前无调用者。** <c>Report</c> 已经在文案里把这两个码的含义说清楚了，所以上层暂时不需要再判一次。
+    /// 保留它是为了给「是否需要重试 / 是否应显示为故障」这类决策留一个明确的入口，
+    /// 但**在有人真正用它之前，它只是一组未被验证的语义** —— 报告里要如实这样说。
+    /// </remarks>
     public static bool IsNotFound(int code) => code is SettingNotFound or ExecutableNotFound;
 
     /// <summary>
@@ -65,6 +76,7 @@ public static class NvApiStatus
     /// <para>`EXECUTABLE_ALREADY_IN_USE` 重试**永远不会成功** —— 它说的是「名字已被占用」，换名字才行。
     /// 把它归为可重试是自检「一次失败变成永久失败」的成因之一。</para>
     /// </summary>
+    /// <remarks>**当前无调用者**，理由同 <see cref="IsNotFound"/>：文案已说明，判断留给将来的决策点。</remarks>
     public static bool IsNameCollision(int code) => code == ExecutableAlreadyInUse;
 
     /// <summary>
@@ -85,7 +97,8 @@ public static class NvApiStatus
     public static string? Describe(int code) => code switch
     {
         Ok => "调用成功。",
-        InvalidUserPrivilege => "该 API 需要管理员权限。",
+        InvalidUserPrivilege => "该 API 需要管理员权限。请以管理员身份重新运行本程序再试 —— "
+            + "普通权限下写路径保持关闭是预期行为，不是故障。",
         SettingNotFound => "设置不存在（三态里的「未设置」，不是错误）。",
         ExecutableNotFound => "该名称的应用不在这个 Profile 上。",
         ExecutableAlreadyInUse => "该应用已存在于另一个 Profile 中 —— 换个名字，重试无用。",
