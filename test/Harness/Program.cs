@@ -4862,6 +4862,33 @@ public static class Program
         Check("拒绝原因说明压缩比", bombError.Contains("压缩比"), bombError);
         Check("被拒绝的压缩包未写入任何内容", Directory.GetFiles(destDir).Length == 0);
 
+        // ---- 大小上限（§13 的缺口之一）----
+        //
+        // 上限以参数传入，所以几百字节就覆盖了全部分支。真实上限是 512 MiB / 2 GiB：照原样去测它，一条
+        // 「单元测试」会变成磁盘与时间上的压力测试——而且它一旦抛异常，整个套件随之中断。
+        var limitOne = Path.Combine(work, "zip-limit-one");
+        var limitTwo = Path.Combine(work, "zip-limit-two");
+
+        var bigEntry = MakeZip(zipDir, "bigentry", a => AddEntry(a, "big.bin", new string('x', 4096)));
+
+        Check("单个文件超过上限被拒绝",
+            !SafeZip.TryExtract(bigEntry, limitOne, out var bigEntryError, maxSingleFileBytes: 1024),
+            bigEntryError);
+        Check("拒绝原因说明单个文件过大", bigEntryError.Contains("单个文件过大"), bigEntryError);
+        Check("单文件超限时未写入任何内容", Directory.GetFiles(limitOne).Length == 0);
+
+        var manySmall = MakeZip(zipDir, "manysmall", a =>
+        {
+            AddEntry(a, "a.bin", new string('a', 800));
+            AddEntry(a, "b.bin", new string('b', 800));
+        });
+
+        Check("累计超过总大小上限被拒绝",
+            !SafeZip.TryExtract(manySmall, limitTwo, out var manySmallError, maxTotalBytes: 1000),
+            manySmallError);
+        Check("拒绝原因说明总大小超限", manySmallError.Contains("总大小"), manySmallError);
+        Check("总大小超限时未写入任何内容", Directory.GetFiles(limitTwo).Length == 0);
+
         // the ordinary case still works, through staging, leaving nothing behind.
         var goodDir = Path.Combine(work, "zip-good");
         var goodZip = MakeZip(zipDir, "good", a => AddEntry(a, "sub/ok.txt", "hello"));

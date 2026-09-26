@@ -179,7 +179,16 @@ public static class SafeZip
     /// </summary>
     public const int MaxCompressionRatio = 200;
 
-    public static bool TryExtract(string zipPath, string destination, out string error)
+    /// <summary>
+    /// Extracts <paramref name="zipPath"/> into <paramref name="destination"/> through a staging directory.
+    ///
+    /// <para>The two size ceilings are parameters whose defaults are the production constants. A limit that can only
+    /// be reached by spending real time and disk is a limit no test can cover cheaply — and one that reaches 512 MiB
+    /// is worse than that: a test that tries it can derail the whole suite. Callers keep passing three arguments and
+    /// get the real values; tests pass small ones.</para>
+    /// </summary>
+    public static bool TryExtract(string zipPath, string destination, out string error,
+        long maxSingleFileBytes = MaxSingleFileBytes, long maxTotalBytes = MaxTotalBytes)
     {
         error = "";
         string? staging = null;
@@ -192,7 +201,7 @@ public static class SafeZip
             using var archive = ZipFile.OpenRead(zipPath);
 
             // ── 1. Everything is checked before a single byte is written.
-            var rejection = Validate(archive, root);
+            var rejection = Validate(archive, root, maxSingleFileBytes, maxTotalBytes);
             if (rejection is not null)
             {
                 error = rejection;
@@ -249,7 +258,8 @@ public static class SafeZip
     /// Checks an archive against the path and size rules. Returns null when it may be extracted, otherwise the
     /// reason it may not.
     /// </summary>
-    private static string? Validate(ZipArchive archive, string root)
+    private static string? Validate(ZipArchive archive, string root,
+        long maxSingleFileBytes, long maxTotalBytes)
     {
         if (archive.Entries.Count > MaxEntries)
             return $"压缩包条目过多（{archive.Entries.Count} > {MaxEntries}），已拒绝。";
@@ -265,11 +275,11 @@ public static class SafeZip
             if (!IsInside(root, target))
                 return $"压缩包中的条目会写到目标目录之外，已拒绝：{entry.FullName}";
 
-            if (entry.Length > MaxSingleFileBytes)
+            if (entry.Length > maxSingleFileBytes)
                 return $"压缩包中的单个文件过大，已拒绝：{entry.FullName}（{entry.Length} 字节）";
 
             total += entry.Length;
-            if (total > MaxTotalBytes)
+            if (total > maxTotalBytes)
                 return $"压缩包解压后总大小超过上限，已拒绝（累计 {total} 字节）。";
 
             if (entry.CompressedLength > 0)
