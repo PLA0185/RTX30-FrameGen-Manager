@@ -3834,9 +3834,22 @@ public static class Program
             return FailOpenCode != 0 ? DrsStatus.Fail(FailOpenCode, "fake open failure") : DrsStatus.Success;
         }
 
+        /// <summary>
+        /// Values that reads report instead of what was stored — the "wrote X, read back Y" case.
+        ///
+        /// <para>Without this the read-back can only ever agree with the write, because this double hands back
+        /// exactly what it was given. The verification arm of P0-03 would then be structurally untestable, and a
+        /// check that cannot fail proves nothing.</para>
+        /// </summary>
+        public Dictionary<uint, uint> ReadOverrides { get; } = new();
+
         public ProfileSettingSnapshot Read(uint id)
         {
             if (FailRead) return ProfileSettingSnapshot.Unreadable(id, "fake read failure");
+
+            if (ReadOverrides.TryGetValue(id, out var reported))
+                return new ProfileSettingSnapshot(id, ProfileSettingState.ExplicitValue, reported, false,
+                    "fake: 读回值与写入值不一致");
 
             return _store.TryGetValue(id, out var v)
                 ? new ProfileSettingSnapshot(id, v.State, v.Value, v.State == ProfileSettingState.InheritedDefault, "fake")
@@ -4621,6 +4634,32 @@ public static class Program
 
         Check("Adapter 接口仍可读（读回能力是前提，不是可选）",
             typeof(NvidiaProfile.IDrsAdapter).GetProperty("CanRead") is not null);
+
+        // 上面三条都是「存在性」断言。真正决定 P0-03 是否成立的是行为：**写入成功但读回值不同时，必须报未确认**。
+        // 这条此前写不出来，因为 FakeDrsAdapter 把写进去的值原样读出来，读回永远一致 —— 一个不可能失败的检查。
+        // `ReadOverrides` 就是为这条断言加的。
+        var mismatchDrs = new FakeDrsAdapter();
+        var mismatchService = new NvidiaProfileService(mismatchDrs, () => false);
+        var mismatchWrite = SmoothMotionSettings.EnableWrites(GraphicsApi.Dx12)[0];
+
+        mismatchDrs.ReadOverrides[mismatchWrite.Setting.Id] = mismatchWrite.Value + 1;
+
+        var mismatchApply = mismatchService.Apply(null, new[] { mismatchWrite });
+
+        Check("写入成功但读回值不一致时不报 ReadBackConfirmed",
+            mismatchApply.Ok && !mismatchApply.ReadBackConfirmed,
+            $"ok={mismatchApply.Ok} confirmed={mismatchApply.ReadBackConfirmed} / {mismatchApply.Message}");
+
+        // 反向：读回值一致时必须报已确认 —— 否则上面那条可以靠「永远不确认」蒙混过去。
+        var agreeDrs = new FakeDrsAdapter();
+        var agreeService = new NvidiaProfileService(agreeDrs, () => false);
+        var agreeWrite = SmoothMotionSettings.EnableWrites(GraphicsApi.Dx12)[0];
+
+        var agreeApply = agreeService.Apply(null, new[] { agreeWrite });
+
+        Check("读回值一致时报 ReadBackConfirmed",
+            agreeApply.Ok && agreeApply.ReadBackConfirmed,
+            $"ok={agreeApply.Ok} confirmed={agreeApply.ReadBackConfirmed} / {agreeApply.Message}");
 
         // ---- 第二轮 P0-05：校验规则必须与文件角色匹配 ----
         // The defect this covers: every file in the plan was put through Authenticode, and dlssg_sm86.ini is not
