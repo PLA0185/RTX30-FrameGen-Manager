@@ -55,11 +55,22 @@ public enum TriState
 }
 
 /// <summary>
-/// What a provider is, in terms the manager must act on rather than merely display.
+/// What a provider is.
 ///
-/// The risk-bearing fields (writes the NVIDIA profile, needs administrator, touches the game
-/// process, is experimental) are part of the contract because the UI has to warn on them and the
-/// deployment rules have to respect them.
+/// <para><b>现状（如实记录，不要按旧的意图描述推断行为）</b>：这些字段目前**只有两个被真正读取** ——
+/// <see cref="UpstreamRepository"/>（`PatchUpdateService` 用它做更新检查）与 <see cref="DisplayName"/>
+/// （界面显示）。其余字段 —— <see cref="Distribution"/> · <see cref="License"/> · <see cref="LicenseNote"/> ·
+/// <see cref="ProviderWritesNvidiaProfile"/> · <see cref="RequiresNvidiaProfileConfiguration"/> ·
+/// <see cref="RequiresAdministrator"/> · <see cref="TouchesGameProcess"/> · <see cref="Experimental"/> ——
+/// <b>是声明性的元数据：都填了，但还没有任何代码读它们。</b></para>
+///
+/// <para>这段注释此前写的是「the UI has to warn on them and the deployment rules have to respect them」
+/// —— <b>那是一个从未兑现的承诺，而它读起来像是已经实现的行为。</b>声明性的字段可以存在（它们记录了
+/// 上游的真实性质，将来接线时有依据），但<b>注释不能把「打算这么做」写成「已经这么做」</b>。</para>
+///
+/// <para>其中 <see cref="RequiresAdministrator"/> 值得优先接线：实测表明 NVAPI 的 DRS 写入在非提权下返回
+/// <c>NVAPI_INVALID_USER_PRIVILEGE</c>、提权后成功 —— 用户**需要提前知道**这一点，而不是在失败之后才从
+/// 错误码里读出来（那条兜底路径已由 <c>NvApiStatus.Describe</c> 覆盖）。</para>
 /// </summary>
 public sealed record ProviderMetadata(
     string Id,
