@@ -3330,6 +3330,52 @@ public static class Program
         var plan = InstallPlanner.Plan(input);
         Check("仅有静态渲染证据时需要确认",
             plan.Status == PlanStatus.NeedsConfirmation, plan.Status.ToString());
+
+        // ---- plan execution: the plan decides, or nothing happens (整改 E) ----
+        var execDir = Path.Combine(work, "plan-exec");
+        Directory.CreateDirectory(execDir);
+        foreach (var file in input.ProviderPayloadFiles)
+            File.WriteAllText(Path.Combine(execDir, file), "payload");
+
+        var planSource = new ModSource(execDir);
+        var execPlan = plan with { Status = PlanStatus.Ready, ProxyChoice = "winmm.dll" };
+        var execGame = new GameEntry { Name = "ExecGame", RenderDir = MakeGameDir(work, "execGame") };
+        var recording = new RecordingProvider();
+
+        var executed = InstallPlanExecutor.Execute(recording, execPlan, execGame, planSource);
+        Check("计划可执行时安装成功", executed.Ok, executed.Message);
+        Check("计划选定的入口被真正采用", execGame.PreferredProxy == "winmm.dll", execGame.PreferredProxy);
+        Check("安装调用确实发生", recording.InstallCount == 1);
+
+        // A provider that cannot honour the chosen entry must refuse rather than install somewhere else.
+        var stubborn = new RecordingProvider { SupportsProxyChoice = false };
+        var stubbornGame = new GameEntry { Name = "Stubborn", RenderDir = MakeGameDir(work, "stubborn") };
+        var refused = InstallPlanExecutor.Execute(stubborn, execPlan, stubbornGame, planSource);
+        Check("无法按指定入口安装时拒绝（不静默改用其他入口）",
+            !refused.Ok && stubborn.InstallCount == 0, refused.Message);
+        Check("拒绝原因点名该入口", refused.Message.Contains("winmm.dll"));
+
+        // A payload missing a file the plan requires blocks execution before anything is written.
+        var missingGame = new GameEntry { Name = "Missing", RenderDir = MakeGameDir(work, "missing") };
+        var missingPlan = execPlan with { FilesToDeploy = new[] { "not-there.dll" } };
+        var missingRunner = new RecordingProvider();
+        var missing = InstallPlanExecutor.Execute(missingRunner, missingPlan, missingGame, planSource);
+        Check("payload 缺少计划要求的文件时拒绝",
+            !missing.Ok && missingRunner.InstallCount == 0 && missing.Message.Contains("不在 payload"), missing.Message);
+
+        // An ASI plan must not quietly become a DirectProxy install.
+        var asiGame = new GameEntry { Name = "Asi", RenderDir = MakeGameDir(work, "asi") };
+        var asiPlan = execPlan with { AsiChoice = "AsiLoader" };
+        var asiRunner = new RecordingProvider();
+        var asi = InstallPlanExecutor.Execute(asiRunner, asiPlan, asiGame, planSource);
+        Check("不支持 ASI 时拒绝（不降级为 DirectProxy）",
+            !asi.Ok && asiRunner.InstallCount == 0 && asi.Message.Contains("ASI"), asi.Message);
+
+        // A plan that is not Ready never runs.
+        var blockedRunner = new RecordingProvider();
+        Check("非 Ready 计划不执行",
+            !InstallPlanExecutor.Execute(blockedRunner, plan with { Status = PlanStatus.Blocked },
+                execGame, planSource).Ok && blockedRunner.InstallCount == 0);
         Check("计划避开被占用的入口",
             plan.ProxyChoice is not null && plan.ProxyChoice != "version.dll", plan.ProxyChoice ?? "(null)");
 
@@ -3390,6 +3436,62 @@ public static class Program
         Check("配方参与的计划记录代理策略",
             recipePlan.ProxyStrategy == ProxyStrategy.SafeSingle, recipePlan.ProxyStrategy.ToString());
         Check("配方计划带回滚步骤", recipePlan.RollbackRequirements.Count > 0);
+    }
+
+    /// <summary>
+    /// Provider double that records whether it was asked to install.
+    ///
+    /// Exists so the executor's refusals can be proven: a refused plan must leave <see cref="InstallCount"/>
+    /// at zero, which is the difference between "refused" and "installed anyway after a warning".
+    /// </summary>
+    private sealed class RecordingProvider : IPatchProvider
+    {
+        public string Id => "recording";
+
+        public ProviderMetadata Metadata =>
+            new(Id, "Recording", "", default, default, "", false, default, false, false);
+
+        public ProviderHealth Health => ProviderHealth.Available("测试替身。");
+
+        public bool SupportsProxyChoice { get; set; } = true;
+
+        public bool SupportsAsiStrategy => false;
+
+        public int InstallCount { get; private set; }
+
+        public Task<ReleaseInfo?> CheckLatestAsync(bool forceRefresh, CancellationToken ct) =>
+            Task.FromResult<ReleaseInfo?>(null);
+
+        public string? GetInstalledVersion(GameEntry game) => null;
+
+        public Task<OpResult> DownloadAsync(string destination, IProgress<string>? progress, CancellationToken ct) =>
+            Task.FromResult(FailResult("测试替身不下载。"));
+
+        public PackageVerification VerifyPackage(string path) =>
+            new(true, SignatureStatus.Intact, "测试替身不校验。");
+
+        public OpResult Install(GameEntry game, ModSource source, bool allowProtected = false)
+        {
+            InstallCount++;
+            return OkResult("测试替身已安装。");
+        }
+
+        public OpResult Restore(GameEntry game, bool removeLogs) => OkResult("测试替身未部署任何内容。");
+
+        private static OpResult OkResult(string message)
+        {
+            var r = new OpResult();
+            r.Ok = true;
+            r.Message = message;
+            return r;
+        }
+
+        private static OpResult FailResult(string message)
+        {
+            var r = new OpResult();
+            r.Fail(message);
+            return r;
+        }
     }
 
     /// <summary>Driver double: three-state storage plus injectable failures.</summary>

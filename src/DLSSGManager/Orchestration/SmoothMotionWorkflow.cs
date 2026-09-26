@@ -317,13 +317,20 @@ public sealed class SmoothMotionWorkflow
             }
 
             // ---- 5. install the patch (files before driver) ----
+            // The plan decides what gets installed: its entry choice, its file list, and its ASI strategy. The
+            // executor refuses rather than substituting some other arrangement the user never approved.
             var source = new ModSource(request.PayloadDirectory!);
-            var install = request.Provider.Install(request.Game, source, request.AllowProtected);
-            steps.Add(new WorkflowStep("安装补丁", install.Ok, install.Message));
+            var execution = InstallPlanExecutor.Execute(
+                request.Provider, plan, request.Game, source, request.AllowProtected);
 
-            if (!install.Ok)
+            steps.Add(new WorkflowStep("安装补丁", execution.Ok,
+                execution.Ok ? execution.Message : string.Join("；", execution.Steps)));
+
+            if (!execution.Ok)
             {
-                errors.Add(install.Message);
+                errors.Add(execution.Message);
+                foreach (var detail in execution.Steps) errors.Add(detail);
+
                 return Finish(WorkflowOutcome.Failed, SmoothMotionEvidence.None, steps, plan, request, errors,
                     filesWritten, profileWritten, journal: profileJournal);
             }

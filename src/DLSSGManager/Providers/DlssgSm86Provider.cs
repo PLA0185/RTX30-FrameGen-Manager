@@ -149,6 +149,12 @@ public sealed class DlssgSm86Provider : IPatchProvider
             : new PackageVerification(false, status, $"签名校验未通过（{status}）。");
     }
 
+    /// <summary>
+    /// Entry selection is honoured: the shared deployment path reads the game's preferred entry, so a plan
+    /// that names one gets exactly that entry.
+    /// </summary>
+    public bool SupportsProxyChoice => true;
+
     /// <summary>Installs through the shared transactional deployment path.</summary>
     public OpResult Install(GameEntry game, ModSource source, bool allowProtected = false) =>
         DeploymentService.Deploy(game, source, allowProtected);

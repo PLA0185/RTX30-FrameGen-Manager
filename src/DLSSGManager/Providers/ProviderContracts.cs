@@ -175,4 +175,21 @@ public interface IPatchProvider
 
     /// <summary>Removes what this provider installed.</summary>
     OpResult Restore(GameEntry game, bool removeLogs);
+
+    /// <summary>
+    /// Whether <see cref="Install"/> can honour a specific loader entry name.
+    ///
+    /// <para>The default is <b>false</b>, and that default is the honest one: a provider that cannot be told
+    /// which entry to use must not be handed a plan that names one. Declaring this instead of silently
+    /// ignoring the plan is what keeps the installed result equal to what the user approved.</para>
+    /// </summary>
+    bool SupportsProxyChoice => false;
+
+    /// <summary>
+    /// Whether <see cref="Install"/> can honour an ASI strategy.
+    ///
+    /// Also false by default: turning an ASI plan into a plain proxy install changes the shape of what gets
+    /// installed, which is not a decision a provider may make on the user's behalf.
+    /// </summary>
+    bool SupportsAsiStrategy => false;
 }

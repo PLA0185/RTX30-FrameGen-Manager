@@ -48,6 +48,7 @@
     <Compile Include="..\..\src\DLSSGManager\Compatibility\CompatibilityMatrix.cs" />
     <Compile Include="..\..\src\DLSSGManager\Compatibility\CompatibilityEvidence.cs" />
     <Compile Include="..\..\src\DLSSGManager\InstallPlanning\InstallPlanner.cs" />
+    <Compile Include="..\..\src\DLSSGManager\InstallPlanning\InstallPlanExecutor.cs" />
     <Compile Include="..\..\src\DLSSGManager\NvidiaProfile\NvidiaProfileService.cs" />
     <Compile Include="..\..\src\DLSSGManager\NvidiaProfile\NvApiDrsAdapter.cs" />
     <Compile Include="..\..\src\DLSSGManager\Orchestration\SmoothMotionWorkflow.cs" />
