@@ -623,6 +623,68 @@ public static class Program
             Console.WriteLine("  · 文件按角色分类成功 —— 二进制走 Authenticode，配置不需要；");
             Console.WriteLine("  · 未写入任何游戏目录，未触碰 NVIDIA Profile。");
 
+            // ---- P1-16：用这份真实 payload 做 plan-only 检查 ----
+            //
+            // 只构造计划，不安装任何东西。要回答的问题是：这 312 个解压产物里，究竟有几个会被计划写进游戏目录 ——
+            // 任务书点名要防的是「312 个文件一股脑全进去」，而此前这一步从未被检查过。
+            var payloadFiles = files.Select(f => Path.GetRelativePath(extractDir, f)).ToList();
+
+            var planOnlyGame = new GameEntry
+            {
+                Name = "MFG-PlanOnly",
+                RenderDir = Path.Combine(Path.GetTempPath(), "rtx30fgm-plan-only-" + Guid.NewGuid().ToString("N")[..8]),
+            };
+
+            // 目录必须先存在。扫描器面对不存在的目录会（保守地）认为所有热路径代理入口都被占用，
+            // 计划于是 Blocked、FilesToDeploy 保持全量 —— 那样测出来的不是筛选结果，而是「扫描器没东西可扫」。
+            Directory.CreateDirectory(planOnlyGame.RenderDir);
+
+            var planOnly = InstallPlanner.Plan(new InstallPlanInput(
+                Game: planOnlyGame,
+                Renderer: new RendererDetection("Game.exe", EvidenceLevel.UserConfirmation,
+                    "plan-only 检查：人为指定渲染器，不查询真实游戏。", Array.Empty<ExecutableEvidence>()),
+                // 必须给一个确定的 API。传 Unknown 会让计划因 UnknownApi 提前 Blocked（实测如此），
+                // 于是 FilesToDeploy 恒为 0，这条检查就永远得不出结论 —— 那正是「假 PASS」的来源。
+                Api: new GraphicsApiDetection(GraphicsApi.Dx12, EvidenceLevel.UserConfirmation,
+                    "plan-only 检查：人为指定图形 API，以免计划因 UnknownApi 提前 Blocked。",
+                    Array.Empty<GraphicsApiEvidence>()),
+                ProviderId: MfgSmoothProvider.ProviderId,
+                ProviderVersion: "2.9.0",
+                ProviderPayloadFiles: payloadFiles,
+                ProxyConflicts: ProxyConflictScanner.Scan(planOnlyGame),
+                Compatibility: new CompatibilityDecision(CompatibilityState.Compatible, "2.9.0",
+                    "plan-only 检查：不依赖兼容性结论，取最宽松值以免筛选被提前拦下。"),
+                Recipe: null,
+                HasKernelAntiCheat: false,
+                AllowProtected: false));
+
+            Console.WriteLine();
+            Console.WriteLine("Plan-only 检查（P1-16）:");
+            Console.WriteLine($"  payload 文件数   : {payloadFiles.Count}");
+            Console.WriteLine($"  FilesToDeploy    : {planOnly.FilesToDeploy.Count}");
+            Console.WriteLine($"  计划状态         : {planOnly.Status}");
+            Console.WriteLine($"  代理入口         : {planOnly.ProxyChoice ?? "(无)"}");
+
+            foreach (var f in planOnly.FilesToDeploy) Console.WriteLine($"      · {f}");
+
+            // 三态判定。「计划 Blocked」**不等于**「筛选正确」—— 它意味着这个问题根本没有被回答，
+            // 而把它报成 PASS 会让一次「未确定」看起来像一次「已验证」。任务书允许在无法确定时返回 Blocked，
+            // 但要的是**诚实报告 Blocked**，不是把它算作通过。
+            var deployedAll = planOnly.FilesToDeploy.Count >= payloadFiles.Count;
+            var determined = planOnly.Status is PlanStatus.Ready or PlanStatus.NeedsConfirmation;
+
+            var verdict = deployedAll
+                ? "FAIL —— 计划把整个 payload 都列进了游戏目录"
+                : !determined
+                    ? $"NOT_DETERMINED —— 计划状态为 {planOnly.Status}，本次没有得出「该写哪些文件」的结论"
+                    : $"PASS —— 计划只列出真正需要落地的文件（{planOnly.FilesToDeploy.Count} / {payloadFiles.Count}）";
+
+            Console.WriteLine($"  判定             : {verdict}");
+
+            foreach (var b in planOnly.Blockers) Console.WriteLine($"  Blocked 原因     : {b}");
+
+            Console.WriteLine("  说明             : 本步骤只生成计划，未安装、未写入任何游戏目录。");
+
             return files.Count > 0 ? 0 : 1;
         }
         catch (Exception ex)
