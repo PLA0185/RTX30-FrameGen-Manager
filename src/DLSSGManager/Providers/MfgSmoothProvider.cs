@@ -318,4 +318,82 @@ public sealed class MfgSmoothProvider : IPatchProvider, IReleaseVersionResolver
 
     public OpResult Restore(GameEntry game, bool removeLogs) =>
         DeploymentService.Restore(game, removeLogs);
+
+    /// <summary>
+    /// 把真实 MFG payload（**嵌套发行包**）正规化成通用 <c>ModSource</c> 期望的 canonical 布局。
+    ///
+    /// <para><b>实测依据</b>：把真实 payload 直接交给 <c>ModSource</c> 会得到 <c>IsValid = False</c>，
+    /// 校验消息是「缺少 dlssg_sm86.ini，且未找到任何代理 DLL」—— 因为解压出来的是
+    /// <c>SmoothMotion-&lt;ver&gt;-&lt;rev&gt;/Manual/Version/version.dll</c> 这样的嵌套结构，而
+    /// <c>ModSource</c> 只认根目录与 <c>altnative/</c>。**让通用类型去猜嵌套目录，等于把「上游布局可能变」
+    /// 变成一次静默的错误安装**，所以正规化必须由知道这个布局的 provider 自己做。</para>
+    ///
+    /// <para><b>判定规则有依据，不猜目录名</b>：候选代理由叶子名命中 <see cref="ModSource.IsKnownProxyName"/>
+    /// 决定（上游把目录叫 <c>Manual/Version</c> 还是 <c>payload/native</c> 会变，但「哪些名字是代理入口」
+    /// 是本项目与上游共同的稳定概念）。<c>version.dll</c> 放根目录（上游的默认入口），其余放
+    /// <c>altnative/</c>；另外写一个最小 INI 模板 —— 它<b>会被真实部署覆盖</b>，存在只是为了满足
+    /// <c>ModSource</c> 对 canonical 布局的要求。</para>
+    /// </summary>
+    public string? PrepareCanonicalPayload(string payloadDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(payloadDirectory) || !Directory.Exists(payloadDirectory)) return null;
+
+        // 已经是 canonical 布局（根目录就有 INI）就不动它 —— 正规化是给嵌套 payload 用的。
+        if (File.Exists(Path.Combine(payloadDirectory, ModSource.IniName))) return null;
+
+        try
+        {
+            var canonical = Path.Combine(payloadDirectory, ".canonical");
+            var marker = Path.DirectorySeparatorChar + ".canonical" + Path.DirectorySeparatorChar;
+
+            if (Directory.Exists(canonical)) Directory.Delete(canonical, recursive: true);
+
+            Directory.CreateDirectory(canonical);
+            Directory.CreateDirectory(Path.Combine(canonical, "altnative"));
+
+            // 按叶子名收集候选代理；同一叶子名只取第一个遇到的。
+            var found = new List<(string Leaf, string Path)>();
+
+            foreach (var file in Directory.EnumerateFiles(payloadDirectory, "*", SearchOption.AllDirectories))
+            {
+                if (file.Contains(marker, StringComparison.OrdinalIgnoreCase)) continue;
+
+                var leaf = Path.GetFileName(file);
+
+                if (!ModSource.IsKnownProxyName(leaf)) continue;
+                if (found.Any(f => f.Leaf.Equals(leaf, StringComparison.OrdinalIgnoreCase))) continue;
+
+                found.Add((leaf, file));
+            }
+
+            if (found.Count == 0) return null;
+
+            // 首选入口进根目录，其余作为备用入口进 altnative/。
+            var primary = found.FirstOrDefault(f =>
+                f.Leaf.Equals("version.dll", StringComparison.OrdinalIgnoreCase));
+
+            if (primary.Path is null) primary = found[0];
+
+            File.Copy(primary.Path, Path.Combine(canonical, primary.Leaf), overwrite: true);
+
+            foreach (var (leaf, path) in found)
+            {
+                if (ReferenceEquals(leaf, primary.Leaf)) continue;
+
+                File.Copy(path, Path.Combine(canonical, "altnative", leaf), overwrite: true);
+            }
+
+            // 最小 INI 模板：只为满足 canonical 布局，真实部署会覆盖它。
+            File.WriteAllText(Path.Combine(canonical, ModSource.IniName),
+                "[DLSSG SM86]" + Environment.NewLine);
+
+            return canonical;
+        }
+        catch
+        {
+            // 正规化失败就如实返回 null，让调用方沿用原目录 —— 那时 ModSource 会明确报它不兼容，
+            // 而不是让一次半成品的复制变成一次错误的安装。
+            return null;
+        }
+    }
 }

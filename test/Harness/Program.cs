@@ -751,6 +751,36 @@ public static class Program
             Console.WriteLine($"  版本              : {(asGenericSource.Version.Length == 0 ? "(空)" : asGenericSource.Version)}");
             Console.WriteLine("  说明              : ModSource 期望扁平 canonical 布局；MFG payload 是嵌套发行包。");
 
+            // §11：provider 自己的正规化必须真的把布局修好 —— 这是 E 项的判据。
+            var canonical = provider.PrepareCanonicalPayload(extractDir);
+
+            Console.WriteLine();
+            Console.WriteLine("正规化检查（§11 / E 项）:");
+            Console.WriteLine($"  返回目录          : {(canonical is null ? "(null —— 未正规化)" : Path.GetFileName(canonical))}");
+
+            if (canonical is not null)
+            {
+                var asCanonicalSource = new ModSource(canonical);
+
+                Check("正规化后的目录是 ModSource 可消费的 canonical 布局（§11）",
+                    asCanonicalSource.IsValid, asCanonicalSource.ValidationMessage);
+
+                Check("canonical 目录里存在 INI 模板",
+                    File.Exists(Path.Combine(canonical, ModSource.IniName)));
+
+                var alts = Directory.Exists(Path.Combine(canonical, "altnative"))
+                    ? Directory.GetFiles(Path.Combine(canonical, "altnative")).Length
+                    : 0;
+
+                Console.WriteLine($"  IsValid           : {asCanonicalSource.IsValid}");
+                Console.WriteLine($"  备用入口数        : {alts}");
+            }
+            else
+            {
+                Check("正规化后的目录是 ModSource 可消费的 canonical 布局（§11）", false,
+                    "PrepareCanonicalPayload 返回 null —— 真实 payload 仍未可消费");
+            }
+
             return files.Count > 0 ? 0 : 1;
         }
         catch (Exception ex)

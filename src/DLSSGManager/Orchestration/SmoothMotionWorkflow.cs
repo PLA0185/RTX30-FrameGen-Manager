@@ -521,7 +521,13 @@ public sealed class SmoothMotionWorkflow
             // ---- 5. install the patch (files before driver) ----
             // The plan decides what gets installed: its entry choice, its file list, and its ASI strategy. The
             // executor refuses rather than substituting some other arrangement the user never approved.
-            var source = new ModSource(payloadDirectory);
+            // §11：provider 自己的嵌套 payload 先正规化成 canonical 布局，再交给通用 ModSource。
+            //
+            // 实测依据：把真实 MFG payload 直接交给 ModSource 会得到 IsValid = False，校验消息是
+            // 「缺少 dlssg_sm86.ini，且未找到任何代理 DLL」—— 解压出来的是嵌套发行包，而 ModSource 只认
+            // 根目录与 altnative/。**让通用类型去猜嵌套目录，等于让上游布局的变化变成静默的错误安装。**
+            var canonicalPayload = request.Provider.PrepareCanonicalPayload(payloadDirectory) ?? payloadDirectory;
+            var source = new ModSource(canonicalPayload);
             var execution = InstallPlanExecutor.Execute(
                 request.Provider, plan, request.Game, source, request.AllowProtected);
 
