@@ -33,21 +33,21 @@
 | §2 | NVAPI AccessViolation 专项 | ❌ **未做** | — |
 | §10 | `--mfg-asset-smoke` 真实下载 | ❌ **未做** | — |
 | §12 | Updates/Downloads/Diagnostics 接真实状态 | ❌ **未做** | — |
-| §13 | 补测试（确认流程/Profile Wiring/Read-back/ProviderVersion/Payload 隔离/Verification/Plan 精确执行/Batch/Restore/Store/SafeZip） | ⚠️ **部分**（各修复项已随附断言；清单式补齐未做） | — |
-| P0-09 | 预览汇总接入确认框 | ⚠️ **机制就位、未接线**（`PreviewAsync` 可用，确认框仍只描述防作弊风险） | — |
+| §13 | 补测试（确认流程/Profile Wiring/Read-back/ProviderVersion/Payload 隔离/Verification/Plan 精确执行/Batch/Restore/Store/SafeZip） | ⚠️ **部分**（各修复项已随附断言，并补了 Store 默认值 / `PreviewAsync` / `PreviewOnly` 三项；**清单式逐项核对未做完**） | `82bfac5` |
+| P0-09 | 预览汇总接入确认框 | ✅ **已完成**（确认前逐个预览，把「被阻止的计划」与「需要确认的计划」追加进确认正文） | `8ea5438` |
 
 ## 三、验证结果
 
 ```
 Build:                              0 warnings / 0 errors（dotnet build --no-incremental -c Release）
-Harness:                            851 passed / 0 failed / 10 skipped（原 801 项全保留，新增 50 项）
+Harness:                            854 passed / 0 failed / 10 skipped（原 801 项全保留，新增 53 项）
 dotnet test:                        exit 0
 RC Packaging:                       PASS（scripts/package-release.ps1 exit 0）
 UI Process Smoke:                   PASS（从最终 ZIP 解压到全新临时目录，进程稳定 20 秒，句柄非 0，日志无 Exception/Fatal/Unhandled，只终止本次 PID，未误杀其他进程）
-EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,060,241 B）
+EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,061,120 B）
 ZIP:                                artifacts/RTX30-FrameGen-Manager-win-x64-1.9.3.zip（57.7 MB）
-SHA256 (EXE):                       BA28C33B46E97528ECF2E6D58EB63F497A111F05CAAB5FEB6C89F15A2AC7747F
-SHA256 (ZIP):                       9B3B09A2D839634B79F3C35D095AECE8D82116B9F0999AF724A97B5F9AD9619E
+SHA256 (EXE):                       C11BC6FAC672909C88F89FF98CB39291D744F8FA6C76AE7708365E49622C2ECA
+SHA256 (ZIP):                       E2373264A1571844BAF0647D7E9911563E09C668E0C127BB77E607B111A72C78
 发布目录内容:                        恰好 4 个文件（EXE + LICENSE + README.md + THIRD_PARTY_NOTICES.txt）
 ```
 
