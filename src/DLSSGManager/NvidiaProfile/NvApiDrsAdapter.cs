@@ -293,6 +293,52 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         if (!CanDelete)
             return DrsStatus.Fail(-1, "当前不具备删除能力，拒绝写入：写入后无法撤回。");
 
+        return WriteCore(settingId, value);
+    }
+
+    /// <summary>
+    /// Diagnostic only: reads a setting while the <see cref="DriverCallsProven"/> gate is still closed.
+    ///
+    /// <para><b>Why this exists.</b> That gate is a compile-time constant, so a normal read is refused without ever
+    /// reaching the driver — which means the hand-built marshalling cannot be exercised by any application path.
+    /// Without this entry point there is no way to learn whether the rewrite worked other than by reasoning.</para>
+    ///
+    /// <para><b>What it does not do.</b> It never writes and is never called from the application: the gate still
+    /// guards every real path. It reports what the driver answered, and nothing else.</para>
+    /// </summary>
+    internal DrsDiagnosticRead ReadForDiagnostics(uint settingId)
+    {
+        EnsureLoaded();
+
+        if (!_available) return new DrsDiagnosticRead(false, -1, _unavailableReason);
+        if (_session == IntPtr.Zero) return new DrsDiagnosticRead(false, -1, "没有已打开的 DRS 会话。");
+        if (_getSetting is null) return new DrsDiagnosticRead(false, -1, "NvAPI_DRS_GetSetting 未被解析。");
+
+        var setting = NewSetting(settingId, 0);
+
+        try
+        {
+            var status = _getSetting(_session, _profile, settingId, setting);
+
+            var value = status == NvApiOk
+                ? unchecked((uint)Marshal.ReadInt32(setting, OffsetCurrentValueLength))
+                : 0u;
+
+            return new DrsDiagnosticRead(true, status, $"status={status}, value={value}");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(setting);
+        }
+    }
+
+    /// <summary>What a diagnostic read saw. <see cref="Called"/> says whether the driver was reached at all.</summary>
+    internal readonly record struct DrsDiagnosticRead(bool Called, int Status, string Detail);
+
+    private DrsStatus WriteCore(uint settingId, uint value)
+    {
+        if (_setSetting is null) return DrsStatus.Fail(-1, "NvAPI_DRS_SetSetting 未被解析。");
+
         // Build on whatever is already there, so the fields we are not changing (type, location, name) keep their
         // real values. Inventing them would send the driver a request it never asked for.
         var setting = NewSetting(settingId, value);
