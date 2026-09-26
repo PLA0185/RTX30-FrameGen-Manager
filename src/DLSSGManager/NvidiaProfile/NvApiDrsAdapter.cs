@@ -29,14 +29,17 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// <summary>False until the library is actually loaded and its entry points verified.</summary>
     public bool IsAvailable => false;
 
+    /// <summary>Reads are not implemented yet: no entry point has been called.</summary>
+    public bool CanRead => false;
+
     /// <summary>
     /// Whether this adapter may delete a setting. False until the delete entry point is confirmed — and
     /// it gates writing, because an undo that does not exist is not an undo.
     /// </summary>
     public bool CanDelete => false;
 
-    /// <summary>Whether this adapter may write a setting. Requires <see cref="CanDelete"/>.</summary>
-    public bool CanWrite => CanDelete;
+    /// <summary>Committing is not implemented yet.</summary>
+    public bool CanSave => false;
 
     public DrsStatus Open(string? profileName) =>
         DrsStatus.Fail(-1, $"未能打开 DRS 会话：{NotConfirmed}");
@@ -73,6 +76,12 @@ public sealed class AbsentDrsAdapter : IDrsAdapter
     public string Name => "(无驱动接口)";
 
     public bool IsAvailable => false;
+
+    public bool CanRead => false;
+
+    public bool CanDelete => false;
+
+    public bool CanSave => false;
 
     public DrsStatus Open(string? profileName) => DrsStatus.Fail(-1, Reason);
 

@@ -1,3 +1,5 @@
+using DLSSGManager.GameDetection;
+
 namespace DLSSGManager.NvidiaProfile;
 
 /// <summary>
@@ -27,6 +29,25 @@ public enum ProfileSettingState
     InheritedDefault,
 }
 
+/// <summary>
+/// How well a setting's value semantics are established.
+///
+/// Exists so that "somebody said so once" cannot be written to a user's driver as if it were settled.
+/// The ids themselves are undocumented; their <i>values</i> vary even more in how well they are
+/// corroborated, and the weaker ones must not be guessed at.
+/// </summary>
+public enum ValueConfidence
+{
+    /// <summary>No usable source. Never written.</summary>
+    Unknown,
+
+    /// <summary>A single source. Recorded and displayed, but not written automatically.</summary>
+    SingleSource,
+
+    /// <summary>Corroborated by multiple independent sources.</summary>
+    CommunityVerified,
+}
+
 /// <summary>One readable/writable driver setting.</summary>
 /// <param name="Id">The DRS setting id.</param>
 /// <param name="Name">Human label, for logs and the journal.</param>
@@ -34,7 +55,37 @@ public enum ProfileSettingState
 /// Where the id came from. For the Smooth Motion ids this is
 /// <c>Undocumented / Community Verified / Experimental</c> — never "NVIDIA official".
 /// </param>
-public sealed record ProfileSetting(uint Id, string Name, string Provenance);
+/// <param name="Confidence">How well the values below are corroborated.</param>
+/// <param name="OnValue">The value that means "on", when the setting is a switch.</param>
+/// <param name="OffValue">The value that means "off".</param>
+/// <param name="Writable">
+/// False for settings whose values are not established well enough to write. Such a setting stays
+/// visible (so it can be shown and reasoned about) but is never part of a write.
+/// </param>
+public sealed record ProfileSetting(
+    uint Id,
+    string Name,
+    string Provenance,
+    ValueConfidence Confidence = ValueConfidence.CommunityVerified,
+    uint OnValue = 1,
+    uint OffValue = 0,
+    bool Writable = true);
+
+/// <summary>
+/// One requested write: which setting, to what value, whether it is required, and why.
+///
+/// Replaces the previous "everything is written as 1" shape. A required setting whose original state
+/// cannot be read aborts the whole operation; an optional one is skipped. Both are decided before any
+/// write happens.
+/// </summary>
+public sealed record ProfileSettingWrite(ProfileSetting Setting, uint Value, bool Required, string Reason)
+{
+    public static ProfileSettingWrite Required_(ProfileSetting setting, uint value, string reason) =>
+        new(setting, value, true, reason);
+
+    public static ProfileSettingWrite Optional(ProfileSetting setting, uint value, string reason) =>
+        new(setting, value, false, reason);
+}
 
 /// <summary>What was there before a write. The journal's unit, and the only basis for restoring it.</summary>
 public sealed record ProfileSettingSnapshot(
@@ -46,10 +97,45 @@ public sealed record ProfileSettingSnapshot(
 {
     public static ProfileSettingSnapshot Unreadable(uint settingId, string reason) =>
         new(settingId, ProfileSettingState.Unknown, 0, false, reason);
+
+    /// <summary>True when the read actually established something.</summary>
+    public bool WasRead => State != ProfileSettingState.Unknown;
 }
 
 /// <summary>One applied write, paired with what it replaced.</summary>
-public sealed record ProfileJournalEntry(uint SettingId, ProfileSettingSnapshot Before, uint WrittenValue);
+public sealed record ProfileJournalEntry(
+    uint SettingId,
+    string Name,
+    ProfileSettingSnapshot Before,
+    uint WrittenValue);
+
+/// <summary>
+/// The record of one apply, and the thing a rollback is performed from.
+///
+/// Carries the profile name because a rollback has to <i>open a session itself</i>: by the time the
+/// caller decides to undo, the apply has already closed its session, so a rollback that assumed an open
+/// session would operate on nothing.
+///
+/// <see cref="IsRolledBack"/> makes rollback single-shot. Undoing twice would delete or rewrite settings
+/// that the first pass already restored, which is exactly how a "restore" turns into a fresh change.
+/// </summary>
+public sealed class ProfileJournal
+{
+    public ProfileJournal(string? profileName) => ProfileName = profileName;
+
+    /// <summary>Which profile these entries came from. Null means the base profile.</summary>
+    public string? ProfileName { get; }
+
+    public List<ProfileJournalEntry> Entries { get; } = new();
+
+    /// <summary>Set once a rollback has actually run against this journal.</summary>
+    public bool IsRolledBack { get; private set; }
+
+    public int Count => Entries.Count;
+
+    /// <summary>Marks the journal as consumed. Internal: only the service may do this.</summary>
+    internal void MarkRolledBack() => IsRolledBack = true;
+}
 
 /// <summary>A driver call's raw outcome. The numeric code is carried through, never interpreted away.</summary>
 public sealed record DrsStatus(bool Ok, int Code, string Message)
@@ -62,9 +148,9 @@ public sealed record DrsStatus(bool Ok, int Code, string Message)
 /// <summary>
 /// The driver boundary.
 ///
-/// Everything interesting — three-state restoration, partial-failure rollback, elevation probing — lives
-/// above this interface, which is what lets it be tested without touching a real NVIDIA profile. The
-/// adapter is the only place that knows about NVAPI at all.
+/// Everything interesting — three-state restoration, pre-flight validation, partial-failure rollback,
+/// elevation probing — lives above this interface, which is what lets it be tested without touching a
+/// real NVIDIA profile. The adapter is the only place that knows about NVAPI at all.
 /// </summary>
 public interface IDrsAdapter
 {
@@ -73,6 +159,21 @@ public interface IDrsAdapter
 
     /// <summary>Whether the driver library could be loaded at all.</summary>
     bool IsAvailable { get; }
+
+    /// <summary>
+    /// Whether this adapter can read and delete. Reported separately from <see cref="IsAvailable"/> so a
+    /// partially implemented adapter cannot accidentally be treated as fully usable.
+    /// </summary>
+    bool CanRead { get; }
+
+    /// <summary>Whether deletion is implemented. Writing requires it.</summary>
+    bool CanDelete { get; }
+
+    /// <summary>Whether committing is implemented. Writing requires it.</summary>
+    bool CanSave { get; }
+
+    /// <summary>Whether writing is permitted at all: requires read, delete and save.</summary>
+    bool CanWrite => CanRead && CanDelete && CanSave;
 
     /// <summary>Opens a session bound to one profile. <paramref name="profileName"/> null means the base profile.</summary>
     DrsStatus Open(string? profileName);
@@ -102,15 +203,16 @@ public interface IDrsAdapter
 public sealed record ProfileApplyResult(
     bool Ok,
     string Message,
-    IReadOnlyList<ProfileJournalEntry> Journal,
+    ProfileJournal Journal,
     IReadOnlyList<string> Notes)
 {
-    public static ProfileApplyResult Failed(string message, IReadOnlyList<string> notes) =>
-        new(false, message, Array.Empty<ProfileJournalEntry>(), notes);
+    public static ProfileApplyResult Failed(string message, ProfileJournal journal, IReadOnlyList<string> notes) =>
+        new(false, message, journal, notes);
 }
 
 /// <summary>Result of restoring a journal.</summary>
-public sealed record ProfileRollbackResult(bool Ok, string Message, IReadOnlyList<string> Notes);
+/// <param name="Skipped">True when nothing ran because the journal had already been rolled back.</param>
+public sealed record ProfileRollbackResult(bool Ok, string Message, IReadOnlyList<string> Notes, bool Skipped = false);
 
 /// <summary>Whether writing the profile actually needs administrator rights on this machine.</summary>
 public enum ElevationRequirement
@@ -134,11 +236,12 @@ public sealed record ElevationProbe(ElevationRequirement Requirement, string Evi
 /// The rules this class enforces come from the project's red lines and are not negotiable:
 /// <list type="bullet">
 /// <item>an originally absent setting is restored by <b>deletion</b>, never by writing a value — including <c>0</c>;</item>
-/// <item>the driver's predefined table is never consulted as a source of "the original value", because
-/// restoring to a default is not the same as restoring to what the user had;</item>
+/// <item>a required setting whose original state cannot be read <b>aborts the whole apply before a single
+/// write</b>, because writing something we cannot undo is worse than not writing at all;</item>
+/// <item>an optional such setting is skipped and reported, never guessed at;</item>
 /// <item>a partial failure rolls back what was already written, so a failure cannot leave a
 /// half-configured profile;</item>
-/// <item>a setting whose original state could not be read is <b>not</b> overwritten on rollback.</item>
+/// <item>rollback opens its own session and runs at most once per journal.</item>
 /// </list>
 /// </summary>
 public sealed class NvidiaProfileService
@@ -159,59 +262,96 @@ public sealed class NvidiaProfileService
     /// <summary>
     /// Writes settings, remembering what each one was.
     ///
-    /// Returns a journal even on failure, so the caller can see what was captured before the operation
-    /// aborted — and, when a write fails partway, the already-written entries are rolled back here
-    /// rather than left for the caller to notice.
+    /// <para><b>Everything is decided before anything is written.</b> The originals are read first, then
+    /// the write set is validated: a required setting whose original could not be read aborts the call
+    /// with zero writes, and an unreadable optional setting is dropped from the set. Only then does the
+    /// first write happen — so there is no window in which something is changed that cannot be undone.</para>
     /// </summary>
-    public ProfileApplyResult Apply(string? profileName, IReadOnlyList<(ProfileSetting Setting, uint Value)> writes)
+    public ProfileApplyResult Apply(string? profileName, IReadOnlyList<ProfileSettingWrite> writes)
     {
         var notes = new List<string>();
-        var journal = new List<ProfileJournalEntry>();
+        var journal = new ProfileJournal(profileName);
 
         if (writes.Count == 0)
             return new ProfileApplyResult(true, "没有需要写入的设置。", journal, notes);
+
+        if (!_adapter.CanWrite)
+            return ProfileApplyResult.Failed(
+                $"{_adapter.Name} 不具备完整写入能力（需要 read + delete + save），已拒绝写入。", journal, notes);
 
         var opened = _adapter.Open(profileName);
         if (!opened.Ok)
         {
             notes.Add($"打开 Profile 会话失败（code {opened.Code}）：{opened.Message}");
-            return ProfileApplyResult.Failed($"无法打开 Profile「{profileName ?? "(基础)"}」。", notes);
+            return ProfileApplyResult.Failed($"无法打开 Profile「{profileName ?? "(基础)"}」。", journal, notes);
         }
 
         try
         {
-            // Capture every original first. Reading after the first write would record our own value as
-            // the previous one, making a later restore a no-op that looks like a success.
-            foreach (var (setting, _) in writes)
+            // ── 1. Read every original first. Reading after the first write would record our own value
+            //       as the previous one, making a later restore a no-op that looks like a success.
+            var captured = new List<(ProfileSettingWrite Write, ProfileSettingSnapshot Before)>();
+            foreach (var write in writes)
             {
-                var before = _adapter.Read(setting.Id);
-                journal.Add(new ProfileJournalEntry(setting.Id, before, 0));
-
-                if (before.State == ProfileSettingState.Unknown)
-                    notes.Add($"设置 {setting.Name}（0x{setting.Id:X8}）的原值无法读取，回滚时将不会改写它。");
+                var before = _adapter.Read(write.Setting.Id);
+                captured.Add((write, before));
             }
 
-            var applied = 0;
-            for (var i = 0; i < writes.Count; i++)
+            // ── 2. Required + unreadable ⇒ abort with zero writes.
+            var blocking = captured
+                .Where(c => c.Write.Required && !c.Before.WasRead)
+                .ToList();
+
+            if (blocking.Count > 0)
             {
-                var (setting, value) = writes[i];
-                var status = _adapter.Write(setting.Id, value);
+                foreach (var (write, before) in blocking)
+                {
+                    notes.Add($"必填设置「{write.Setting.Name}」（0x{write.Setting.Id:X8}）的原值无法读取：{before.Reason}");
+                }
+
+                notes.Add("已在写入前整体中止：没有任何设置被修改。");
+
+                return ProfileApplyResult.Failed(
+                    $"必填设置的原值无法读取（{blocking.Count} 项），未写入任何设置。", journal, notes);
+            }
+
+            // ── 3. Optional + unreadable ⇒ drop from the set.
+            var plan = new List<(ProfileSettingWrite Write, ProfileSettingSnapshot Before)>();
+            foreach (var (write, before) in captured)
+            {
+                if (!before.WasRead)
+                {
+                    notes.Add($"可选设置「{write.Setting.Name}」（0x{write.Setting.Id:X8}）的原值无法读取，已跳过。" +
+                              $"Skipped: 0x{write.Setting.Id:X8}");
+                    continue;
+                }
+
+                plan.Add((write, before));
+            }
+
+            if (plan.Count == 0)
+                return new ProfileApplyResult(true, "全部设置都因原值不可读而跳过，未修改任何内容。", journal, notes);
+
+            // ── 4. Write.
+            foreach (var (write, before) in plan)
+            {
+                var status = _adapter.Write(write.Setting.Id, write.Value);
 
                 if (!status.Ok)
                 {
-                    notes.Add($"写入 {setting.Name}（0x{setting.Id:X8}）失败（code {status.Code}）：{status.Message}");
+                    notes.Add($"写入「{write.Setting.Name}」（0x{write.Setting.Id:X8}）失败（code {status.Code}）：{status.Message}");
 
-                    var rollback = Rollback(journal.Take(applied).ToList());
+                    var rollback = Rollback(journal);
                     notes.Add(rollback.Message);
 
-                    return new ProfileApplyResult(false,
-                        $"写入 {setting.Name} 失败，已回滚之前写入的 {applied} 项。", journal, notes);
+                    return ProfileApplyResult.Failed(
+                        $"写入「{write.Setting.Name}」失败，已回滚之前写入的 {journal.Count} 项。", journal, notes);
                 }
 
-                journal[i] = journal[i] with { WrittenValue = value };
-                applied++;
+                journal.Entries.Add(new ProfileJournalEntry(write.Setting.Id, write.Setting.Name, before, write.Value));
             }
 
+            // ── 5. Commit.
             var saved = _adapter.Save();
             if (!saved.Ok)
             {
@@ -220,10 +360,10 @@ public sealed class NvidiaProfileService
                 var rollback = Rollback(journal);
                 notes.Add(rollback.Message);
 
-                return new ProfileApplyResult(false, "保存 Profile 失败，已回滚全部写入。", journal, notes);
+                return ProfileApplyResult.Failed("保存 Profile 失败，已回滚全部写入。", journal, notes);
             }
 
-            return new ProfileApplyResult(true, $"已写入并保存 {applied} 项设置。", journal, notes);
+            return new ProfileApplyResult(true, $"已写入并保存 {journal.Count} 项设置。", journal, notes);
         }
         finally
         {
@@ -232,82 +372,115 @@ public sealed class NvidiaProfileService
     }
 
     /// <summary>
-    /// Restores a journal, newest entry first.
+    /// Restores a journal, newest entry first, in a session of its own.
     ///
-    /// Each original state maps to exactly one correct action:
+    /// <para><b>The session is the point.</b> A rollback happens after the apply has closed its session —
+    /// possibly much later, possibly from another part of the program. Assuming an open session would
+    /// mean silently operating on nothing, so this opens one from the journal's profile name, restores,
+    /// saves, and closes.</para>
+    ///
+    /// <para><b>Single-shot.</b> A journal that has already been rolled back returns immediately. Undoing
+    /// twice would delete or rewrite settings the first pass already restored — a "restore" that quietly
+    /// becomes a fresh change.</para>
+    ///
+    /// <para>Each original state maps to exactly one correct action:
     /// <see cref="ProfileSettingState.Absent"/> and <see cref="ProfileSettingState.InheritedDefault"/>
     /// both restore by <b>deletion</b> — an inherited value was never ours to write back, and writing it
     /// would convert an inherited setting into an explicit one. <see cref="ProfileSettingState.Unknown"/>
-    /// is deliberately skipped: guessing a value there would overwrite something we never read.
+    /// is deliberately skipped: guessing a value there would overwrite something we never read.</para>
     /// </summary>
-    public ProfileRollbackResult Rollback(IReadOnlyList<ProfileJournalEntry> journal)
+    public ProfileRollbackResult Rollback(ProfileJournal journal)
     {
         var notes = new List<string>();
         if (journal.Count == 0) return new ProfileRollbackResult(true, "无需回滚。", notes);
 
+        if (journal.IsRolledBack)
+            return new ProfileRollbackResult(true,
+                $"该 journal（Profile「{journal.ProfileName ?? "(基础)"}」）已回滚过，已跳过以防重复回滚。",
+                notes, Skipped: true);
+
+        var opened = _adapter.Open(journal.ProfileName);
+        if (!opened.Ok)
+        {
+            notes.Add($"为回滚打开 Profile 会话失败（code {opened.Code}）：{opened.Message}");
+            return new ProfileRollbackResult(false, "无法为回滚打开 Profile 会话，未恢复任何设置。", notes);
+        }
+
         var restored = 0;
         var failed = 0;
+        var skipped = 0;
 
-        foreach (var entry in journal.Reverse())
+        try
         {
-            var before = entry.Before;
-
-            switch (before.State)
+            foreach (var entry in journal.Entries.AsEnumerable().Reverse())
             {
-                case ProfileSettingState.Absent:
-                case ProfileSettingState.InheritedDefault:
+                switch (entry.Before.State)
                 {
-                    var status = _adapter.Delete(entry.SettingId);
-                    if (status.Ok)
+                    case ProfileSettingState.Absent:
+                    case ProfileSettingState.InheritedDefault:
                     {
-                        restored++;
-                        notes.Add($"已删除 0x{entry.SettingId:X8}，恢复为未设置。");
-                    }
-                    else
-                    {
-                        failed++;
-                        notes.Add($"删除 0x{entry.SettingId:X8} 失败（code {status.Code}）：{status.Message}");
+                        var status = _adapter.Delete(entry.SettingId);
+                        if (status.Ok)
+                        {
+                            restored++;
+                            notes.Add($"已删除 0x{entry.SettingId:X8}（{entry.Name}），恢复为未设置。");
+                        }
+                        else
+                        {
+                            failed++;
+                            notes.Add($"删除 0x{entry.SettingId:X8} 失败（code {status.Code}）：{status.Message}");
+                        }
+
+                        break;
                     }
 
-                    break;
+                    case ProfileSettingState.ExplicitValue:
+                    {
+                        var status = _adapter.Write(entry.SettingId, entry.Before.Value);
+                        if (status.Ok)
+                        {
+                            restored++;
+                            notes.Add($"已恢复 0x{entry.SettingId:X8}（{entry.Name}）= {entry.Before.Value}。");
+                        }
+                        else
+                        {
+                            failed++;
+                            notes.Add($"恢复 0x{entry.SettingId:X8} 失败（code {status.Code}）：{status.Message}");
+                        }
+
+                        break;
+                    }
+
+                    default:
+                        skipped++;
+                        notes.Add($"跳过 0x{entry.SettingId:X8}（{entry.Name}）：原值状态未知，不猜测、不覆盖。");
+                        break;
                 }
+            }
 
-                case ProfileSettingState.ExplicitValue:
+            if (failed == 0)
+            {
+                var save = _adapter.Save();
+                if (!save.Ok)
                 {
-                    var status = _adapter.Write(entry.SettingId, before.Value);
-                    if (status.Ok)
-                    {
-                        restored++;
-                        notes.Add($"已恢复 0x{entry.SettingId:X8} = {before.Value}。");
-                    }
-                    else
-                    {
-                        failed++;
-                        notes.Add($"恢复 0x{entry.SettingId:X8} 失败（code {status.Code}）：{status.Message}");
-                    }
-
-                    break;
+                    notes.Add($"回滚后的保存失败（code {save.Code}）：{save.Message}");
+                    return new ProfileRollbackResult(false, $"已恢复 {restored} 项，但保存失败。", notes);
                 }
-
-                default:
-                    notes.Add($"跳过 0x{entry.SettingId:X8}：原值状态未知，不猜测、不覆盖。");
-                    break;
             }
         }
-
-        if (failed == 0)
+        finally
         {
-            var save = _adapter.Save();
-            if (!save.Ok)
-            {
-                notes.Add($"回滚后的保存失败（code {save.Code}）：{save.Message}");
-                return new ProfileRollbackResult(false, $"已恢复 {restored} 项，但保存失败。", notes);
-            }
+            _adapter.Close();
+
+            // Single-shot from here on: the attempt has run, whether or not every entry succeeded.
+            journal.MarkRolledBack();
         }
 
-        return failed == 0
-            ? new ProfileRollbackResult(true, $"已恢复 {restored} 项设置。", notes)
-            : new ProfileRollbackResult(false, $"恢复 {restored} 项，{failed} 项失败。", notes);
+        var summary = $"已恢复 {restored} 项";
+        if (skipped > 0) summary += $"，跳过 {skipped} 项（原值未知）";
+        if (failed > 0) summary += $"，{failed} 项失败";
+
+        return new ProfileRollbackResult(failed == 0, summary + "。", notes);
     }
 
     /// <summary>
@@ -332,9 +505,11 @@ public sealed class NvidiaProfileService
         {
             try
             {
-                // Opening alone is not proof; a read is what actually touches the profile store.
+                // A successful <i>read</i> is what proves the session works. Any of Absent / ExplicitValue /
+                // InheritedDefault means the read established something; only Unknown means it did not.
                 var probe = _adapter.Read(SmoothMotionSettings.FeatureEnabled);
-                if (probe.State != ProfileSettingState.Unknown || probe.Reason.Length == 0)
+
+                if (probe.WasRead)
                 {
                     return elevated
                         ? new ElevationProbe(ElevationRequirement.Unknown,
@@ -360,7 +535,7 @@ public sealed class NvidiaProfileService
 }
 
 /// <summary>
-/// The Smooth Motion setting ids.
+/// The Smooth Motion setting ids and their value semantics.
 ///
 /// <para><b>Provenance is part of the data, not a comment.</b> These ids do not appear in NVIDIA's
 /// published driver-setting headers, so they are <c>Undocumented</c>; their values are corroborated by
@@ -368,23 +543,25 @@ public sealed class NvidiaProfileService
 /// <c>Experimental</c> because NVIDIA documents frame generation for RTX 40 and above. Describing them as
 /// "NVIDIA official settings" would be false.</para>
 ///
-/// <para>Where sources disagree, the conflict is recorded rather than resolved by preference.</para>
+/// <para><b>Values that are not established are not written.</b> A setting whose values rest on a single
+/// source is marked <see cref="ValueConfidence.SingleSource"/> and <c>Writable = false</c>: it stays
+/// visible and reviewable, but it is never guessed into a user's driver profile.</para>
 /// </summary>
 public static class SmoothMotionSettings
 {
     public const string Provenance =
         "Undocumented + Community Verified + Experimental（未出现在 NVIDIA 公开头文件；数值由多个独立社区来源交叉印证）";
 
-    /// <summary>Master switch, per application.</summary>
+    /// <summary>Master switch, per application. 4 sources agree: Off=0 / On=1.</summary>
     public const uint FeatureEnabled = 0xB0D384C0;
 
-    /// <summary>API bitmask: DX12 = 1, DX11 = 2, Vulkan = 4.</summary>
+    /// <summary>API bitmask, 4 sources agree on the mask semantics.</summary>
     public const uint EnabledApis = 0xB0CC0875;
 
     public const uint FlipMetering0 = 0xB03A4546;
     public const uint FlipMetering1 = 0xB03A4547;
 
-    /// <summary>Diagnostic logging level.</summary>
+    /// <summary>Diagnostic logging level. Single source — recorded, never written.</summary>
     public const uint DebugLogLevel = 0xB053C379;
 
     /// <summary>
@@ -393,13 +570,91 @@ public static class SmoothMotionSettings
     /// </summary>
     public const uint DebugBars = 0xB01B8B02;
 
+    // ── API bitmask (4 sources agree: DX12=1, DX11=2, Vulkan=4) ──────────────────────────────
+
+    public const uint ApiDx12Bit = 1;
+    public const uint ApiDx11Bit = 2;
+    public const uint ApiVulkanBit = 4;
+
+    /// <summary>
+    /// The bit for one graphics API, or <b>null for <see cref="GraphicsApi.Unknown"/></b>.
+    ///
+    /// Null is not "0": an unknown API means we do not know which bit to set, and writing the wrong one
+    /// (or an empty mask) would configure the driver for an API the game does not use. The caller must
+    /// treat null as "do not write this setting".
+    /// </summary>
+    public static uint? ApiBit(GraphicsApi api) => api switch
+    {
+        GraphicsApi.Dx12 => ApiDx12Bit,
+        GraphicsApi.Dx11 => ApiDx11Bit,
+        GraphicsApi.Vulkan => ApiVulkanBit,
+        _ => null,
+    };
+
+    // ── Sets ─────────────────────────────────────────────────────────────────────────────────
+
+    public static ProfileSetting Feature { get; } = new(
+        FeatureEnabled, "Smooth Motion 开关", Provenance,
+        ValueConfidence.CommunityVerified, OnValue: 1, OffValue: 0);
+
+    public static ProfileSetting Apis { get; } = new(
+        EnabledApis, "启用的图形 API（位掩码）", Provenance,
+        ValueConfidence.CommunityVerified, OnValue: 7, OffValue: 0);
+
+    /// <summary>
+    /// Flip metering pair. Three sources agree on the on/off values, so these are writable when the
+    /// caller has a reason to change them — but nothing in this project does so automatically yet.
+    /// </summary>
+    public static ProfileSetting Flip0 { get; } = new(
+        FlipMetering0, "Flip Metering 0", Provenance,
+        ValueConfidence.CommunityVerified, OnValue: 0xFFFFFFFF, OffValue: 0);
+
+    public static ProfileSetting Flip1 { get; } = new(
+        FlipMetering1, "Flip Metering 1", Provenance,
+        ValueConfidence.CommunityVerified, OnValue: 1, OffValue: 0);
+
+    /// <summary>Single source: shown, understood, <b>never written</b>.</summary>
+    public static ProfileSetting DebugLog { get; } = new(
+        DebugLogLevel, "调试日志级别", Provenance + "；单一来源，仅诊断用",
+        ValueConfidence.SingleSource, OnValue: 1, OffValue: 0, Writable: false);
+
+    public static ProfileSetting DebugBarsSetting { get; } = new(
+        DebugBars, "Debug Bars", Provenance,
+        ValueConfidence.CommunityVerified, OnValue: 1, OffValue: 0);
+
     public static IReadOnlyList<ProfileSetting> All { get; } = new[]
     {
-        new ProfileSetting(FeatureEnabled, "Smooth Motion 开关", Provenance),
-        new ProfileSetting(EnabledApis, "启用的图形 API（位掩码）", Provenance),
-        new ProfileSetting(FlipMetering0, "Flip Metering 0", Provenance),
-        new ProfileSetting(FlipMetering1, "Flip Metering 1", Provenance),
-        new ProfileSetting(DebugLogLevel, "调试日志级别", Provenance + "；单一来源，仅诊断用"),
-        new ProfileSetting(DebugBars, "Debug Bars", Provenance),
+        Feature, Apis, Flip0, Flip1, DebugLog, DebugBarsSetting,
     };
+
+    /// <summary>Settings this project is willing to write, by id.</summary>
+    public static bool IsWritable(uint settingId) =>
+        All.FirstOrDefault(s => s.Id == settingId)?.Writable ?? false;
+
+    /// <summary>
+    /// The writes that turn Smooth Motion on for one game.
+    ///
+    /// Only two settings are written automatically, and both are the ones with multi-source values:
+    /// the master switch, and the API mask derived from a <i>detected</i> API. The flip-metering pair is
+    /// deliberately left alone — nothing in the project has evidence for which value a given game needs,
+    /// and guessing there would be exactly the "unknown value written as fact" mistake this file exists
+    /// to prevent.
+    /// </summary>
+    /// <param name="api">The detected graphics API. Unknown produces no API write at all.</param>
+    public static IReadOnlyList<ProfileSettingWrite> EnableWrites(GraphicsApi api)
+    {
+        var writes = new List<ProfileSettingWrite>
+        {
+            ProfileSettingWrite.Required_(Feature, 1, "启用 Smooth Motion（4 来源一致的 On 值）。"),
+        };
+
+        var bit = ApiBit(api);
+        if (bit is not null)
+        {
+            writes.Add(ProfileSettingWrite.Required_(Apis, bit.Value,
+                $"按检测到的 {api} 设置 API 位掩码。"));
+        }
+
+        return writes;
+    }
 }

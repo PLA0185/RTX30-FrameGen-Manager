@@ -204,7 +204,9 @@ public sealed class SmoothMotionWorkflow
         ct.ThrowIfCancellationRequested();
 
         // Declared before any work so every early return can hand it to the rollback path.
-        var profileJournal = new List<ProfileJournalEntry>();
+        // The journal is the rollback's input and carries the profile name, so a rollback can open its own
+        // session long after this run closed its own.
+        ProfileJournal? profileJournal = null;
 
         // ---- 1. detection ----
         progress?.Report("检测渲染 EXE 与图形 API…");
@@ -331,8 +333,19 @@ public sealed class SmoothMotionWorkflow
             // ---- 6. driver settings ----
             if (request.ProfileSettings is { Count: > 0 })
             {
-                var apply = _profile.Apply(request.Game.Name, request.ProfileSettings.Select(s => (s, 1u)).ToList());
-                profileJournal.AddRange(apply.Journal);
+                // Values come from the setting definitions, never from a blanket 1: the API bitmask is derived
+                // from the API actually in play, and a setting whose values are not established is not written
+                // at all. An unknown API therefore yields the master switch alone — never a guessed bitmask.
+                var writes = SmoothMotionSettings.EnableWrites(request.UserApi)
+                    .Where(w => request.ProfileSettings.Any(s => s.Id == w.Setting.Id))
+                    .ToList();
+
+                var apply = writes.Count > 0
+                    ? _profile.Apply(request.Game.Name, writes)
+                    : new ProfileApplyResult(true, "计划中的设置都没有可安全写入的值，已跳过。",
+                        new ProfileJournal(request.Game.Name), Array.Empty<string>());
+
+                profileJournal = apply.Journal;
                 profileWritten = apply.Ok;
 
                 steps.Add(new WorkflowStep("配置 NVIDIA Profile", apply.Ok, apply.Message));
@@ -400,7 +413,7 @@ public sealed class SmoothMotionWorkflow
         bool filesWritten,
         bool profileWritten,
         VerificationReport? verification = null,
-        IReadOnlyList<ProfileJournalEntry>? journal = null)
+        ProfileJournal? journal = null)
     {
         var report = verification ?? VerificationReport.FromSignals(Array.Empty<VerificationSignal>());
 

@@ -3288,6 +3288,13 @@ public static class Program
 
         public bool IsAvailable { get; set; } = true;
 
+        /// <summary>Capability switches, so tests can exercise the "no write capability" refusal.</summary>
+        public bool CanRead { get; set; } = true;
+
+        public bool CanDelete { get; set; } = true;
+
+        public bool CanSave { get; set; } = true;
+
         public int FailOpenCode { get; set; }
         public uint? FailWriteId { get; set; }
         public uint? FailDeleteId { get; set; }
@@ -3366,10 +3373,15 @@ public static class Program
 
         ProfileSetting Setting(uint id) => new(id, "test-setting", "test");
 
+        // Writes are required unless a test says otherwise: the service must never have to guess whether
+        // an unreadable original is fatal.
+        static ProfileSettingWrite W(ProfileSetting s, uint v, bool required = true) =>
+            new(s, v, required, "test");
+
         // ---- ABSENT → write → restore → ABSENT ----
         var a = new FakeDrsAdapter();
         var svcA = new NvidiaProfileService(a, () => false);
-        var rAbsent = svcA.Apply("TestProfile", new[] { (Setting(idA), 1u) });
+        var rAbsent = svcA.Apply("TestProfile", new[] { W(Setting(idA), 1u) });
         Check("未设置的项可以写入", rAbsent.Ok && a.StateOf(idA) == ProfileSettingState.ExplicitValue);
 
         var rbAbsent = svcA.Rollback(rAbsent.Journal);
@@ -3381,7 +3393,7 @@ public static class Program
         var b = new FakeDrsAdapter();
         b.Seed(idA, ProfileSettingState.ExplicitValue, 0);
         var svcB = new NvidiaProfileService(b, () => false);
-        var rZero = svcB.Apply("P", new[] { (Setting(idA), 5u) });
+        var rZero = svcB.Apply("P", new[] { W(Setting(idA), 5u) });
         Check("显式 0 可被写入覆盖", rZero.Ok && b.ValueOf(idA) == 5);
 
         svcB.Rollback(rZero.Journal);
@@ -3392,20 +3404,20 @@ public static class Program
         var c = new FakeDrsAdapter();
         c.Seed(idA, ProfileSettingState.ExplicitValue, 0xFFFFFFFF);
         var svcC = new NvidiaProfileService(c, () => false);
-        svcC.Rollback(svcC.Apply("P", new[] { (Setting(idA), 3u) }).Journal);
+        svcC.Rollback(svcC.Apply("P", new[] { W(Setting(idA), 3u) }).Journal);
         Check("显式非零原值被完整恢复", c.ValueOf(idA) == 0xFFFFFFFF);
 
         // ---- INHERITED / DEFAULT restores by deletion ----
         var o = new FakeDrsAdapter();
         o.Seed(idA, ProfileSettingState.InheritedDefault, 123);
         var svcO = new NvidiaProfileService(o, () => false);
-        svcO.Rollback(svcO.Apply("P", new[] { (Setting(idA), 9u) }).Journal);
+        svcO.Rollback(svcO.Apply("P", new[] { W(Setting(idA), 9u) }).Journal);
         Check("继承值原状通过删除恢复（未写成显式值）", !o.Has(idA));
 
         // ---- partial failure ----
         var d = new FakeDrsAdapter { FailWriteId = idB };
         var svcD = new NvidiaProfileService(d, () => false);
-        var rPartial = svcD.Apply("P", new[] { (Setting(idA), 1u), (Setting(idB), 2u) });
+        var rPartial = svcD.Apply("P", new[] { W(Setting(idA), 1u), W(Setting(idB), 2u) });
         Check("部分写入失败时整体返回失败", !rPartial.Ok, rPartial.Message);
         Check("部分失败已回滚先前写入项", !d.Has(idA));
         Check("部分失败保留原因与回滚记录", rPartial.Notes.Count > 1);
@@ -3413,23 +3425,23 @@ public static class Program
         // ---- save failure ----
         var e = new FakeDrsAdapter { FailSave = true };
         var svcE = new NvidiaProfileService(e, () => false);
-        var rSave = svcE.Apply("P", new[] { (Setting(idA), 1u) });
+        var rSave = svcE.Apply("P", new[] { W(Setting(idA), 1u) });
         Check("保存失败时返回失败", !rSave.Ok);
         Check("保存失败已回滚全部写入", !e.Has(idA));
 
         // ---- session init failure / profile missing / binding missing ----
         var f = new FakeDrsAdapter { FailOpenCode = -3 };
-        var rSession = new NvidiaProfileService(f, () => false).Apply("P", new[] { (Setting(idA), 1u) });
+        var rSession = new NvidiaProfileService(f, () => false).Apply("P", new[] { W(Setting(idA), 1u) });
         Check("会话初始化失败时不写入", !rSession.Ok && f.WriteCount == 0);
         Check("会话失败原因被记录", rSession.Notes.Any(n => n.Contains("-3")));
 
         var g = new FakeDrsAdapter { FailOpenCode = -160 };
         Check("Profile 不存在时不写入",
-            !new NvidiaProfileService(g, () => false).Apply("P", new[] { (Setting(idA), 1u) }).Ok && g.WriteCount == 0);
+            !new NvidiaProfileService(g, () => false).Apply("P", new[] { W(Setting(idA), 1u) }).Ok && g.WriteCount == 0);
 
         var h = new FakeDrsAdapter { FailOpenCode = -161 };
         Check("应用绑定不存在时不写入",
-            !new NvidiaProfileService(h, () => false).Apply("P", new[] { (Setting(idA), 1u) }).Ok && h.WriteCount == 0);
+            !new NvidiaProfileService(h, () => false).Apply("P", new[] { W(Setting(idA), 1u) }).Ok && h.WriteCount == 0);
 
         // ---- elevation probe (runtime, never hard-coded) ----
         Check("非提权调用失败 → 判为需要提权",
@@ -3451,31 +3463,82 @@ public static class Program
         // ---- rollback success and failure ----
         var m = new FakeDrsAdapter();
         var svcM = new NvidiaProfileService(m, () => false);
-        var rM = svcM.Apply("P", new[] { (Setting(idA), 7u) });
+        var rM = svcM.Apply("P", new[] { W(Setting(idA), 7u) });
         m.FailDeleteId = idA;
         var rbFail = svcM.Rollback(rM.Journal);
         Check("回滚失败被如实报告", !rbFail.Ok && rbFail.Notes.Any(n => n.Contains("失败")));
         Check("回滚失败时保留真实现场", m.Has(idA) && m.ValueOf(idA) == 7);
 
-        // ---- unreadable original is never guessed ----
+        // ---- unreadable original: required ⇒ abort before any write ----
         var n = new FakeDrsAdapter { FailRead = true };
         var svcN = new NvidiaProfileService(n, () => false);
-        var rUnknown = svcN.Apply("P", new[] { (Setting(idA), 1u) });
-        Check("原值不可读时给出明确警告", rUnknown.Notes.Any(x => x.Contains("无法读取")));
+        var rUnknown = svcN.Apply("P", new[] { W(Setting(idA), 1u) });
+        Check("必填项原值不可读时整体中止", !rUnknown.Ok, rUnknown.Message);
+        Check("必填项原值不可读时 0 项写入（不写无法撤销的东西）", n.WriteCount == 0);
+        Check("必填项原值不可读时说明原因", rUnknown.Notes.Any(x => x.Contains("无法读取")));
+        Check("中止时不产生任何 journal 条目", rUnknown.Journal.Count == 0);
 
-        var writesBeforeRollback = n.WriteCount;
-        svcN.Rollback(rUnknown.Journal);
-        Check("原值未知时不猜测也不覆盖", n.WriteCount == writesBeforeRollback);
+        // ---- unreadable original: optional ⇒ skipped, never written ----
+        var nOpt = new FakeDrsAdapter { FailRead = true };
+        var rOpt = new NvidiaProfileService(nOpt, () => false)
+            .Apply("P", new[] { W(Setting(idA), 1u, required: false) });
+        Check("可选设置原值不可读时跳过而非中止", rOpt.Ok && nOpt.WriteCount == 0, rOpt.Message);
+        Check("跳过的项被显式标记", rOpt.Notes.Any(x => x.Contains("Skipped")));
+
+        // ---- rollback opens its own session and runs at most once ----
+        var p = new FakeDrsAdapter();
+        var svcP = new NvidiaProfileService(p, () => false);
+        var rP = svcP.Apply("RollbackProfile", new[] { W(Setting(idA), 4u) });
+        var opensAfterApply = p.OpenCount;
+        svcP.Rollback(rP.Journal);
+        Check("回滚自行打开 Profile 会话（不依赖 Apply 已关闭的会话）", p.OpenCount > opensAfterApply);
+        Check("journal 携带 ProfileName", rP.Journal.ProfileName == "RollbackProfile");
+
+        var deleteAfterFirst = p.DeleteCount;
+        var doubleRollback = svcP.Rollback(rP.Journal);
+        Check("同一 journal 不会被回滚两次", doubleRollback.Skipped && doubleRollback.Ok);
+        Check("重复回滚不触碰驱动", p.DeleteCount == deleteAfterFirst);
+
+        // ---- typed values: the API bitmask comes from the detected API, not a blanket 1 ----
+        Check("DX12 → 位掩码 1", SmoothMotionSettings.ApiBit(GraphicsApi.Dx12) == 1);
+        Check("DX11 → 位掩码 2", SmoothMotionSettings.ApiBit(GraphicsApi.Dx11) == 2);
+        Check("Vulkan → 位掩码 4", SmoothMotionSettings.ApiBit(GraphicsApi.Vulkan) == 4);
+        Check("API 未知时不产生位掩码（不猜）", SmoothMotionSettings.ApiBit(GraphicsApi.Unknown) is null);
+
+        var vulkanWrites = SmoothMotionSettings.EnableWrites(GraphicsApi.Vulkan);
+        Check("已检测 API 时 API 位写真实掩码 4（而非旧行为的一律写 1）",
+            vulkanWrites.Any(w => w.Setting.Id == SmoothMotionSettings.EnabledApis && w.Value == 4));
+        Check("开关与 API 位是两个独立写入", vulkanWrites.Count == 2);
+        Check("API 未知时不写入 API 设置",
+            SmoothMotionSettings.EnableWrites(GraphicsApi.Unknown)
+                .All(w => w.Setting.Id != SmoothMotionSettings.EnabledApis));
+        Check("写入项自带理由", vulkanWrites.All(w => w.Reason.Length > 0));
+
+        // ---- values that are not established are never written ----
+        Check("单一来源的设置不可写", !SmoothMotionSettings.DebugLog.Writable);
+        Check("单一来源不进入自动写入集",
+            SmoothMotionSettings.EnableWrites(GraphicsApi.Dx12)
+                .All(w => w.Setting.Id != SmoothMotionSettings.DebugLogLevel));
+        Check("未确认的 Flip 值不被自动写入",
+            SmoothMotionSettings.EnableWrites(GraphicsApi.Dx12)
+                .All(w => w.Setting.Id != SmoothMotionSettings.FlipMetering0 &&
+                          w.Setting.Id != SmoothMotionSettings.FlipMetering1));
+
+        // ---- no write capability ⇒ refuse everything ----
+        var noWrite = new FakeDrsAdapter { CanDelete = false };
+        var rNoWrite = new NvidiaProfileService(noWrite, () => false).Apply("P", new[] { W(Setting(idA), 1u) });
+        Check("缺少删除能力时拒绝写入", !rNoWrite.Ok && noWrite.WriteCount == 0, rNoWrite.Message);
 
         // ---- empty set ----
         Check("空写入集合不触碰驱动",
             new NvidiaProfileService(new FakeDrsAdapter(), () => false)
-                .Apply("P", Array.Empty<(ProfileSetting, uint)>()).Ok);
+                .Apply("P", Array.Empty<ProfileSettingWrite>()).Ok);
 
         // ---- the real adapter fails closed ----
         var real = new NvApiDrsAdapter();
-        Check("真实适配器在头文件确认前报告不可用", !real.IsAvailable);
-        Check("缺少删除能力时同时拒绝写入（能删才能写）", !real.CanDelete && !real.CanWrite);
+        Check("真实适配器在实现完成前报告不可用", !real.IsAvailable);
+        Check("缺少删除能力时同时拒绝写入（能删才能写）",
+            !real.CanDelete && !((IDrsAdapter)real).CanWrite);
         Check("真实适配器拒绝写入并说明原因", real.Write(idA, 1).Message.Contains("拒绝写入"));
         Check("真实适配器未对驱动发起调用",
             real.Read(idA).State == ProfileSettingState.Unknown);
@@ -3827,8 +3890,11 @@ public static class Program
         var settings = new[] { SmoothMotionSettings.All[0], SmoothMotionSettings.All[1] };
         rbParts.Drs.FailWriteId = SmoothMotionSettings.EnabledApis;
 
+        // A detected API is what makes the API bitmask writable at all — an unknown API deliberately yields
+        // the master switch alone — so the request has to carry one for this test to reach the second write.
         var rolledBack = rbParts.Workflow.RunAsync(
-            MakeRequest("wfRollback", rbDir, rbParts.Provider, rbGame) with { ProfileSettings = settings },
+            MakeRequest("wfRollback", rbDir, rbParts.Provider, rbGame)
+                with { ProfileSettings = settings, UserApi = GraphicsApi.Dx12 },
             null, CancellationToken.None).GetAwaiter().GetResult();
 
         Check("Profile 写入失败时编排失败", rolledBack.Outcome == WorkflowOutcome.Failed, rolledBack.Outcome.ToString());
