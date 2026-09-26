@@ -8,7 +8,7 @@
 | Profile Wiring | 5 + 2 | P0-02 段（反射断言字段入口、`EnableWrites` 产物、写入集合不含不可写项）+ §7 段（`ProfileRequirements` 字段、`ProfileSettingRequirement` 五字段） | **端到端缺**：`ProfileSettings` 传入 → 计划出现 Typed 要求 → Profile 段真的被走到，这条链没有一条断言跑通。原因是 `Build(work, name)` 是 `TestSmoothMotionWorkflow` 的**局部函数**，在其他测试方法里不可见（`CS0103`）；且走到 Profile 段需要「同名游戏 + 真实 payload + 带 `NvidiaProfileChanges` 的配方」三者同时满足 |
 | Read-back | 3 | P0-03 段：`ProfileApplyResult.ReadBackConfirmed` 存在、`SmoothMotionWorkflow.ReadBackMatches` 已删除、`IDrsAdapter.CanRead` 仍在 | 读回**值不一致**时的行为没有断言（需要 `FakeDrsAdapter` 支持「写后读回返回不同值」的注入） |
 | ProviderVersion | 3 | P0-06 段：存在「解析 Provider 版本」步骤、该步骤**排在查询兼容性之前**（比较步骤下标）、计划携带解析出的版本 | 未传版本时**真的调用了** `CheckLatestAsync` 没有断言（`RecordingProvider` 未记录调用次数） |
-| Payload 隔离 | 7 | P0-07 段：不同版本/不同 provider 目录不同、根目录在应用数据之下、版本与 provider id 的路径分隔符都逃不出根、空版本落到 `_unknown`、staging 与最终目录同级 | 旧版本清理（`OtherVersions`）与「下载到临时目录后原子切换」没有断言 |
+| Payload 隔离 | 12 | P0-07 段：不同版本/不同 provider 目录不同、根目录在应用数据之下、版本与 provider id 的路径分隔符都逃不出根、空版本落到 `_unknown`、staging 与最终目录同级；**清理段新增 5 条**：删除未被引用的旧版本、保留当前版本、**保留仍被其他部署引用的版本**、不触碰进行中的 staging、清理后可清理集合为空 | 「下载到临时目录后**原子切换**」没有断言。**旧版本清理已于本轮补齐**（`PayloadPaths.RemoveUnreferenced`，只删调用方明确声明未使用的版本） |
 | Verification | 6 + 3 | P0-05 段（INI/DLL/EXE 分类、非 PE 不被 Authenticode 拒、空文件被拒、不存在被拒）+ §3 段（三态枚举、读成功只报 `ReadAvailable`、写探测成功才报 `NotRequired`） | 写探测**恢复原值**没有断言（需要 `FakeDrsAdapter` 暴露读取能力） |
 | Plan 精确执行 | 1 + 既有 | P0-08 段：计划把选定入口列入待部署文件；既有的计划执行测试覆盖「Ready 可执行 / 未批准被拒」 | 部署结果与计划**不一致**时按失败处理没有断言（需要构造一个部署记录与计划不匹配的场景） |
 | Batch | 3 | §13 补齐段：`PreviewAsync` 存在、`PreviewOnly` 同时出现在两个请求上、`GameEntry.Store` 默认 `Unknown` | **只断言了能力，没有断言行为** —— 批量确认框的汇总逻辑在 `MainWindow.Actions.cs`，**不在 `Harness.csproj` 编译白名单内**，行为无法被自动执行 |
