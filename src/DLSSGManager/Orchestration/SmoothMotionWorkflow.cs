@@ -301,7 +301,18 @@ public sealed class SmoothMotionWorkflow
         steps.Add(new WorkflowStep("扫描代理入口", true,
             $"空闲 {conflicts.SafeCandidates.Count} 个，占用 {conflicts.Conflicts.Count} 个。"));
 
-        // ---- 2. compatibility ----
+        // ---- 2. provider version ----
+        // Resolved before compatibility, the recipe and the plan, because all three are keyed on it. A plan
+        // built from one version while being checked against another is a plan whose verification means
+        // nothing — and the interface can easily supply neither, which is how this went unnoticed.
+        var resolvedVersion = await ResolveProviderVersionAsync(request, progress, ct).ConfigureAwait(false);
+
+        steps.Add(new WorkflowStep("解析 Provider 版本", resolvedVersion.Length > 0,
+            resolvedVersion.Length > 0
+                ? $"使用版本 {resolvedVersion}。"
+                : "未能确定版本；后续按「未知版本」判定，不做猜测。"));
+
+        // ---- 3. compatibility ----
         var environment = new CompatibilityQuery(
             Gpu: request.GpuName,
             Driver: request.DriverVersion,
@@ -310,12 +321,12 @@ public sealed class SmoothMotionWorkflow
             Store: request.Store,
             RendererExe: renderer.RendererExe is null ? null : System.IO.Path.GetFileName(renderer.RendererExe),
             Provider: request.Provider.Id,
-            ProviderVersion: request.ProviderVersion,
+            ProviderVersion: resolvedVersion,
             InstallMode: request.InstallMode,
             LaunchMode: request.LaunchMode);
 
         var compatibility = _matrix.Query(environment);
-        var decision = Decide(compatibility, request.ProviderVersion);
+        var decision = Decide(compatibility, resolvedVersion);
 
         steps.Add(new WorkflowStep("查询兼容性", true,
             $"{compatibility.Kind} / {compatibility.Validation}"));
@@ -342,7 +353,7 @@ public sealed class SmoothMotionWorkflow
             // disagreement the user is being asked about.
             Api: detectedApi with { Api = apiChoice.Api, Reason = apiChoice.Reason },
             ProviderId: request.Provider.Id,
-            ProviderVersion: request.ProviderVersion,
+            ProviderVersion: resolvedVersion,
             ProviderPayloadFiles: payloadFiles,
             ProxyConflicts: conflicts,
             Compatibility: d,
@@ -361,7 +372,7 @@ public sealed class SmoothMotionWorkflow
         var fullQuery = environment with { InstallMode = provisional.Mode, ProxyAsi = provisional.ProxyChoice };
         var recheck = _matrix.Query(fullQuery);
         compatibility = recheck;
-        decision = Decide(recheck, request.ProviderVersion);
+        decision = Decide(recheck, resolvedVersion);
 
         steps.Add(new WorkflowStep("复核兼容性（含安装方式）",
             recheck.Kind == CompatibilityMatchKind.Exact, $"{recheck.Kind} / {recheck.Validation}"));
@@ -601,7 +612,8 @@ public sealed class SmoothMotionWorkflow
     ///
     /// <para>Everything here is best-effort. Failing to remember must never fail a run that already worked.</para>
     /// </summary>
-    private void RecordOutcome(WorkflowRequest request, VerificationReport verification, bool succeeded)
+    private void RecordOutcome(
+        WorkflowRequest request, VerificationReport verification, bool succeeded, string providerVersion)
     {
         if (_recipes is null) return;
 
@@ -623,7 +635,7 @@ public sealed class SmoothMotionWorkflow
                     ObservedAt: when),
                 claimed: ValidationLevel.PendingUserValidation,
                 note: verification.Reason,
-                providerVersion: request.ProviderVersion ?? "",
+                providerVersion: providerVersion,
                 api: request.UserApi,
                 store: request.Store,
                 proxyAsi: request.Game.PreferredProxy,
@@ -651,7 +663,8 @@ public sealed class SmoothMotionWorkflow
 
         // Recorded here rather than on the success path alone, so a failed attempt is remembered too: knowing
         // that a combination did not work is exactly what stops the next attempt from repeating it.
-        RecordOutcome(request, report, succeeded: outcome == WorkflowOutcome.Succeeded);
+        RecordOutcome(request, report, succeeded: outcome == WorkflowOutcome.Succeeded,
+            providerVersion: plan.ProviderVersion ?? "");
 
         if (outcome != WorkflowOutcome.Failed)
             return new WorkflowResult(outcome, evidence, steps, plan, report, errors,
@@ -679,6 +692,41 @@ public sealed class SmoothMotionWorkflow
         }
 
         return new WorkflowResult(outcome, evidence, steps, plan, report, errors, filesRolledBack, profileRolledBack);
+    }
+
+    /// <summary>
+    /// Determines the version everything downstream is matched against.
+    ///
+    /// <para><b>Order matters.</b> Compatibility, the recipe and the plan are all keyed on the version, and a
+    /// plan built from one version while being checked against another is a plan whose verification means
+    /// nothing. So the version is resolved first — from what the caller already knows, and otherwise from the
+    /// provider itself.</para>
+    ///
+    /// <para><b>An unresolved version stays unknown.</b> Substituting a plausible one would let the run match
+    /// records it has no business matching, which is worse than admitting the version is not known. A failure to
+    /// reach the provider is not fatal either: it degrades matching, it does not make installing impossible.</para>
+    /// </summary>
+    private async Task<string> ResolveProviderVersionAsync(
+        WorkflowRequest request, IProgress<string>? progress, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(request.ProviderVersion))
+            return request.ProviderVersion!;
+
+        try
+        {
+            progress?.Report("正在解析 Provider 版本…");
+
+            var latest = await request.Provider
+                .CheckLatestAsync(forceRefresh: false, ct)
+                .ConfigureAwait(false);
+
+            return latest?.Version ?? "";
+        }
+        catch (Exception ex)
+        {
+            progress?.Report($"版本解析失败：{ex.Message}");
+            return "";
+        }
     }
 
     private static IReadOnlyList<VerificationSignal> CollectSignals(

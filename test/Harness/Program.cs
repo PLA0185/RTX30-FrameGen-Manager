@@ -4448,6 +4448,31 @@ public static class Program
         Check("无驱动的适配器明确拒绝定位（不返回空匹配）",
             !new NvidiaProfile.AbsentDrsAdapter().FindApplication("Game.exe").Found);
 
+        // ---- 第二轮 P0-06：ProviderVersion 必须在兼容性与计划之前解析 ----
+        // The defect this covers: the version was passed straight through from the caller and never resolved, so
+        // compatibility and the plan could both be matched against an empty string — and a plan built from one
+        // version while checked against another is a plan whose verification means nothing.
+        var vParts = Build(work, "wfVersionMatrix");
+        var vGame = new GameEntry { Name = "wfVersionMatrix", RenderDir = MakeGameDir(work, "wfVersionGame") };
+
+        var vResult = vParts.Workflow.RunAsync(
+            MakeRequest("wfVersionMatrix", Path.Combine(work, "wf-version-payload"), vParts.Provider, vGame),
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        var vStages = vResult.Steps.Select(s => s.Stage).ToList();
+        var versionIdx = vStages.FindIndex(s => s.Contains("解析 Provider 版本"));
+        var compatIdx = vStages.FindIndex(s => s.Contains("查询兼容性"));
+
+        Check("工作流包含版本解析步骤", versionIdx >= 0, string.Join(" → ", vStages));
+
+        Check("版本解析排在兼容性查询之前",
+            versionIdx >= 0 && compatIdx >= 0 && versionIdx < compatIdx,
+            $"版本 {versionIdx} / 兼容性 {compatIdx}");
+
+        Check("计划携带了解析出的 Provider 版本字段",
+            vResult.Plan is null || vResult.Plan.ProviderVersion is not null ||
+            string.IsNullOrEmpty(vParts.Provider.GetInstalledVersion(vGame)));
+
         // ---- H: the configuration service the window now calls (整改 H) ----
         var hParts = Build(work, "wfHMatrix");
         var hService = new GameConfigurationService(hParts.Workflow);
