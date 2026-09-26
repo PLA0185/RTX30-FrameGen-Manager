@@ -2006,29 +2006,60 @@ public static class Program
         Section("接管记录必须标注 Provider（§17 P1-3）");
 
         var dir = MakeGameDir(work, "GameAdoptProvider");
+        var target = Path.Combine(dir, "version.dll");
 
-        File.WriteAllBytes(Path.Combine(dir, "version.dll"), new byte[] { 0x4D, 0x5A, 0x90, 0x00 });
+        // **夹具要用真实可识别的代理。**
+        //
+        // `Adopt` 只接管**它能验证来源**的代理（本项目签名，或已分发的附加入口 `d3d12.dll` —— 后者按
+        // **内容哈希**识别、不看文件名）—— 这是对的：盲目接管用户目录里的任意 DLL，会把别人的东西记成
+        // 我们的。
+        //
+        // 而这里曾经写的是 4 字节假 MZ：两个条件都过不了 ⇒ `Adopt` **必然失败** ⇒ 下面的 `Check`
+        // **在每一台机器上都不执行**，而且**连 `_skipped` 都不加**（套件里连一行「[跳过]」都看不到）。
+        // 更糟的是那两行提示说「有 Mod 文件时由 `TestAdopt` 覆盖」—— **而 `TestAdopt` 自己写着这条断言
+        // 不在它那里**（见 `TestAdopt` 的注释）。⇒ **`ProviderId` 在全仓零断言，却被报告写成「有覆盖」。**
+        //
+        // 现在：有 `extra-proxies/d3d12.dll` 就把它的字节复制成 `version.dll`（内容哈希识别 ⇒ 能真正走到
+        // 接管成功）；没有就**如实计入跳过**，而不是悄悄 return。
+        // `extra-proxies/` 位于**仓库根**（被 `.gitignore` 排除、由使用者自备），**不在 Harness 的输出目录里**
+        // —— 所以从输出目录逐级向上找。找不到时如实计入跳过，**不静默 return**。
+        static string? FindCommunityProxy()
+        {
+            for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
+            {
+                var candidate = Path.Combine(d.FullName, "extra-proxies", "d3d12.dll");
+                if (File.Exists(candidate)) return candidate;
+            }
+
+            return null;
+        }
+
+        var community = FindCommunityProxy();
+        if (community is not null)
+            File.Copy(community, target, overwrite: true);
+        else if (SkipWithoutModFiles("接管记录必须标注 Provider（§17 P1-3）"))
+            return;
+
         File.WriteAllText(Path.Combine(dir, ModSource.IniName), "[DLSSG SM86]" + Environment.NewLine);
 
         var game = new GameEntry { Name = "GameAdoptProvider", RenderDir = dir };
         var adopt = DeploymentService.Adopt(game, DlssgSm86Provider.ProviderId);
 
-        // `Adopt` 只接管**它能验证来源**的代理（本项目签名，或已分发的附加入口 `d3d12.dll`）——
-        // 这是对的：盲目接管用户目录里的任意 DLL，会把别人的东西记成我们的。
-        //
-        // 因此这个场景**无法只用自造文件构造**，它需要真实的代理文件。这里如实报告「本环境无法验证」，
-        // 而不是留下一条永远失败的断言 —— **那只会训练人忽略红色**。
-        if (!adopt.Ok)
-        {
-            Console.WriteLine($"       （本环境无法验证 §17 P1-3：{adopt.Message}）");
-            Console.WriteLine("       （有 Mod 文件时由 TestAdopt 的同一场景覆盖）");
-            return;
-        }
+        Check("前置：真实代理可被接管（§17 P1-3）", adopt.Ok, adopt.Message);
 
         Check("接管后记录标注了 Provider，且该 Provider 可解析（§17 P1-3）",
             !string.IsNullOrWhiteSpace(game.Deployment?.ProviderId)
                 && DLSSGManager.Providers.AppProviders.Registry.Get(game.Deployment!.ProviderId) is not null,
             $"id=\"{game.Deployment?.ProviderId}\"");
+
+        // **反向配对**：记录里的 id 必须**跟着传入值走** —— 防「恒为某个常量」的实现。
+        // 只写上面那条时，一个 `ProviderId = "dlssg-sm86"` 写死的实现也能通过。
+        var other = new GameEntry { Name = "GameAdoptProvider2", RenderDir = dir };
+        DeploymentService.Adopt(other, MfgSmoothProvider.ProviderId);
+
+        Check("接管记录的 ProviderId 跟着传入值走（§17 P1-3 · 反向配对）",
+            other.Deployment?.ProviderId == MfgSmoothProvider.ProviderId,
+            $"id=\"{other.Deployment?.ProviderId}\"");
     }
 
     private static void TestAdopt(string modRoot, string work)
