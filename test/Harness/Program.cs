@@ -4186,6 +4186,37 @@ public static class Program
             confirmed.Plan is null || confirmed.Plan.Compatibility.State != CompatibilityState.Compatible,
             confirmed.Plan?.Compatibility.State.ToString() ?? "(无计划)");
 
+        // ---- H: the configuration service the window now calls (整改 H) ----
+        var hParts = Build(work, "wfHMatrix");
+        var hService = new GameConfigurationService(hParts.Workflow);
+        var hGame = new GameEntry { Name = "wfHGame", RenderDir = MakeGameDir(work, "wfHGameDir") };
+        var hDir = Path.Combine(work, "wf-h-payload");
+
+        var hRequest = new ConfigurationRequest(
+            Game: hGame,
+            Provider: hParts.Provider,
+            ProviderVersion: "2.9.0",
+            PayloadDirectory: hDir,
+            GpuName: "RTX 3070 Ti",
+            DriverVersion: "617.14",
+            Store: StoreKind.Steam,
+            InstallMode: InstallMode.DirectProxy);
+
+        var hOutcome = hService.ConfigureAsync(hRequest, null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("配置服务把请求转成工作流并返回结果", hOutcome.Outcome != WorkflowOutcome.Blocked, hOutcome.Summary);
+        Check("配置服务逐条记录每个步骤", hOutcome.Details.Count > 0, "细节数 " + hOutcome.Details.Count);
+        Check("需要确认时同时给出原因",
+            !hOutcome.NeedsUserConfirmation || hOutcome.ConfirmationReasons.Count > 0);
+        Check("成功文案不把安装说成生效",
+            !hOutcome.Succeeded || hOutcome.Summary.Contains("不等于功能已生效"), hOutcome.Summary);
+
+        var hConfirmed = hService
+            .ConfigureAsync(hRequest with { UserConfirmedUnverified = true }, null, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Check("确认后配置服务不再停在确认环节", !hConfirmed.NeedsUserConfirmation, hConfirmed.Outcome.ToString());
+
         // A detected API is what makes the API bitmask writable at all — an unknown API deliberately yields
         // the master switch alone — so the request has to carry one for this test to reach the second write.
         var rolledBack = rbParts.Workflow.RunAsync(

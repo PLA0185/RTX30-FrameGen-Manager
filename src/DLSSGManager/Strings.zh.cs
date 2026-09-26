@@ -438,6 +438,11 @@ public static partial class Strings
         ["Page.Dashboard.NoGamesTitle"] = "还没有游戏",
         ["Page.Dashboard.NoGamesBody"] = "先扫描 Steam 库或手动添加游戏，然后在游戏库里选择它并自动配置。",
         ["Path.Missing"] = "路径不存在",
+
+        // ── 配置确认（未知兼容性）────────────────────────────────────
+        ["Deploy.ConfirmTitle"] = "需要你确认",
+        ["Deploy.ConfirmBody"] = "「{0}」的配置需要你确认后才能继续。\n\n{1}\n\n确认继续吗？（这只表示你知情，不代表该组合已被验证。）",
+        ["Deploy.ConfirmDeclined"] = "已取消「{0}」的配置，未写入任何内容。",
         ["Path.NotFile"] = "不是文件",
         ["Path.NotExecutable"] = "不是可执行文件",
 

@@ -438,6 +438,11 @@ public static partial class Strings
         ["Page.Dashboard.NoGamesTitle"] = "No games yet",
         ["Page.Dashboard.NoGamesBody"] = "Scan the Steam library or add a game manually, then pick it in the library and let it configure itself.",
         ["Path.Missing"] = "path does not exist",
+
+        // ── Configuration confirmation (unknown compatibility) ───────
+        ["Deploy.ConfirmTitle"] = "Confirmation needed",
+        ["Deploy.ConfirmBody"] = "Configuring \u201c{0}\u201d needs your confirmation before it can continue.\n\n{1}\n\nContinue? (This records that you were informed \u2014 it does not mean the combination has been verified.)",
+        ["Deploy.ConfirmDeclined"] = "Cancelled the configuration of \u201c{0}\u201d; nothing was written.",
         ["Path.NotFile"] = "not a file",
         ["Path.NotExecutable"] = "not an executable",
 

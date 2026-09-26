@@ -1,6 +1,10 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using DLSSGManager.Compatibility;
+using DLSSGManager.GameDetection;
+using DLSSGManager.NvidiaProfile;
+using DLSSGManager.Orchestration;
 using Microsoft.Win32;
 
 namespace DLSSGManager;
@@ -16,6 +20,65 @@ namespace DLSSGManager;
 /// </remarks>
 public partial class MainWindow
 {
+    /// <summary>
+    /// The configuration pipeline, built once on first use.
+    ///
+    /// <para>The window does not own this sequence. Detection, planning, installation and verification are a
+    /// service, and calling it is what makes the install match the plan the user is shown — before this, the
+    /// button went straight to a provider's <c>Install</c> and the plan was never consulted.</para>
+    /// </summary>
+    private GameConfigurationService? _configuration;
+
+    private GameConfigurationService Configuration => _configuration ??= new GameConfigurationService(
+        new SmoothMotionWorkflow(
+            new AppWorkflowDetector(),
+            new NvidiaProfileService(new NvApiDrsAdapter()),
+            new CompatibilityMatrixStore(Path.Combine(AppPaths.Root, "compatibility.json"))));
+
+    /// <summary>
+    /// Runs the workflow for one game and reports what happened, or null when the run could not start.
+    ///
+    /// Kept separate from the click handler so the anti-cheat dialog and the confirmation dialog can both
+    /// happen <i>before</i> any write, and so a second run after confirmation uses the same path as the first.
+    /// </summary>
+    private async Task<ConfigurationOutcome?> RunConfigurationAsync(
+        GameEntry game, Providers.IPatchProvider provider, bool allowProtected, bool confirmed)
+    {
+        try
+        {
+            var request = new ConfigurationRequest(
+                Game: game,
+                Provider: provider,
+                ProviderVersion: provider.GetInstalledVersion(game) ?? game.Deployment?.ModVersion ?? "",
+                PayloadDirectory: SourcePath,
+                GpuName: _data.GpuName,
+                DriverVersion: _data.GpuDriver,
+                Store: StoreKind.Steam,
+                AllowProtected: allowProtected,
+                HasKernelAntiCheat: game.Protection?.HasKernelAntiCheat ?? false,
+                UserConfirmedUnverified: confirmed);
+
+            return await Configuration
+                .ConfigureAsync(request, new Progress<string>(s => BatchStatusText.Text = s))
+                .ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            _log.Write("✗ " + ex.Message);
+            AppPaths.Log("配置失败: " + ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The provider to configure with.
+    ///
+    /// Defaults to the built-in one, which is what this build has always shipped. The MFG community build is
+    /// registered but not chosen automatically — it installs a different payload, and picking it for the user
+    /// would be a decision they never made.
+    /// </summary>
+    private Providers.IPatchProvider SelectedProvider() => Providers.AppProviders.Patch;
+
     // ---- single-game deployment --------------------------------------------
 
     private void Deploy_Click(object sender, RoutedEventArgs e)
@@ -63,15 +126,34 @@ public partial class MainWindow
                 _log.Write(Loc.T("Anti.OverrideLog", game.Name, protection.Summary));
             }
 
-            var source = CurrentSource();
+            var provider = SelectedProvider();
+            var outcome = await RunConfigurationAsync(game, provider, protection.HasKernelAntiCheat, confirmed: false);
+            if (outcome is null) return;
 
-            // Reached through the provider registry rather than the service directly: the flow belongs
-            // to a provider, and a future one must be selectable from here without editing the window.
-            var result = await Task.Run(() => Providers.AppProviders.Patch.Install(game, source,
-                protection.HasKernelAntiCheat));
+            // The run stopped because something needs the user's decision. Asking here — before the first write
+            // — is the whole point of the confirmation step. Consent lets the run proceed; it does not change
+            // what the compatibility state says.
+            if (outcome.NeedsUserConfirmation)
+            {
+                var reasons = string.Join("\n", outcome.ConfirmationReasons.Take(6));
 
-            _log.Details(result.Lines);
-            _log.Result(result.Ok, result.Message);
+                var answer = MessageBox.Show(
+                    Loc.T("Deploy.ConfirmBody", game.Name, reasons),
+                    Loc.T("Deploy.ConfirmTitle"), MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning, MessageBoxResult.No);
+
+                if (answer != MessageBoxResult.Yes)
+                {
+                    _log.Write(Loc.T("Deploy.ConfirmDeclined", game.Name));
+                    return;
+                }
+
+                outcome = await RunConfigurationAsync(game, provider, protection.HasKernelAntiCheat, confirmed: true);
+                if (outcome is null) return;
+            }
+
+            _log.Details(outcome.Details);
+            _log.Result(outcome.Succeeded, outcome.Summary);
 
             LibraryStore.Save(_data);
             await FinishGameActionAsync(game);
