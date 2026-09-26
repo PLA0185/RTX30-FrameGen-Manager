@@ -275,6 +275,12 @@ public static class InstallPlanExecutor
             // why FilesWereWritten is set: the caller has to restore.
             steps.Add("部署记录为空，无法核对实际写入的文件是否与计划一致，已按失败处理。");
 
+            // **入口偏好也要回滚。** 上面那条注释说得很清楚：`Install()` 已经返回 Ok、文件很可能在盘上，
+            // 所以 `FilesWereWritten = true`，**调用方会去恢复文件**。既然如此，用户保存的入口偏好也必须
+            // 回到原值 —— 否则会停在「文件已回到原样、偏好却指向一个从未成功过的入口」这种不一致上，
+            // 而下次 AutoProxy 部署会优先使用那个入口。
+            game.PreferredProxy = previousPreferredProxy;
+
             return new PlanExecutionResult(false,
                 "部署记录缺失，无法核对计划与实际写入是否一致，已按失败处理。", steps, plan.ProxyChoice)
             {
@@ -307,6 +313,9 @@ public static class InstallPlanExecutor
 
             var summary = string.Join("；", detail);
             steps.Add("部署结果与计划不一致 —— " + summary);
+
+            // **同样的理由**：`FilesWereWritten = true` ⇒ 调用方会恢复文件 ⇒ 入口偏好也必须回原值。
+            game.PreferredProxy = previousPreferredProxy;
 
             return new PlanExecutionResult(false,
                 $"部署的文件与计划不一致（{summary}），已按失败处理。", steps, plan.ProxyChoice)
