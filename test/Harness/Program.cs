@@ -6145,6 +6145,27 @@ public static class Program
             !zwMissing.Ok && !zwMissing.FilesWritten,
             $"ok={zwMissing.Ok} written={zwMissing.FilesWritten}");
 
+        // §17 P1-1（第二轮）：**两个字段必须由真实结果决定，而不是由「是否尝试过」决定。**
+        //
+        // 这条守的是一个我连续修错两次的位置：
+        //   ① 原始代码 `FilesWritten = true` 从不收回 → 写了又自己回滚的运行被当成「需要回滚」→ 删掉用户安装；
+        //   ② 我的第一版修复改成无条件 `FilesWritten = false` → 回滚**失败**时半成品无人清理；
+        //   ③ 现在：`Rollback(...)` 返回 bool，只有两边都真的撤销了才收回结论。
+        //
+        // 这里能真实构造的是「**根本没进入事务**」这一侧：失败发生在 try 之前，所以既没写过、
+        // 也没回滚过 —— 两个字段都必须是 false。
+        Check("未进入写入事务的失败既不算写过、也不算已收尾（§17 P1-1）",
+            !zwMissing.FilesWritten && !zwMissing.RollbackHandled,
+            $"written={zwMissing.FilesWritten} handled={zwMissing.RollbackHandled}");
+
+        // 另一侧（自己回滚**成功** → false/true）由上面的 holdSecondDeploy 断言覆盖。
+        //
+        // ⚠️ **已知缺口：第三侧「回滚失败」（应为 true/false）在默认套件里没有守护。**
+        // 构造它需要「已经写过、然后回滚时快照不可用」——而 `Deploy` 在写之前就 `Snapshot`（写之前的
+        // 失败不会进入已写状态），写成功之后又只剩几步不会失败的收尾。`AppPaths.Root` 由环境变量在
+        // 首次访问时解析一次（`Store.cs:16`），测试内无法再改，所以也没法把 `restore` 路径占成文件。
+        // **如实记录为缺口，而不是写一个测不到该路径的假测试。**
+
         // §17 P1-1（Pass B 报出）：**「Deploy 写了、又自己回滚了」的运行，不得被外层按上一次的记录再回滚一次。**
         //
         // 缺陷的形状：`Deploy` 在 try 第一行置 `FilesWritten = true`（早于任何真实写入），而 catch 里
