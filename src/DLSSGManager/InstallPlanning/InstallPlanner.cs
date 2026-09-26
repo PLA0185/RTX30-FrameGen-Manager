@@ -135,7 +135,23 @@ public static class ProxyConflictScanner
             {
                 slots.Add(new ProxySlot(name, path, false, ProxyOwnership.Unknown, "入口未被占用。",
                     ProxySlotClass.FreeCandidate));
-                safe.Add(name);
+
+                // **只有可部署名才能进 `safe`。**
+                //
+                // `KnownProxyNames` 是**扫描**集合（多一个 `winhttp.dll`：0.3.0 起不再部署，只在旧安装里
+                // 可能残留）。作为扫描判据它是对的 —— 扫描要能看见并如实报告残留。但 `SafeCandidates` 会被
+                // planner 拿去**选入口**，而部署侧只认 `ProxyCandidates`：
+                //
+                //   6 个可部署名全被占用 + `winhttp.dll` 不存在
+                //   → safe = ["winhttp.dll"] → HasSafeSlot = true → 计划给出 **Ready**（本应 Blocked）
+                //   → 用户拿到一个必然失败的入口：部署侧 PickFreeProxy 在 AvailableProxies 里永远找不到它，
+                //     直接拒绝；更早一步，payload 核对会先报「缺少 winhttp.dll」。
+                //
+                // 这是「一个判据、两个集合」在本项目的第四处。`Slots` / `Conflicts` 继续用扫描集合
+                // （那是对的），只有 `safe` —— 即「可以拿去用的入口」—— 必须与部署侧同集合。
+                if (ModSource.ProxyCandidates.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    safe.Add(name);
+
                 continue;
             }
 

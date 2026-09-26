@@ -4195,6 +4195,28 @@ public static class Program
         Check("无可用入口时 Blocked", fullPlan.Status == PlanStatus.Blocked);
         Check("Blocked 原因说明入口冲突", fullPlan.Blockers.Any(b => b.Contains("入口")));
 
+        // **这才是真正的「全部可部署入口被占用」。** 上面那段用的是 `KnownProxyNames` 全集（**含 winhttp.dll**），
+        // 于是 SafeCandidates 恰好为空、结论碰巧正确 —— **缺陷被绕过，测试自己用错了集合**。
+        //
+        // `winhttp.dll` 是**扫描**名而不是**可部署**名（0.3.0 起不再部署，只在旧安装里可能残留）。真实场景是：
+        // 游戏目录里 6 个可部署入口全被占用，而 winhttp.dll 不存在。旧代码此时 safe = ["winhttp.dll"]
+        // → HasSafeSlot = true → 计划给出 **Ready**（本应 Blocked），入口却是部署侧永远找不到的名字：
+        // `PickFreeProxy` 在 `AvailableProxies` 里找不到它 → 拒绝部署；更早一步，payload 核对会先报
+        // 「缺少 winhttp.dll」。**用户拿到的是一条错误诊断加一个必然失败的 Ready 计划。**
+        var deployFullDir = Path.Combine(work, "stage5-deploy-full");
+        Directory.CreateDirectory(deployFullDir);
+        foreach (var name in ModSource.ProxyCandidates) File.WriteAllText(Path.Combine(deployFullDir, name), "x");
+
+        var deployFullReport = ProxyConflictScanner.Scan(
+            new GameEntry { Name = "DeployFull", RenderDir = deployFullDir });
+
+        Check("六个可部署入口全被占用时无安全候选（winhttp.dll 不算可用入口）",
+            !deployFullReport.HasSafeSlot,
+            "safe=[" + string.Join("、", deployFullReport.SafeCandidates) + "]");
+
+        Check("六个可部署入口全被占用时计划必须 Blocked，而不是给一个必然失败的 Ready",
+            InstallPlanner.Plan(input with { ProxyConflicts = deployFullReport }).Status == PlanStatus.Blocked);
+
         // ---- 32.4 guard: planning has no side effects ----
         var before = Directory.GetFiles(gameDir).OrderBy(f => f).ToArray();
         var beforeBytes = File.ReadAllText(Path.Combine(gameDir, "version.dll"));
