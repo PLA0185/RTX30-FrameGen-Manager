@@ -3267,11 +3267,50 @@ public static class Program
             report.Conflicts.First(c => c.FileName == "version.dll").Ownership == ProxyOwnership.Unknown);
         Check("其余入口仍可用", report.HasSafeSlot);
 
+        // A record alone is not enough. Without a hash we cannot prove the file on disk is still the one we
+        // wrote, so it must not be treated as reusable.
         var ourGame = new GameEntry { Name = "Ours", RenderDir = gameDir };
         ourGame.Deployment = new DeploymentInfo { ProxyName = "version.dll" };
-        Check("本工具部署的入口可被识别",
-            ProxyConflictScanner.Scan(ourGame).Conflicts
-                .First(c => c.FileName == "version.dll").Ownership == ProxyOwnership.OwnedByThisTool);
+        Check("部署记录缺少哈希时不复用自己的入口",
+            ProxyConflictScanner.Scan(ourGame).Slots.First(s => s.FileName == "version.dll").IsReusable == false);
+
+        // With the deployment's own file list carrying a matching hash the entry becomes reusable — this is
+        // what lets a re-install proceed instead of deadlocking on files this tool wrote itself.
+        var versionPath = Path.Combine(gameDir, "version.dll");
+        var ownedGame = new GameEntry { Name = "Ours2", RenderDir = gameDir };
+        ownedGame.Deployment = new DeploymentInfo
+        {
+            ProxyName = "version.dll",
+            Files = new List<DeployedFile>
+            {
+                new() { FileName = "version.dll", Sha256 = Sha(versionPath), Size = new FileInfo(versionPath).Length },
+            },
+        };
+
+        var ownedReport = ProxyConflictScanner.Scan(ownedGame);
+        var ownedSlot = ownedReport.Slots.First(s => s.FileName == "version.dll");
+        Check("deployment.Files 哈希匹配时识别为本工具所有",
+            ownedSlot.Ownership == ProxyOwnership.OwnedByThisTool, ownedSlot.Reason);
+        Check("可复用入口归为 ReusableOwnedCandidate", ownedSlot.Class == ProxySlotClass.ReusableOwnedCandidate);
+        Check("可复用入口不再计入冲突", !ownedReport.Conflicts.Any(c => c.FileName == "version.dll"));
+        Check("可复用入口进入 Reusable 列表", ownedReport.Reusable.Contains("version.dll"));
+        Check("有可复用入口时报告可继续", ownedReport.HasUsableSlot);
+
+        // The hash no longer matching means the file changed: it is unidentified again, never silently ours.
+        var changedGame = new GameEntry { Name = "Changed", RenderDir = gameDir };
+        changedGame.Deployment = new DeploymentInfo
+        {
+            Files = new List<DeployedFile> { new() { FileName = "version.dll", Sha256 = new string('A', 64) } },
+        };
+        var changedSlot = ProxyConflictScanner.Scan(changedGame).Slots.First(s => s.FileName == "version.dll");
+        Check("哈希不符时不再视为本工具所有", changedSlot.Ownership == ProxyOwnership.Unknown, changedSlot.Reason);
+        Check("哈希不符时归为归属不明冲突", changedSlot.Class == ProxySlotClass.UnknownConflict);
+
+        // The four classes must stay distinguishable.
+        Check("空闲入口归为 FreeCandidate",
+            report.Slots.Where(s => !s.Exists).All(s => s.Class == ProxySlotClass.FreeCandidate));
+        Check("归属不明的占用归为 UnknownConflict",
+            report.Slots.First(s => s.FileName == "version.dll").Class == ProxySlotClass.UnknownConflict);
 
         var compatible = selector.Evaluate(FullQuery());
 

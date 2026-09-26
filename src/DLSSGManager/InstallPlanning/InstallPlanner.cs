@@ -37,22 +37,64 @@ public enum ProxyOwnership
     KnownCompatibleMod,
 }
 
+/// <summary>
+/// What kind of occupancy a loader entry name has.
+///
+/// <para>Four states rather than two, because "occupied" is not one situation. An entry we filled ourselves
+/// can simply be written again; an entry the game or another mod filled cannot; and an entry nobody can
+/// identify must be left alone. Without the first of those, re-running an installation deadlocks on its own
+/// files — the tool refuses to touch what it wrote itself.</para>
+/// </summary>
+public enum ProxySlotClass
+{
+    /// <summary>Nothing is there. A new deployment may take it.</summary>
+    FreeCandidate,
+
+    /// <summary>
+    /// Occupied by a file this manager wrote, and the hash still matches what was recorded — safe to reuse.
+    /// A record alone is not enough: the user may have replaced the file since.
+    /// </summary>
+    ReusableOwnedCandidate,
+
+    /// <summary>Occupied by something identifiable as not ours (the game, or a known mod).</summary>
+    ForeignConflict,
+
+    /// <summary>Occupied by something we cannot identify. Never treated as free.</summary>
+    UnknownConflict,
+}
+
 /// <summary>One loader entry name and what occupies it.</summary>
-public sealed record ProxySlot(string FileName, string Path, bool Exists, ProxyOwnership Ownership, string Reason)
+public sealed record ProxySlot(
+    string FileName,
+    string Path,
+    bool Exists,
+    ProxyOwnership Ownership,
+    string Reason,
+    ProxySlotClass Class = ProxySlotClass.UnknownConflict)
 {
     /// <summary>Only a free slot may be taken without further evidence.</summary>
     public bool IsFree => !Exists;
+
+    /// <summary>True when this slot is the tool's own file and its hash still matches.</summary>
+    public bool IsReusable => Class == ProxySlotClass.ReusableOwnedCandidate;
 }
 
 /// <summary>The full occupancy picture for one game folder.</summary>
 public sealed record ProxyConflictReport(
     IReadOnlyList<ProxySlot> Slots,
     IReadOnlyList<string> SafeCandidates,
-    IReadOnlyList<ProxySlot> Conflicts)
+    IReadOnlyList<ProxySlot> Conflicts,
+    IReadOnlyList<string>? ReusableCandidates = null)
 {
+    /// <summary>Entries we wrote ourselves and can safely write again when nothing is free.</summary>
+    public IReadOnlyList<string> Reusable => ReusableCandidates ?? Array.Empty<string>();
+
     public bool HasConflict => Conflicts.Count > 0;
 
     public bool HasSafeSlot => SafeCandidates.Count > 0;
+
+    /// <summary>True when a deployment can proceed at all: something free, or something of ours to reuse.</summary>
+    public bool HasUsableSlot => SafeCandidates.Count > 0 || Reusable.Count > 0;
 }
 
 /// <summary>
@@ -78,7 +120,8 @@ public static class ProxyConflictScanner
         if (game is null || string.IsNullOrWhiteSpace(game.RenderDir) || !Directory.Exists(game.RenderDir))
             return new ProxyConflictReport(slots, safe, conflicts);
 
-        var ourNames = OurRecordedNames(game);
+        var ourFiles = OurRecordedFiles(game);
+        var reusable = new List<string>();
 
         foreach (var name in ModSource.KnownProxyNames)
         {
@@ -90,68 +133,115 @@ public static class ProxyConflictScanner
 
             if (!exists)
             {
-                var free = new ProxySlot(name, path, false, ProxyOwnership.Unknown, "入口未被占用。");
-                slots.Add(free);
+                slots.Add(new ProxySlot(name, path, false, ProxyOwnership.Unknown, "入口未被占用。",
+                    ProxySlotClass.FreeCandidate));
                 safe.Add(name);
                 continue;
             }
 
             ProxyOwnership ownership;
+            ProxySlotClass classification;
             string reason;
 
-            if (ourNames.Contains(name))
+            if (ourFiles.TryGetValue(name, out var recordedSha))
             {
-                ownership = ProxyOwnership.OwnedByThisTool;
-                reason = "由本工具部署（见部署记录）。";
+                // A record proves we wrote something here once; it does not prove the file is still ours.
+                // Reuse is only safe while the bytes still match, so a changed file becomes unidentified
+                // rather than silently reused.
+                if (StillOurs(path, recordedSha))
+                {
+                    ownership = ProxyOwnership.OwnedByThisTool;
+                    classification = ProxySlotClass.ReusableOwnedCandidate;
+                    reason = "由本工具部署且哈希仍与部署记录一致，可以安全复用。";
+                    reusable.Add(name);
+                }
+                else
+                {
+                    ownership = ProxyOwnership.Unknown;
+                    classification = ProxySlotClass.UnknownConflict;
+                    reason = "部署记录显示此处曾有本工具的文件，但当前内容的哈希与记录不符（可能被替换过），不得覆盖。";
+                }
             }
             else if (isKnownCompatibleMod is not null && isKnownCompatibleMod(path))
             {
                 ownership = ProxyOwnership.KnownCompatibleMod;
-                reason = "识别为已知兼容 Mod。";
+                classification = ProxySlotClass.ForeignConflict;
+                reason = "识别为已知兼容 Mod，不由本计划接管。";
             }
             else
             {
                 ownership = ProxyOwnership.Unknown;
+                classification = ProxySlotClass.UnknownConflict;
                 reason = "存在同名文件但无法确认归属，不得覆盖。";
             }
 
-            var occupied = new ProxySlot(name, path, true, ownership, reason);
+            var occupied = new ProxySlot(name, path, true, ownership, reason, classification);
             slots.Add(occupied);
-            conflicts.Add(occupied);
+
+            if (classification != ProxySlotClass.ReusableOwnedCandidate) conflicts.Add(occupied);
         }
 
-        return new ProxyConflictReport(slots, safe, conflicts);
+        return new ProxyConflictReport(slots, safe, conflicts, reusable);
     }
 
-    /// <summary>Entry names this manager itself put there, according to the deployment record.</summary>
-    private static HashSet<string> OurRecordedNames(GameEntry game)
+    /// <summary>
+    /// Files this manager wrote into the game folder, as name → hash recorded at write time.
+    ///
+    /// Reads the deployment's own file list first — that is the shape that carries a hash per file, which is
+    /// what lets a proxy the user added by hand be recognised later. Falls back to the older single-name
+    /// field and to the backup list so records written before <c>Files</c> existed still resolve.
+    /// </summary>
+    private static Dictionary<string, string> OurRecordedFiles(GameEntry game)
     {
-        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var recorded = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var deployment = game.Deployment;
-        if (deployment is null) return names;
+        if (deployment is null) return recorded;
 
-        if (!string.IsNullOrWhiteSpace(deployment.ProxyName)) names.Add(deployment.ProxyName);
-
-        // Older records may name several entries; anything the record mentions counts as ours.
-        foreach (var recorded in RecordedFiles(deployment))
-        {
-            if (ModSource.KnownProxyNames.Contains(recorded, StringComparer.OrdinalIgnoreCase)) names.Add(recorded);
-        }
-
-        return names;
-    }
-
-    private static IEnumerable<string> RecordedFiles(DeploymentInfo deployment)
-    {
         try
         {
-            return deployment.Backups is null
-                ? Array.Empty<string>()
-                : deployment.Backups.Select(b => b.FileName);
+            foreach (var file in deployment.Files ?? new List<DeployedFile>())
+            {
+                if (!string.IsNullOrWhiteSpace(file.FileName) && !recorded.ContainsKey(file.FileName))
+                    recorded[file.FileName] = file.Sha256 ?? "";
+            }
+
+            if (!string.IsNullOrWhiteSpace(deployment.ProxyName) && !recorded.ContainsKey(deployment.ProxyName))
+                recorded[deployment.ProxyName] = deployment.ProxySha256 ?? "";
+
+            // Oldest records only listed what they displaced.
+            foreach (var backup in deployment.Backups ?? new List<BackupItem>())
+            {
+                if (!string.IsNullOrWhiteSpace(backup.FileName) && !recorded.ContainsKey(backup.FileName))
+                    recorded[backup.FileName] = "";
+            }
         }
         catch
         {
-            return Array.Empty<string>();
+            // A malformed record must not crash a scan; it just means nothing is recognised as ours.
+        }
+
+        return recorded;
+    }
+
+    /// <summary>
+    /// Whether the file on disk is still byte-for-byte the one we recorded.
+    ///
+    /// An empty recorded hash means "we cannot prove this is ours", which is deliberately <b>false</b>:
+    /// treating an unverifiable file as reusable is exactly how a tool overwrites something it did not write.
+    /// </summary>
+    private static bool StillOurs(string path, string recordedSha)
+    {
+        if (string.IsNullOrWhiteSpace(recordedSha)) return false;
+
+        try
+        {
+            using var stream = File.OpenRead(path);
+            var actual = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream));
+            return string.Equals(actual, recordedSha, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
         }
     }
 }
@@ -328,14 +418,31 @@ public static class InstallPlanner
             warnings.Add($"渲染 EXE 仅有静态证据（{input.Renderer.Level}），需要用户确认：{input.Renderer.Reason}");
         }
 
-        // 4. Proxy occupancy. Only a free entry may be taken; an unrecognised file is never overwritten,
-        //    and "back it up first" is not an acceptable substitute.
+        // 4. Proxy occupancy. A free entry is taken first; failing that, an entry this tool wrote itself and
+        //    whose hash still matches is reused — refusing that would make a re-install impossible without the
+        //    user deleting our own files by hand. An unrecognised file is never overwritten, and "back it up
+        //    first" is not an acceptable substitute.
         var proxyChoice = input.ProxyConflicts.SafeCandidates.FirstOrDefault();
+        var reusedOwnEntry = false;
 
         if (proxyChoice is null)
+        {
+            proxyChoice = input.ProxyConflicts.Reusable.FirstOrDefault();
+            reusedOwnEntry = proxyChoice is not null;
+        }
+
+        if (proxyChoice is null)
+        {
             blockers.Add("所有热路径代理入口都被占用；不得覆盖来源不明的 DLL。");
-        else if (input.ProxyConflicts.HasConflict)
-            warnings.Add($"以下入口已被占用，本计划不使用：{string.Join("、", input.ProxyConflicts.Conflicts.Select(c => c.FileName))}");
+        }
+        else
+        {
+            if (reusedOwnEntry)
+                warnings.Add($"没有空闲入口，将复用本工具先前部署的入口「{proxyChoice}」（哈希与部署记录一致）。");
+
+            if (input.ProxyConflicts.HasConflict)
+                warnings.Add($"以下入口已被占用，本计划不使用：{string.Join("、", input.ProxyConflicts.Conflicts.Select(c => c.FileName))}");
+        }
 
         // 5. Compatibility. Only an exact, working record clears the plan; everything else means the
         //    user decides, which is what NeedsConfirmation expresses.
@@ -404,7 +511,9 @@ public static class InstallPlanner
     {
         if (blockers.Count > 0) return PlanStatus.Blocked;
         if (!input.Renderer.CanPlanWithoutAsking) return PlanStatus.NeedsConfirmation;
-        if (input.ProxyConflicts.SafeCandidates.Count == 0) return PlanStatus.Blocked;
+        // A reusable entry of our own keeps the plan viable: blocking here would deadlock a re-install on the
+        // files this tool itself wrote.
+        if (!input.ProxyConflicts.HasUsableSlot) return PlanStatus.Blocked;
         if (!compatibilityIsExact) return PlanStatus.NeedsConfirmation;
         return PlanStatus.Ready;
     }
