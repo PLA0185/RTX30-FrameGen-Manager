@@ -100,7 +100,14 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     // at 4); NVDRS_APPLICATION is typedef'd to V4 (20492 bytes, appName at 8 — the field FindApplicationByName
     // matches on). Kept here rather than duplicated inside each call that needs them.
     private const int ProfileSize = 4116;
-    private const int ProfileNameOffset = 4;
+    /// <summary>
+    /// `NVDRS_PROFILE.profileName` 的偏移 —— Profile 名的**唯一**合法来源。
+    ///
+    /// <para>`internal` 而不是 `private`：Harness 要断言它等于从官方头文件推导出的 4。第三轮修掉的正是一个
+    /// 用 `NVDRS_APPLICATION.userFriendlyName`（偏移 4104）冒充 Profile 名的错误 —— 那条断言就是防止它
+    /// 改回去的回归护栏。**偏移正确性本身只能在真实驱动上验证，这一条守的是「代码没有改回旧的错误」。**</para>
+    /// </summary>
+    internal const int ProfileNameOffset = 4;
     private const int ApplicationSizeV4 = 20492;
     private const int ApplicationNameOffset = 8;
 

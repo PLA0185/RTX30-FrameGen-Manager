@@ -4557,6 +4557,22 @@ public static class Program
         Check("没有会话时读取返回 Unknown 而非猜测",
             real.Read(idA).State == ProfileSettingState.Unknown);
 
+        // ---- §18.2：Profile 名必须来自 NVDRS_PROFILE.profileName，不是应用自己的友好名 ----
+        //
+        // 第三轮修掉的错误：把 `NVDRS_APPLICATION.userFriendlyName`（偏移 4104）当成了 Profile 名。
+        // 那是应用的名字，驱动并不按它归档设置 —— 拿它去 Apply 会写到一个不存在或同名的 Profile 上。
+        //
+        // 偏移正确性本身只能在真实驱动上验证（本机 `FindApplicationByName` 返回 -166，走不到 GetProfileInfo），
+        // 所以这里守的是**回归**：代码没有改回旧的错误偏移。
+        Check("Profile 名取自 NVDRS_PROFILE.profileName（偏移 4）",
+            NvApiDrsAdapter.ProfileNameOffset == 4,
+            $"offset={NvApiDrsAdapter.ProfileNameOffset}");
+
+        // 「应用的友好名」那个偏移若还存在并被使用，说明有人把两条路又混在了一起。
+        Check("不再使用 NVDRS_APPLICATION.userFriendlyName（偏移 4104）作为 Profile 名",
+            NvApiDrsAdapter.ProfileNameOffset != 4104,
+            $"offset={NvApiDrsAdapter.ProfileNameOffset}");
+
         Check("没有会话时拒绝写入（不触碰驱动）",
             !real.Write(idA, 1).Ok);
 
