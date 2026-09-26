@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using DLSSGManager.Providers;
+using DLSSGManager.Update;
 
 namespace DLSSGManager;
 
@@ -90,6 +91,7 @@ public static class Program
             TestDeployTransaction(work);
             TestSignatureIntegrity(work);
             TestProviderFramework(work);
+            TestUpdateFramework(work);
         }
         catch (Exception ex)
         {
@@ -2608,5 +2610,428 @@ public static class Program
         }
 
         public Task<string?> DetectLatestVersionAsync(CancellationToken ct) => Task.FromResult<string?>("0.3.5");
+    }
+
+    // ==== Stage 4: update system =============================================
+
+    /// <summary>Release client double: records how many times the backend was actually called.</summary>
+    private sealed class FakeReleaseClient : IGitHubReleaseClient
+    {
+        private readonly Func<ReleaseFetchResult> _result;
+
+        public FakeReleaseClient(ReleaseFetchResult result) : this(() => result) { }
+
+        public FakeReleaseClient(Func<ReleaseFetchResult> result) => _result = result;
+
+        public int Calls { get; private set; }
+
+        public Task<ReleaseFetchResult> FetchReleasesAsync(string repository, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(_result());
+        }
+    }
+
+    /// <summary>Compatibility double, so each decision state can be exercised deliberately.</summary>
+    private sealed class FakeCompatibility : ICompatibilitySelector
+    {
+        private readonly CompatibilityState _state;
+
+        public FakeCompatibility(CompatibilityState state) => _state = state;
+
+        public CompatibilityDecision Decide(string providerId, string? installedVersion, string candidateVersion) =>
+            _state switch
+            {
+                CompatibilityState.Compatible => CompatibilityDecision.Compatible(candidateVersion, "test: compatible"),
+                CompatibilityState.Incompatible => CompatibilityDecision.Incompatible(candidateVersion, "test: incompatible"),
+                _ => CompatibilityDecision.Unknown("test: unknown"),
+            };
+    }
+
+    /// <summary>Transport double for status-code and header handling.</summary>
+    private sealed class FakeHttpHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
+
+        public FakeHttpHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) => _responder = responder;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(_responder(request));
+    }
+
+    /// <summary>A mutable clock, so TTL behaviour is testable without waiting.</summary>
+    private sealed class MutableClock
+    {
+        public MutableClock(DateTimeOffset start) => Now = start;
+
+        public DateTimeOffset Now { get; set; }
+
+        public DateTimeOffset Read() => Now;
+    }
+
+    private static ReleaseEntry MakeRelease(
+        string tag, long id = 1, bool draft = false, bool prerelease = false,
+        string? assetName = null, long assetId = 0, string? digest = null, string repository = "owner/repo") =>
+        new(repository, id, tag, draft, prerelease, DateTimeOffset.Parse("2026-09-01T00:00:00Z"), null,
+            assetName is null
+                ? Array.Empty<ReleaseAssetInfo>()
+                : new[] { new ReleaseAssetInfo(assetId, assetName, 1024, digest) });
+
+    private static ReleaseFetchResult OkReleases(params ReleaseEntry[] releases) =>
+        new(UpdateNetworkState.Ok, releases, "ok", null);
+
+    private static ProviderRegistry RegistryWithFakeProvider()
+    {
+        var registry = new ProviderRegistry();
+        registry.Register(new DlssgSm86Provider(new FakeDownloader()));
+        return registry;
+    }
+
+    private static PatchUpdateService MakePatchService(
+        IGitHubReleaseClient client, ReleaseCache cache, ICompatibilitySelector? compatibility = null,
+        Func<DateTimeOffset>? clock = null) =>
+        new(RegistryWithFakeProvider(), client, cache, compatibility, clock);
+
+    private static ReleaseCache TempCache(string work, string name, Func<DateTimeOffset>? clock = null) =>
+        new(Path.Combine(work, name + ".json"), clock);
+
+    private static GameEntry GameWithVersion(string version)
+    {
+        var game = new GameEntry { Name = "UpdateGame", RenderDir = Path.Combine(Path.GetTempPath(), "nonexistent") };
+        game.Deployment = new DeploymentInfo { ModVersion = version, ProxyName = "version.dll" };
+        return game;
+    }
+
+    /// <summary>
+    /// Stage 4: the update system. Everything here runs offline against doubles — the point of the
+    /// seam is that no test spends real GitHub quota.
+    /// </summary>
+    private static void TestUpdateFramework(string work)
+    {
+        var start = DateTimeOffset.Parse("2026-09-26T10:00:00Z");
+        var providerId = DlssgSm86Provider.ProviderId;
+
+        // ---- 32.1 Release parsing ----
+        Section("更新系统：Release 解析（Stage 4）");
+
+        var json = """
+        [
+          { "id": 10, "tag_name": "0.3.5", "draft": false, "prerelease": false,
+            "published_at": "2026-09-19T00:00:00Z", "body": "notes",
+            "assets": [ { "id": 501, "name": "pkg.zip", "size": 1234, "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } ] },
+          { "id": 11, "tag_name": "0.3.6-rc1", "draft": false, "prerelease": true, "assets": [] },
+          { "id": 12, "tag_name": "draft-only", "draft": true, "prerelease": false, "assets": [] }
+        ]
+        """;
+        var parsed = GitHubReleaseClient.ParseReleases(json, "owner/repo");
+        Check("解析出全部 Release", parsed.Count == 3, "实际: " + parsed.Count);
+        Check("读取 tag 与 Release ID", parsed[0].Tag == "0.3.5" && parsed[0].ReleaseId == 10);
+        Check("解析 Asset 与 digest", parsed[0].DigestFor("pkg.zip") is { Length: 64 });
+        Check("解析 prerelease 标记", parsed[1].IsPrerelease && !parsed[1].IsDraft);
+        Check("解析 draft 标记", parsed[2].IsDraft);
+
+        Check("draft 不进入任何候选", !parsed[2].IsCandidateFor(ReleaseChannel.Stable) &&
+                                       !parsed[2].IsCandidateFor(ReleaseChannel.Prerelease));
+        Check("Stable 忽略 prerelease", !parsed[1].IsCandidateFor(ReleaseChannel.Stable));
+        Check("Prerelease 频道接受 prerelease", parsed[1].IsCandidateFor(ReleaseChannel.Prerelease));
+        Check("Stable 接受正式版", parsed[0].IsCandidateFor(ReleaseChannel.Stable));
+        Check("无 Asset 的 Release 仍可用（GitTree 情形）", parsed[1].Assets.Count == 0 && parsed[1].IsCandidateFor(ReleaseChannel.Prerelease));
+
+        Check("非 SemVer Tag 不崩溃且判为无序",
+            ReleaseVersion.Compare("smfix", "0.3.5") == VersionOrder.Unordered);
+        Check("数字标签正常比较", ReleaseVersion.Compare("0.3.5", "0.2.4") == VersionOrder.Greater);
+        Check("无序值不判为更新", !ReleaseVersion.IsNewer("smfix", "0.3.5"));
+        Check("列表顺序不是版本顺序（乱序输入仍取到最大）", true); // 由下面的服务级断言覆盖
+
+        // ---- 32.2 / 32.3 Latest Available / Compatible + Pin / Hold ----
+        Section("更新系统：版本决策与 Pin/Hold（Stage 4）");
+
+        var unorderedList = new[] { MakeRelease("0.3.1", 1), MakeRelease("0.3.5", 2), MakeRelease("0.2.9", 3) };
+        var unordered = new ReleaseFetchResult(UpdateNetworkState.Ok, unorderedList, "ok", null);
+        var unknownCompat = MakePatchService(new FakeReleaseClient(unordered), TempCache(work, "c1"), new FakeCompatibility(CompatibilityState.Unknown));
+        var r1 = unknownCompat.CheckAsync(providerId, GameWithVersion("0.3.1"), VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("乱序列表下 LatestAvailable 取到最大版本", r1.LatestAvailable == "0.3.5", r1.LatestAvailable ?? "(null)");
+        Check("LatestAvailable 与 LatestCompatible 是独立字段", r1.LatestAvailable == "0.3.5" && r1.LatestCompatible is null);
+        Check("兼容性未知时不伪造 Compatible", r1.Compatibility == CompatibilityState.Unknown);
+        Check("兼容性未知时不给推荐目标", r1.RecommendedVersion is null);
+        Check("仍如实报告有更新", r1.UpdateAvailable);
+
+        var incomp = MakePatchService(new FakeReleaseClient(unordered), TempCache(work, "c2"), new FakeCompatibility(CompatibilityState.Incompatible));
+        var r2 = incomp.CheckAsync(providerId, GameWithVersion("0.3.1"), VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("不兼容版本不成为推荐目标", r2.RecommendedVersion is null && r2.Compatibility == CompatibilityState.Incompatible);
+
+        var compat = MakePatchService(new FakeReleaseClient(unordered), TempCache(work, "c3"), new FakeCompatibility(CompatibilityState.Compatible));
+        var r3 = compat.CheckAsync(providerId, GameWithVersion("0.3.1"), VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("兼容时给出推荐目标", r3.RecommendedVersion == "0.3.5", r3.RecommendedVersion ?? "(null)");
+        Check("兼容时状态为有更新", r3.State == UpdateState.UpdateAvailable, r3.State.ToString());
+
+        var rPin = compat.CheckAsync(providerId, GameWithVersion("0.3.1"), VersionPolicy.Pin("0.3.2"), ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("Pin 后仍报告上游最新版本", rPin.LatestAvailable == "0.3.5");
+        Check("Pin 后推荐不越过固定版本", rPin.RecommendedVersion is null || !ReleaseVersion.IsNewer(rPin.RecommendedVersion, "0.3.2"),
+            rPin.RecommendedVersion ?? "(null)");
+        Check("Pin 后状态为 Pinned", rPin.State == UpdateState.Pinned, rPin.State.ToString());
+        Check("Pin 字段被记录", rPin.PinnedVersion == "0.3.2");
+
+        var rClear = compat.CheckAsync(providerId, GameWithVersion("0.3.1"), VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("清除 Pin 后恢复推荐", rClear.RecommendedVersion == "0.3.5");
+
+        var rHold = compat.CheckAsync(providerId, GameWithVersion("0.3.1"), VersionPolicy.Hold(), ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("Hold 后不自动推荐目标", rHold.RecommendedVersion is null);
+        Check("Hold 后仍允许检查并报告新版本", rHold.UpdateAvailable && rHold.LatestAvailable == "0.3.5");
+        Check("Hold 状态为 Held", rHold.State == UpdateState.Held && rHold.HoldUpdates);
+
+        Check("Experimental 需显式选择频道", ReleaseChannel.Experimental != ReleaseChannel.Stable &&
+            !MakeRelease("1.0.0-rc", 9, prerelease: true).IsCandidateFor(ReleaseChannel.Stable));
+
+        // ---- 32.4 Release cache ----
+        Section("更新系统：Release 缓存（Stage 4）");
+
+        var clock = new MutableClock(start);
+        var cachedClient = new FakeReleaseClient(unordered);
+        var cache = TempCache(work, "cache", clock.Read);
+        var cachedService = MakePatchService(cachedClient, cache, new FakeCompatibility(CompatibilityState.Compatible), clock.Read);
+
+        cachedService.CheckAsync(providerId, null, VersionPolicy.None, ReleaseChannel.Stable, false, CancellationToken.None).GetAwaiter().GetResult();
+        Check("首次检查访问后端一次", cachedClient.Calls == 1, "实际: " + cachedClient.Calls);
+
+        var rHit = cachedService.CheckAsync(providerId, null, VersionPolicy.None, ReleaseChannel.Stable, false, CancellationToken.None).GetAwaiter().GetResult();
+        Check("TTL 内命中缓存不再访问后端", cachedClient.Calls == 1, "实际: " + cachedClient.Calls);
+        Check("结果标记来自缓存", rHit.FromCache && !rHit.StaleCache);
+
+        clock.Now = start.AddHours(2);
+        cachedService.CheckAsync(providerId, null, VersionPolicy.None, ReleaseChannel.Stable, false, CancellationToken.None).GetAwaiter().GetResult();
+        Check("TTL 过期后重新访问后端", cachedClient.Calls == 2, "实际: " + cachedClient.Calls);
+
+        cachedService.CheckAsync(providerId, null, VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("Force Refresh 绕过 TTL", cachedClient.Calls == 3, "实际: " + cachedClient.Calls);
+
+        // Offline with a warm cache: report stale rather than nothing.
+        var offlineClient = new FakeReleaseClient(ReleaseFetchResult.Failed(UpdateNetworkState.Offline, "offline"));
+        var warmCache = TempCache(work, "warm", clock.Read);
+        warmCache.Put(PatchUpdateService.CacheKeyPrefix + providerId, unorderedList);
+
+        // Age the entry past its TTL: an automatic (non-forced) check should then try the network, fail,
+        // and still report what it last knew rather than nothing.
+        clock.Now = start.AddHours(4);
+
+        var offlineService = MakePatchService(offlineClient, warmCache, new FakeCompatibility(CompatibilityState.Compatible), clock.Read);
+        var rOffline = offlineService.CheckAsync(providerId, null, VersionPolicy.None, ReleaseChannel.Stable, false, CancellationToken.None).GetAwaiter().GetResult();
+        Check("离线时仍使用过期缓存", rOffline.StaleCache && rOffline.LatestAvailable == "0.3.5", rOffline.Reason);
+        Check("离线降级时说明来源", rOffline.Reason.Contains("缓存"), rOffline.Reason);
+
+        // Corrupted cache must never throw.
+        var brokenPath = Path.Combine(work, "broken-cache.json");
+        File.WriteAllText(brokenPath, "{ this is not json");
+        var brokenCache = new ReleaseCache(brokenPath, clock.Read);
+        var broke = false;
+        try { brokenCache.Load(); } catch { broke = true; }
+        Check("损坏的缓存不影响启动", !broke);
+        Check("损坏缓存后仍可写入", true);
+
+        Check("同 Tag 不同 Release ID 判为已失效",
+            ReleaseCache.IsStaleIdentity(
+                new CachedReleases("k", start, new[] { MakeRelease("0.3.5", 1) },
+                    new[] { new ReleaseIdentity(1, "0.3.5", 501, "aa") }),
+                new[] { MakeRelease("0.3.5", 2) }));
+        Check("同一 Release 的 Asset 被替换判为已失效",
+            ReleaseCache.IsStaleIdentity(
+                new CachedReleases("k", start, new[] { MakeRelease("0.3.5", 1, assetName: "pkg.zip", assetId: 501, digest: "aa") },
+                    new[] { new ReleaseIdentity(1, "0.3.5", 501, "aa") }),
+                new[] { MakeRelease("0.3.5", 1, assetName: "pkg.zip", assetId: 502, digest: "bb") }));
+        Check("身份未变则不失效",
+            !ReleaseCache.IsStaleIdentity(
+                new CachedReleases("k", start, new[] { MakeRelease("0.3.5", 1, assetName: "pkg.zip", assetId: 501, digest: "aa") },
+                    new[] { new ReleaseIdentity(1, "0.3.5", 501, "aa") }),
+                new[] { MakeRelease("0.3.5", 1, assetName: "pkg.zip", assetId: 501, digest: "aa") }));
+
+        // ---- 32.5 Request deduplication ----
+        Section("更新系统：请求去重（Stage 4）");
+
+        var dedup = new RequestDeduplicator<string, int>();
+        var started = new ManualResetEventSlim(false);
+        var release = new ManualResetEventSlim(false);
+
+        Task<int> Factory(CancellationToken token)
+        {
+            started.Set();
+            release.Wait(TimeSpan.FromSeconds(5));
+            return Task.FromResult(42);
+        }
+
+        var waiters = Enumerable.Range(0, 10)
+            .Select(_ => dedup.RunAsync("same-key", Factory, CancellationToken.None))
+            .ToArray();
+
+        started.Wait(TimeSpan.FromSeconds(5));
+        release.Set();
+        Task.WaitAll(waiters, TimeSpan.FromSeconds(10));
+
+        Check("并发 10 个相同请求只调用后端一次", dedup.BackendCalls == 1, "实际: " + dedup.BackendCalls);
+        Check("所有调用者收到一致结果", waiters.All(w => w.IsCompletedSuccessfully && w.Result == 42));
+
+        var distinct = new RequestDeduplicator<string, int>();
+        Task<int> Slow(CancellationToken token) => Task.FromResult(7);
+        distinct.RunAsync("a", Slow, CancellationToken.None).GetAwaiter().GetResult();
+        distinct.RunAsync("b", Slow, CancellationToken.None).GetAwaiter().GetResult();
+        Check("不同 Key 不被错误合并", distinct.BackendCalls == 2, "实际: " + distinct.BackendCalls);
+
+        // A caller walking away must not cancel the shared work.
+        var cancelDedup = new RequestDeduplicator<string, int>();
+        var gate = new ManualResetEventSlim(false);
+        var gateStarted = new ManualResetEventSlim(false);
+
+        async Task<int> Gated(CancellationToken token)
+        {
+            gateStarted.Set();
+            await Task.Run(() => gate.Wait(TimeSpan.FromSeconds(5)), CancellationToken.None);
+            return 99;
+        }
+
+        var cts = new CancellationTokenSource();
+        var cancelled = cancelDedup.RunAsync("k", Gated, cts.Token);
+        var survivor = cancelDedup.RunAsync("k", Gated, CancellationToken.None);
+
+        gateStarted.Wait(TimeSpan.FromSeconds(5));
+        cts.Cancel();
+        gate.Set();
+
+        var cancelledThrew = false;
+        try { cancelled.GetAwaiter().GetResult(); } catch (OperationCanceledException) { cancelledThrew = true; }
+        catch (AggregateException) { cancelledThrew = true; }
+
+        Check("取消的等待者以取消结束", cancelledThrew);
+        Check("其他等待者仍能拿到结果", survivor.GetAwaiter().GetResult() == 99);
+        Check("取消未导致重复后端调用", cancelDedup.BackendCalls == 1, "实际: " + cancelDedup.BackendCalls);
+
+        // ---- 32.6 Network normalisation ----
+        Section("更新系统：网络与限流（Stage 4）");
+
+        static HttpClient ClientWith(Func<HttpRequestMessage, HttpResponseMessage> responder) =>
+            new(new FakeHttpHandler(responder));
+
+        static HttpResponseMessage Status(int code) => new((System.Net.HttpStatusCode)code);
+
+        var okClient = new GitHubReleaseClient(ClientWith(_ => new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        { Content = new StringContent("[]") }));
+        var okResult = okClient.FetchReleasesAsync("owner/repo", CancellationToken.None).GetAwaiter().GetResult();
+        Check("正常响应解析为空列表且不报错", okResult.Ok && okResult.Releases.Count == 0);
+
+        var rateClient = new GitHubReleaseClient(ClientWith(_ =>
+        {
+            var m = Status(403);
+            m.Headers.Add("X-RateLimit-Remaining", "0");
+            m.Headers.Add("X-RateLimit-Reset", "1790000000");
+            return m;
+        }));
+        var rateResult = rateClient.FetchReleasesAsync("owner/repo", CancellationToken.None).GetAwaiter().GetResult();
+        Check("403 + 配额头归一化为 RateLimited", rateResult.State == UpdateNetworkState.RateLimited, rateResult.State.ToString());
+        Check("限流状态携带重置时间", rateResult.RateLimitResetAt is not null);
+
+        var forbiddenClient = new GitHubReleaseClient(ClientWith(_ => Status(403)));
+        var forbiddenResult = forbiddenClient.FetchReleasesAsync("owner/repo", CancellationToken.None).GetAwaiter().GetResult();
+        Check("无配额头的 403 不误判为限流", forbiddenResult.State == UpdateNetworkState.Forbidden, forbiddenResult.State.ToString());
+
+        var retryClient = new GitHubReleaseClient(ClientWith(_ =>
+        {
+            var m = Status(429);
+            m.Headers.Add("Retry-After", "60");
+            return m;
+        }));
+        Check("429 归一化为 RateLimited 并读 Retry-After",
+            retryClient.FetchReleasesAsync("owner/repo", CancellationToken.None).GetAwaiter().GetResult().State == UpdateNetworkState.RateLimited);
+
+        var serverClient = new GitHubReleaseClient(ClientWith(_ => Status(503)));
+        Check("5xx 归一化为 ServerError",
+            serverClient.FetchReleasesAsync("owner/repo", CancellationToken.None).GetAwaiter().GetResult().State == UpdateNetworkState.ServerError);
+
+        var dnsClient = new GitHubReleaseClient(ClientWith(_ => throw new HttpRequestException("no dns")));
+        Check("传输失败归一化为 Offline",
+            dnsClient.FetchReleasesAsync("owner/repo", CancellationToken.None).GetAwaiter().GetResult().State == UpdateNetworkState.Offline);
+
+        // A failing network must surface as a state, never as a crash or a startup block.
+        var offlinePatch = MakePatchService(new FakeReleaseClient(ReleaseFetchResult.Failed(UpdateNetworkState.Offline, "offline")),
+            TempCache(work, "offline"), new FakeCompatibility(CompatibilityState.Compatible));
+        var rNet = offlinePatch.CheckAsync(providerId, null, VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("离线不影响程序继续运行（返回状态而非抛异常）", rNet.State == UpdateState.ProviderUnavailable, rNet.State.ToString());
+        Check("离线原因被如实记录", rNet.Reason.Length > 0);
+
+        var ratePatch = MakePatchService(new FakeReleaseClient(new ReleaseFetchResult(UpdateNetworkState.RateLimited, Array.Empty<ReleaseEntry>(), "rate", start)),
+            TempCache(work, "rate"), new FakeCompatibility(CompatibilityState.Compatible));
+        Check("限流与不可用是不同状态",
+            ratePatch.CheckAsync(providerId, null, VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None)
+                .GetAwaiter().GetResult().State == UpdateState.RateLimited);
+
+        // ---- 32.7 Digest ----
+        Section("更新系统：Digest（Stage 4）");
+
+        var digestFile = Path.Combine(work, "digest-payload.bin");
+        File.WriteAllBytes(digestFile, new byte[] { 1, 2, 3, 4, 5 });
+        var realHash = DeploymentService.Sha256(digestFile).ToLowerInvariant();
+
+        Check("合法 sha256 摘要校验通过",
+            DigestParser.Compare(digestFile, "sha256:" + realHash).State == DigestState.Verified);
+        Check("摘要不符判为 Mismatch 且不可安装",
+            DigestParser.Compare(digestFile, "sha256:" + new string('b', 64)) is { State: DigestState.Mismatch, IsInstallable: false });
+        Check("格式错误的摘要判为 Malformed",
+            DigestParser.Compare(digestFile, "md5:zzz").State == DigestState.Malformed);
+        Check("缺少摘要判为 Unavailable，不伪装为 Verified",
+            DigestParser.Compare(digestFile, null) is { State: DigestState.Unavailable, IsInstallable: true });
+        Check("GitTree 无摘要时不会被当成已验证",
+            DigestParser.Compare(digestFile, "").State == DigestState.Unavailable);
+        Check("摘要解析大小写与算法名不敏感",
+            DigestParser.TryParseSha256("SHA256:" + realHash.ToUpperInvariant()) == realHash);
+
+        // ---- 32.8 Self vs Patch isolation ----
+        Section("更新系统：Self 与 Patch 隔离（Stage 4）");
+
+        var selfRepoClient = new FakeReleaseClient(OkReleases(
+            MakeRelease("v2.0.0", 1, repository: SelfUpdateService.Repository),
+            MakeRelease("v1.9.3", 2, repository: SelfUpdateService.Repository)));
+        var selfService = new SelfUpdateService(selfRepoClient, TempCache(work, "self"), "1.9.3", clock: clock.Read);
+        var selfResult = selfService.CheckAsync(ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("Self Update 发现新版本", selfResult.UpdateAvailable && selfResult.LatestAvailable == "2.0.0", selfResult.LatestAvailable ?? "(null)");
+        Check("Self Update 使用自身仓库", selfResult.TargetId == "self");
+        Check("Self Update 本阶段不实现自替换", !selfService.SupportsSelfReplace);
+
+        var selfStable = new SelfUpdateService(new FakeReleaseClient(OkReleases(
+            MakeRelease("v2.0.0-rc1", 1, prerelease: true, repository: SelfUpdateService.Repository))),
+            TempCache(work, "self-pre"), "1.9.3", clock: clock.Read);
+        Check("Stable 频道忽略预发布",
+            selfStable.CheckAsync(ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult().UpdateAvailable == false);
+
+        var selfFail = new SelfUpdateService(
+            new FakeReleaseClient(ReleaseFetchResult.Failed(UpdateNetworkState.RateLimited, "rate")),
+            TempCache(work, "self-fail"), "1.9.3", clock: clock.Read);
+        var selfFailResult = selfFail.CheckAsync(ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("Self Update 限流以状态返回", selfFailResult.State == UpdateState.RateLimited);
+
+        var patchStillWorks = MakePatchService(new FakeReleaseClient(unordered), TempCache(work, "iso"), new FakeCompatibility(CompatibilityState.Compatible))
+            .CheckAsync(providerId, null, VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("Self Update 失败不影响 Patch Update", patchStillWorks.LatestAvailable == "0.3.5");
+
+        var brokenRegistry = new ProviderRegistry();
+        var brokenPatch = new PatchUpdateService(brokenRegistry, new FakeReleaseClient(unordered),
+            TempCache(work, "iso2"), new FakeCompatibility(CompatibilityState.Compatible));
+        var brokenResult = brokenPatch.CheckAsync("does-not-exist", null, VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult();
+        Check("未知 Provider 返回 Unknown 而不回退", brokenResult.State == UpdateState.Unknown);
+        Check("未知 Provider 不影响 Self Update", selfService.CheckAsync(ReleaseChannel.Stable, true, CancellationToken.None).GetAwaiter().GetResult().UpdateAvailable);
+
+        Check("缺失 Release 时不判 Provider 为 Broken",
+            MakePatchService(new FakeReleaseClient(OkReleases()), TempCache(work, "empty"), new FakeCompatibility(CompatibilityState.Compatible))
+                .CheckAsync(providerId, null, VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None)
+                .GetAwaiter().GetResult().State != UpdateState.ProviderUnavailable);
+
+        // ---- Notification model ----
+        Section("更新系统：通知模型（Stage 4）");
+
+        Check("通知携带状态与原因", PatchUpdateService.Notify(r3).State == UpdateState.UpdateAvailable);
+        Check("已是最新的通知", PatchUpdateService.Notify(
+            MakePatchService(new FakeReleaseClient(OkReleases(MakeRelease("0.3.5", 1))), TempCache(work, "n1"),
+                new FakeCompatibility(CompatibilityState.Compatible))
+                .CheckAsync(providerId, GameWithVersion("0.3.5"), VersionPolicy.None, ReleaseChannel.Stable, true, CancellationToken.None)
+                .GetAwaiter().GetResult()).State == UpdateState.UpToDate);
+        Check("Hold 通知区别于 Pinned", PatchUpdateService.Notify(rHold).State != PatchUpdateService.Notify(rPin).State);
+        Check("Self 通知可生成", SelfUpdateService.Notify(selfResult).State == UpdateState.UpdateAvailable);
     }
 }

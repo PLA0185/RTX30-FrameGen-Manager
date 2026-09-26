@@ -1609,3 +1609,110 @@ DlssgSm86Provider
 | **S3-02** | `RateLimited` 与 `Unavailable` 的区分依赖异常文本启发式 | 精确区分需下载层暴露 HTTP 状态码；已在代码注释与本节标注为启发式，未写成可靠判定 |
 | **S3-03** | UI 仅 4 个调用点接入 Provider | 下载路径与状态检查仍直接调用共享服务，属有意的分阶段接入 |
 | **S3-04** | `Install` 未使用独立 InstallPlan | 与现有架构一致的有意选择；若将来引入计划层，需连同 `Deploy` 一起重构 |
+
+---
+
+## 40. Stage 4 实现记录：UpdateService（2026-09-26）
+
+> 基线 `8cc5c14`。本节只记录实际做了什么、与设计的偏差、以及仍未验证的部分。
+
+### 40.1 先画调用链（结论：本阶段是新建，不是改造）
+
+审查后确认：**现有代码里没有 Release API 客户端、没有缓存、没有请求去重、没有 Pin/Hold**。唯一的"版本发现"是 `ModFetcher.DetectLatestVersionAsync`——读 payload 自带的 INI 横幅，其次读上游 README 标题（两次 raw GET，均无缓存、无 ETag）。
+
+| 现有能力 | 归属 | Stage 4 处置 |
+|---|---|---|
+| 版本探测（INI/README） | `ModFetcher.DetectLatestVersionAsync` | **保留**，作为 Provider 的探测回退 |
+| 下载 + 验证链 | `ModFetcher.DownloadIntoAsync` | **不动**（Stage 2 已加固） |
+| 部署/恢复/事务 | `DeploymentService` | **不动**，Update 层不复制 |
+| 更新检查 / 缓存 / 去重 / Pin | — | **本阶段新建** |
+
+### 40.2 两套服务严格分离（非 `if (self)`）
+
+```
+Update/
+├─ SelfUpdateService   目标=本管理器自身；源=正式 GitHub Release（非 main 分支提交）
+└─ PatchUpdateService  目标=第三方补丁；经 ProviderRegistry 查 Provider
+```
+
+共享（§26）：`IGitHubReleaseClient`、`ReleaseCache`、`ReleaseEntry` 模型、`DigestParser`、网络状态归一化、`RequestDeduplicator`。
+**不共享**：安装逻辑、回滚逻辑、版本规则、目标对象、Release 选择策略。两者无任何相互调用，故障互不影响（有测试）。
+
+**`Push Commit ≠ Client Update`** 已写入 `SelfUpdateService` 的注释与行为：更新源只认正式 Release。
+
+### 40.3 Release 模型与版本解析
+
+`ReleaseEntry` 携带 `ReleaseId` / `Tag` / `IsDraft` / `IsPrerelease` / `Assets`（含 `AssetId` 与 `DigestSha256`）/ `PublishedAt` —— 身份字段而非只有 tag，因为同一 tag 可以重新上传不同字节。
+
+`ReleaseVersion.Compare` **不假设 SemVer**：两侧都是点分数字才比较，否则返回 `VersionOrder.Unordered`，且 `IsNewer` 对 `Unordered` 一律返回 false。既避免了全局 `new Version(tag)`（MFG 的 tag 无版本语义，会抛异常），也不猜顺序。
+
+**列表顺序不被信任**：候选从全部 Release 中按版本取最大，测试用乱序列表（`0.3.1 / 0.3.5 / 0.2.9`）验证。
+
+`IReleaseVersionResolver` 是**追加**的可选接口，`IPatchProvider` 契约未改动——Provider 若需要自己的 tag 语义就额外实现它。
+
+### 40.4 Latest Available 与 Latest Compatible
+
+两者是 `UpdateCheckResult` 上的两个独立字段。Stage 4 只提供 `UnknownCompatibilitySelector`：一律 `CompatibilityState.Unknown` → `LatestCompatible = null` → **不给推荐目标**，同时 `UpdateAvailable` 仍为 true（如实报告有新版本）。
+
+**不兼容的新版不会成为 `RecommendedVersion`**（有测试）。`SelfUpdateService` 使用独立的 `SelfHostCompatibilitySelector`——管理器自身更新不涉及第三方环境匹配，这是**有理由的判断**，不是"最新即兼容"的默认假设；该判断只适用于 self，不适用于任何 Provider。
+
+### 40.5 Version Pin / Hold
+
+`VersionPolicy` + `PinState { NotPinned, Pinned, Held }`，不用一个 bool 混合语义：
+- `Pinned`：仍报告 `LatestAvailable`，但自动目标不得越过 `PinnedVersion`
+- `Held`：仍允许检查、仍报告新版本，但不给出任何自动目标
+- 状态词区分 `Pinned` / `Held` / `UpToDate` / `UpdateAvailable`
+
+### 40.6 Release Cache
+
+`ReleaseCache`：schemaVersion=1、原子写（tmp + Move）、**损坏即丢弃且不抛**（损坏缓存不得阻止启动）、TTL 30 分钟、`forceRefresh` 绕过、离线时用 stale 缓存并在 reason 中说明来源。
+
+失效判据不看 tag：`IsStaleIdentity` 比较 `ReleaseId` / `AssetId` / `Digest`，覆盖"同 tag 重传""asset 被替换"。缓存落在 `AppPaths.Root`（应用数据层），**不写源码目录、不写游戏目录、不含任何 token**。
+
+### 40.7 Request Deduplication
+
+`RequestDeduplicator<TKey,TResult>`：相同 key 的并发请求合并为一次后端调用；**共享任务不绑定任何调用者的 CancellationToken**，因此一个等待者取消不会取消其他等待者（用 `WaitAsync(ct)` 只作用于自己的等待）。测试覆盖：并发 10 个相同请求 → `BackendCalls == 1`、不同 key 不合并、取消者以取消结束而其他等待者正常拿到结果。
+
+### 40.8 网络与 Rate Limit（结构化，非字符串猜测）
+
+`GitHubReleaseClient` 把响应归一化为 `UpdateNetworkState { Ok, Offline, Timeout, RateLimited, Forbidden, ServerError, Malformed, Unknown }`：
+- 429，或 **403 且 `X-RateLimit-Remaining: 0` / 有 `X-RateLimit-Reset`** → `RateLimited`（并解析重置时间）
+- 403 但无限流头 → `Forbidden`（**不误判为限流**）
+- 5xx → `ServerError`；`HttpRequestException` → `Offline`；超时 → `Timeout`；JSON 解析失败 → `Malformed`
+
+这使 Provider 的健康状态可以基于结构化结果判定，Stage 3 的文本启发式不再是唯一路径。API 不可达时检查以状态返回，**不会阻止程序启动**（有测试）。
+
+> **允许清单未改动**：本阶段只做"发现"，不做 Release Asset 下载，因此不需要 `objects.githubusercontent.com`；该 host 仍留在 Carry-over，未擅自放宽为 `*.githubusercontent.com`。
+
+### 40.9 Digest 模型
+
+`DigestParser` 解析 `digest: sha256:<64hex>`；`Compare(path, published)` 返回 `DigestState { Verified, Mismatch, Unavailable, Malformed }`。
+**GitTree 情形**（发布方无摘要）→ `Unavailable`，`IsInstallable = true` 但**绝不伪装成 `Verified`**；`Mismatch` 则 `IsInstallable = false`，拒绝进入安装流程。
+
+### 40.10 Stable / Prerelease
+
+`IsCandidateFor(channel)`：draft **在任何频道都被排除**；Stable 额外排除 prerelease；Prerelease 频道接受两者（回滚时需要）。缓存 key 含频道，Stable 与 Prerelease 的答案不会互相串用。
+
+### 40.11 已验证 / 未验证
+
+**已验证**
+- `dotnet build -c Release` → **0 警告 / 0 错误**
+- Harness → **486 通过 / 0 失败 / 10 跳过**（基线 408/0/10，新增 78 项，**Stage 2/3 原测试未删未减**）
+- 全部为离线测试（fake release client / fake HTTP handler / fake clock / fake compatibility），不消耗真实 GitHub 配额
+- `dotnet test` → exit 0、无输出（无 VSTest 项目，如实记录）
+
+**未验证 / 不在本阶段范围**
+- 未对真实 GitHub API 运行 smoke test（离线优先；真实可达性未在本轮验证）
+- 未实现下载协调之外的安装（Update 层只到"决策 + 下载入口委托"）
+- 未做独立 Updater、Release 发布流水线（Stage 13）、兼容性矩阵（Stage 5）、MFG Provider（Stage 7）、UI 改版（Stage 10）
+- **未做任何 UI 接线**：Stage 4 完成条件未要求，且"不要大改 UI"优先
+
+### 40.12 Remaining Risks
+
+| ID | 风险 | 说明 |
+|---|---|---|
+| **S4-01** | 真实 GitHub API 未做 smoke test | 结构由 fake 验证；真实字段若有变化需在联调时确认 |
+| **S4-02** | `LatestCompatible` 在当前配置下恒为 null | 这是**有意**的诚实结果（Stage 5 接入矩阵前无兼容性证据），但意味着 Stage 4 结束时自动更新目标不可用 |
+| **S4-03** | Provider 侧健康状态仍保留文本启发式 | 结构化状态已可用，但 `DlssgSm86Provider.Classify` 尚未改用它（改动会触及 Stage 3 测试，留待需要时最小调整） |
+| **S4-04** | `SelfHostCompatibilitySelector` 的"自身更新即兼容"是设计判断 | 依据是发布流程固定运行时；若将来发布面向不同运行时的构建，此判断需要重审 |
+| **S4-05** | Release Cache 无上限清理 | 按 key 覆盖写入，键数量等于 Provider/频道组合，实际不会膨胀；未实现容量淘汰 |

@@ -38,6 +38,10 @@
     <Compile Include="..\..\src\DLSSGManager\Providers\ProviderRegistry.cs" />
     <Compile Include="..\..\src\DLSSGManager\Providers\DlssgSm86Provider.cs" />
     <Compile Include="..\..\src\DLSSGManager\Providers\AppProviders.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Update\UpdateContracts.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Update\UpdateInfrastructure.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Update\PatchUpdateService.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Update\SelfUpdateService.cs" />
   </ItemGroup>
 
 </Project>
