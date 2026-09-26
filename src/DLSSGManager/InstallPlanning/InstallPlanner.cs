@@ -498,20 +498,20 @@ public sealed record InstallPlan(
 public static class InstallPlanner
 {
     /// <summary>
-    /// 计划要说「会写哪些文件」时，从 payload 里挑出真正可能落进游戏目录的那些。
-    ///
-    /// <para>判据是<b>既有的代理入口名集合</b>，不是目录结构 —— 上游的目录布局随时可能变，而「哪些名字是
-    /// 代理入口」是本项目与上游共同的稳定概念，`ModSource.IsKnownProxyName` 已经把它表达出来了。</para>
-    ///
-    /// <para>放行的是「可能被写入」而不是「一定被写入」：部署侧还会写入 0.3.3+ payload 里的待机代理，
-    /// 那些名字 planner 事先不知道。宁可放行得宽一点，也不能让真实的写入被自己的校验判成意外文件。</para>
-    /// </summary>
-    /// <summary>
     /// 计划要写入的文件清单，带来源。
     ///
     /// <para><b>这里是 §13 那个区分的落点。</b><c>dlssg_sm86.ini</c> 由管理器生成、<b>不在 payload 里</b>；
     /// payload 里的代理 DLL 则必须真的存在。两者若都用字符串表示，「安装前检查文件是否存在」这一步就会把
     /// 生成的文件也拿去 payload 里找，然后报「缺少」—— 那是本项目真实发生过的误判。</para>
+    ///
+    /// <para><b>代理入口的判据是「可部署名」（<c>ModSource.ProxyCandidates</c>），不是「扫描名」
+    /// （<c>ModSource.IsKnownProxyName</c>，它多一个 <c>winhttp.dll</c>）。</b>这两个集合不可混用：
+    /// <c>DeploymentService.PickFreeProxy</c> 从 <c>source.AvailableProxies</c>（基于 <c>ProxyCandidates</c>）
+    /// 里找计划选定的名字，所以计划若按扫描名收进一个 <c>winhttp.dll</c>，部署侧会找不到它并<b>拒绝部署</b>
+    /// ——「计划说会写、部署却拒绝」，而且不报错。**本项目在这个判据上已经犯过四次，方向始终一致。**</para>
+    ///
+    /// <para>放行的是「可能被写入」而不是「一定被写入」：部署侧还会写入 0.3.3+ payload 里的待机代理，
+    /// 那些名字 planner 事先不知道。宁可放行得宽一点，也不能让真实的写入被自己的校验判成意外文件。</para>
     /// </summary>
     private static IReadOnlyList<PlannedFile> BuildPlannedFiles(
         IReadOnlyList<string> payloadFiles, string? proxyChoice, string? asiChoice)
@@ -528,8 +528,9 @@ public static class InstallPlanner
             result.Add(new PlannedFile(target, kind, source, role));
         }
 
-        // payload 里命中已知代理入口名的文件 —— 0.3.3+ 会把这些作为「待机代理」一并写入，planner 事先
-        // 不知道具体是哪几个，所以按名字放行（判据是项目既有的 ModSource.IsKnownProxyName，不是目录结构）。
+        // payload 里命中**可部署**代理入口名的文件 —— 0.3.3+ 会把这些作为「待机代理」一并写入，planner 事先
+        // 不知道具体是哪几个，所以按名字放行。判据是 `ProxyCandidates` 而不是 `IsKnownProxyName`：
+        // 后者是扫描集合（多一个 winhttp.dll），而部署侧的 `AvailableProxies` 基于前者。
         foreach (var file in payloadFiles)
         {
             var leaf = Leaf(file);
