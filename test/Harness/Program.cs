@@ -4542,6 +4542,17 @@ public static class Program
             writeProbe.Requirement == NvidiaProfile.ElevationRequirement.NotRequired,
             $"{writeProbe.Requirement}：{writeProbe.Evidence}");
 
+        // ---- 第二轮 §5：还原必须用当初部署它的那个 Provider ----
+        // The defect this covers: restore always went through the built-in provider, regardless of which one had
+        // deployed the files — and providers differ in what they deploy and how they verify it.
+        Check("部署记录带 ProviderId（还原据此选择 Provider）",
+            typeof(DeploymentInfo).GetProperty("ProviderId") is not null);
+
+        Check("执行器会把部署它的 Provider 写进记录",
+            typeof(InstallPlanExecutor).GetMethod("Execute") is not null &&
+            new DeploymentInfo().ProviderId.Length == 0,
+            "空值表示「早于该字段的部署」，还原时应报错而不是猜测");
+
         // ---- H: the configuration service the window now calls (整改 H) ----
         var hParts = Build(work, "wfHMatrix");
         var hService = new GameConfigurationService(hParts.Workflow);

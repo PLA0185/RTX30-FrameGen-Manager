@@ -149,6 +149,11 @@ public static class InstallPlanExecutor
         if (!install.Ok)
             return new PlanExecutionResult(false, install.Message, steps, plan.ProxyChoice);
 
+        // Record which provider did this, so a later restore uses the same one. Without it the restore has to
+        // guess, and guessing a provider is how the wrong files end up being removed.
+        if (game.Deployment is not null)
+            game.Deployment.ProviderId = plan.ProviderId;
+
         // ── 6. The plan decides which files may exist, so what was actually deployed is checked against it.
         //       A file the plan never named is not a detail: it means the plan and the deployment disagree about
         //       what this install is, and reporting success would quietly turn the plan into advice.

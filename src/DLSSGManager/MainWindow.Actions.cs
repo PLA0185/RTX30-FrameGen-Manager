@@ -96,6 +96,28 @@ public partial class MainWindow
         return Providers.AppProviders.Patch;
     }
 
+    /// <summary>
+    /// The provider that deployed this game's files, or null together with the reason it cannot be determined.
+    ///
+    /// <para><b>There is deliberately no fallback to the built-in provider.</b> Restoring through a provider that
+    /// did not deploy these files either removes the wrong things or refuses after concluding the files belong to
+    /// someone else — and either way the user is told nothing they can act on. Saying "the record does not name a
+    /// provider" is the honest outcome, and it is what an older deployment will hit.</para>
+    /// </summary>
+    private (Providers.IPatchProvider? Provider, string Error) ProviderForRestore(GameEntry game)
+    {
+        var id = game.Deployment?.ProviderId;
+
+        if (string.IsNullOrWhiteSpace(id))
+            return (null, "该游戏的部署记录没有标注由哪个 Provider 部署，无法确定用哪一个来还原。");
+
+        var provider = Providers.AppProviders.Registry.Get(id);
+
+        return provider is null
+            ? (null, $"部署记录标注的 Provider「{id}」当前不可用，无法还原。")
+            : (provider, "");
+    }
+
     // ---- single-game deployment --------------------------------------------
 
     private void Deploy_Click(object sender, RoutedEventArgs e)
@@ -237,7 +259,15 @@ public partial class MainWindow
         try
         {
             var removeLogs = RemoveLogsCheck.IsChecked == true;
-            var result = await Task.Run(() => Providers.AppProviders.Patch.Restore(game, removeLogs));
+            var (restoreProvider, restoreError) = ProviderForRestore(game);
+
+            if (restoreProvider is null)
+            {
+                _log.Write("✗ " + restoreError);
+                return;
+            }
+
+            var result = await Task.Run(() => restoreProvider.Restore(game, removeLogs));
 
             _log.Details(result.Lines);
             _log.Result(result.Ok, result.Message);
@@ -393,7 +423,15 @@ public partial class MainWindow
 
                 foreach (var game in targets)
                 {
-                    var result = Providers.AppProviders.Patch.Restore(game, removeLogs);
+                    var (restoreProvider, restoreError) = ProviderForRestore(game);
+
+                    if (restoreProvider is null)
+                    {
+                        _log.Write($"  ✗ {game.Name}：{restoreError}");
+                        continue;
+                    }
+
+                    var result = restoreProvider.Restore(game, removeLogs);
                     var mark = result.Ok ? "✓" : "✗";
                     _log.Write($"  {mark} {game.Name}：{result.Message}");
                     if (result.Ok) count++;

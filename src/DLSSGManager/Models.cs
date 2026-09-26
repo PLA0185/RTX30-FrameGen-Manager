@@ -138,6 +138,17 @@ public sealed class DeployedFile
 public sealed class DeploymentInfo
 {
     public string ProxyName { get; set; } = "";
+
+    /// <summary>
+    /// Which provider put these files here.
+    ///
+    /// <para>Recorded at deploy time so a restore can put them back with the same provider. Restoring with a
+    /// different one is not a detail: providers differ in what they deploy and how they verify it, so a restore
+    /// through the wrong provider removes the wrong things — or refuses, having concluded the files are foreign.
+    /// An empty value means "deployed before this was recorded", which the restore reports rather than guesses.</para>
+    /// </summary>
+    public string ProviderId { get; set; } = "";
+
     public string ModVersion { get; set; } = "";
     public string DeployedAt { get; set; } = "";
     public string ProxySha256 { get; set; } = "";
