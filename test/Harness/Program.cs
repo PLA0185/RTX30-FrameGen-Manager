@@ -305,7 +305,14 @@ public static class Program
         {
             // 无论上面发生了什么都要清理：留下一个 Profile 比从未运行更糟 —— 那个残留对机器上其他东西来说
             // 看起来就是一个真实 Profile。
-            if (applicationCreated && profile != IntPtr.Zero)
+            // 只要 Profile 是本轮的，就尝试解绑 —— 不要求「本次绑定成功」。
+            //
+            // 原来这里是 `applicationCreated && ...`，于是绑定失败时残留不会被清理，**下一次运行仍会以同样
+            // 方式失败**：一次失败变成了永久失败，而这个自检的价值恰恰在于「可重复运行」。绑定可能来自上一次
+            // 失败运行留下的状态，所以清理必须比创建更宽松。
+            //
+            // 安全前提：Profile 名带本轮 GUID（`RTX30FGM-SMOKE-<GUID>`），**不可能是用户原有的 Profile**。
+            if (profileCreated && profile != IntPtr.Zero)
                 Report("解绑测试 EXE", adapter.DeleteApplication(profile, smokeExe));
 
             if (profileCreated && profile != IntPtr.Zero)
