@@ -49,10 +49,19 @@ public static class InstallPlanExecutor
 
         // ── 1. Every file the plan requires must actually be in the payload. A plan that lists files the
         //       provider cannot supply describes an installation that cannot exist.
+        //
+        //       The proxy is the exception, and skipping it is not a loophole: it comes from the mod source rather
+        //       than the payload folder, so requiring it there would refuse every correctly-planned install. Which
+        //       proxy it is has already been decided above, and the payload check that follows covers the rest.
         var missing = new List<string>();
+
+        static bool IsProxyName(string name) =>
+            ModSource.KnownProxyNames.Contains(Path.GetFileName(name), StringComparer.OrdinalIgnoreCase);
+
         foreach (var required in plan.FilesToDeploy)
         {
             if (string.IsNullOrWhiteSpace(required)) continue;
+            if (IsProxyName(required)) continue;
 
             try
             {
@@ -71,7 +80,7 @@ public static class InstallPlanExecutor
                 $"计划要求的 {missing.Count} 个文件不在 payload 中，已拒绝安装。", steps);
         }
 
-        steps.Add($"payload 已包含计划要求的 {plan.FilesToDeploy.Count} 个文件。");
+        steps.Add("payload 已包含计划要求的全部文件（代理由 mod source 提供，不在其中）。");
 
         // ── 2. The chosen entry is what gets installed into — or nothing does.
         if (plan.Mode == InstallMode.DirectProxy && string.IsNullOrWhiteSpace(plan.ProxyChoice))
@@ -137,6 +146,50 @@ public static class InstallPlanExecutor
         var install = provider.Install(game, source, allowProtected);
         steps.Add(install.Message);
 
-        return new PlanExecutionResult(install.Ok, install.Message, steps, plan.ProxyChoice);
+        if (!install.Ok)
+            return new PlanExecutionResult(false, install.Message, steps, plan.ProxyChoice);
+
+        // ── 6. The plan decides which files may exist, so what was actually deployed is checked against it.
+        //       A file the plan never named is not a detail: it means the plan and the deployment disagree about
+        //       what this install is, and reporting success would quietly turn the plan into advice.
+        var deployed = game.Deployment?.Files;
+
+        if (deployed is null || deployed.Count == 0)
+        {
+            // Not a pass: with no deployment record there is nothing to compare, and claiming agreement would be
+            // inventing evidence. It is reported as "could not check" rather than as a mismatch, because those are
+            // different facts and only one of them is actually known here.
+            steps.Add("部署记录为空，无法核对实际写入的文件是否与计划一致。");
+            return new PlanExecutionResult(true, install.Message, steps, plan.ProxyChoice);
+        }
+
+        static string Leaf(string path) => Path.GetFileName(path.Replace('/', '\\'));
+
+        var planned = plan.FilesToDeploy
+            .Where(f => !string.IsNullOrWhiteSpace(f))
+            .Select(Leaf)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var unexpected = deployed.Where(f => !planned.Contains(Leaf(f.FileName)))
+            .Select(f => f.FileName).ToList();
+
+        var notDeployed = planned.Where(f => !deployed.Any(d => Leaf(d.FileName) == f)).ToList();
+
+        if (unexpected.Count > 0 || notDeployed.Count > 0)
+        {
+            var detail = new List<string>();
+            if (unexpected.Count > 0) detail.Add($"计划外的文件：{string.Join("、", unexpected)}");
+            if (notDeployed.Count > 0) detail.Add($"计划中未部署的文件：{string.Join("、", notDeployed)}");
+
+            var summary = string.Join("；", detail);
+            steps.Add("部署结果与计划不一致 —— " + summary);
+
+            return new PlanExecutionResult(false,
+                $"部署的文件与计划不一致（{summary}），已按失败处理。", steps, plan.ProxyChoice);
+        }
+
+        steps.Add($"部署结果与计划一致（{deployed.Count} 个文件）。");
+
+        return new PlanExecutionResult(true, install.Message, steps, plan.ProxyChoice);
     }
 }

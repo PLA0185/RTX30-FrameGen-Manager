@@ -508,7 +508,12 @@ public static class InstallPlanner
             ProviderVersion: input.ProviderVersion,
             Mode: mode,
             ProxyStrategy: strategy,
-            FilesToDeploy: input.ProviderPayloadFiles,
+            // The proxy is the point of the install, so it belongs in the list of files this plan says it will
+            // write. Leaving it out made the list describe the *payload* rather than the *deployment*, and the
+            // executor's post-install check then reported the proxy it had just placed as an unexpected file.
+            FilesToDeploy: proxyChoice is null
+                ? input.ProviderPayloadFiles
+                : input.ProviderPayloadFiles.Concat(new[] { proxyChoice }).ToList(),
             ProxyChoice: proxyChoice,
             AsiChoice: asi,
             NvidiaProfileRequirements: profile,

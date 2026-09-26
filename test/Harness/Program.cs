@@ -4501,6 +4501,21 @@ public static class Program
                 Path.GetDirectoryName(PayloadPaths.For("p", "1.0")),
                 StringComparison.OrdinalIgnoreCase));
 
+        // ---- 第二轮 P0-08：计划必须列出它要写的全部文件，且实际部署要与之一致 ----
+        // The defect this covers: the plan listed only the payload, so the proxy DLL — the entire point of the
+        // install — was missing from the list of files the plan said it would write. The executor's own check then
+        // reported that proxy as an unexpected file, and every correctly-planned run failed.
+        Check("计划把选定的代理入口一并列入待部署文件",
+            vResult.Plan?.ProxyChoice is null ||
+            vResult.Plan.FilesToDeploy.Any(f => string.Equals(
+                Path.GetFileName(f), Path.GetFileName(vResult.Plan.ProxyChoice), StringComparison.OrdinalIgnoreCase)),
+            vResult.Plan is null
+                ? "(无计划)"
+                : $"入口 {vResult.Plan.ProxyChoice} / 文件 [{string.Join("、", vResult.Plan.FilesToDeploy)}]");
+
+        // The executor-side half of this is covered by the plan-execution section's own cases (a ready plan
+        // installs, an unapproved one is refused), which is where the post-install comparison actually runs.
+
         // ---- H: the configuration service the window now calls (整改 H) ----
         var hParts = Build(work, "wfHMatrix");
         var hService = new GameConfigurationService(hParts.Workflow);
