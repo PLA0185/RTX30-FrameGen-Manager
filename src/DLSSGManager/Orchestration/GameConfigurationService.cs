@@ -20,7 +20,17 @@ public sealed record ConfigurationRequest(
     string? UserRendererChoice = null,
     bool AllowProtected = false,
     bool HasKernelAntiCheat = false,
-    bool UserConfirmedUnverified = false);
+    bool UserConfirmedUnverified = false,
+
+    /// <summary>
+    /// Which NVIDIA Profile settings this run may write, or null for none.
+    ///
+    /// <para>The workflow turns these into typed writes through
+    /// <see cref="SmoothMotionSettings.EnableWrites"/> — it never invents values, and a setting whose values are
+    /// not established is dropped rather than written as a guess. Without this the interface could complete a
+    /// run that installed files and left the driver untouched.</para>
+    /// </summary>
+    IReadOnlyList<NvidiaProfile.ProfileSetting>? ProfileSettings = null);
 
 /// <summary>The outcome, in the shape a window can display without reinterpreting it.</summary>
 public sealed record ConfigurationOutcome(
@@ -77,6 +87,7 @@ public sealed class GameConfigurationService
             HasKernelAntiCheat: request.HasKernelAntiCheat,
             UserApi: request.UserApi,
             UserConfirmedUnverified: request.UserConfirmedUnverified,
+            ProfileSettings: request.ProfileSettings,
             GpuName: request.GpuName,
             DriverVersion: request.DriverVersion,
             Store: request.Store,

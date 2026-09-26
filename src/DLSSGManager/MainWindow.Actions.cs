@@ -57,7 +57,12 @@ public partial class MainWindow
                 Store: StoreKind.Steam,
                 AllowProtected: allowProtected,
                 HasKernelAntiCheat: game.Protection?.HasKernelAntiCheat ?? false,
-                UserConfirmedUnverified: confirmed);
+                UserConfirmedUnverified: confirmed,
+
+                // Asked for explicitly, because without it a run would install files and leave the driver
+                // untouched. The workflow turns these into typed writes itself — it never invents a value, and
+                // a setting whose values are not established is dropped rather than guessed.
+                ProfileSettings: new[] { SmoothMotionSettings.Feature, SmoothMotionSettings.Apis });
 
             return await Configuration
                 .ConfigureAsync(request, new Progress<string>(s => BatchStatusText.Text = s))

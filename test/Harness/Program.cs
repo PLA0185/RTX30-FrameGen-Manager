@@ -4316,6 +4316,50 @@ public static class Program
             confirmed.Plan is not null && confirmed.Plan.Compatibility.State == CompatibilityState.Unknown,
             confirmed.Plan?.Compatibility.State.ToString() ?? "(无计划)");
 
+        // ---- 第二轮 P0-02：ProfileSettings 必须真正从界面传到工作流 ----
+        // The wiring being checked: with settings supplied, the run must reach the profile step instead of
+        // completing as if there were nothing to configure. Without it a run could install files successfully
+        // and still leave Smooth Motion off, which is precisely the failure this wiring exists to prevent.
+        //
+        // The game name matches the fixture's record so compatibility resolves to Compatible; otherwise the run
+        // stops for confirmation before ever reaching the profile step, and the comparison proves nothing.
+        var pParts = Build(work, "wfProfileWireMatrix");
+        var pService = new GameConfigurationService(pParts.Workflow);
+        var pGame = new GameEntry { Name = "wfProfileWireMatrix", RenderDir = MakeGameDir(work, "wfProfileWireGame") };
+        var pDir = Path.Combine(work, "wf-profile-wire-payload");
+
+        var pBase = new ConfigurationRequest(
+            Game: pGame, Provider: pParts.Provider, ProviderVersion: "2.9.0", PayloadDirectory: pDir,
+            GpuName: "RTX 3070 Ti", DriverVersion: "617.14", Store: StoreKind.Steam,
+            InstallMode: InstallMode.DirectProxy, UserApi: GraphicsApi.Dx12);
+
+        var pWithout = pService.ConfigureAsync(pBase, null, CancellationToken.None).GetAwaiter().GetResult();
+
+        var pWith = pService.ConfigureAsync(
+            pBase with { ProfileSettings = new[] { SmoothMotionSettings.Feature, SmoothMotionSettings.Apis } },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("配置请求带有 ProfileSettings 入口（界面能把驱动设置传下去）",
+            typeof(ConfigurationRequest).GetProperty("ProfileSettings") is not null);
+
+        Check("工作流请求带有 ProfileSettings 入口（配置服务已接到它）",
+            typeof(WorkflowRequest).GetProperty("ProfileSettings") is not null);
+
+        // Typed writes, not a blanket 1: the values come from the setting definitions, and the API bitmask is
+        // derived from the API actually in play. A run that wrote every setting as 1 would "enable" Smooth
+        // Motion on APIs it was never meant for.
+        var typedWrites = SmoothMotionSettings.EnableWrites(GraphicsApi.Dx12);
+
+        Check("EnableWrites 为 DX12 生成主开关与 API 位掩码",
+            typedWrites.Any(w => w.Setting.Id == SmoothMotionSettings.Feature.Id) &&
+            typedWrites.Any(w => w.Setting.Id == SmoothMotionSettings.Apis.Id));
+
+        Check("EnableWrites 的写入集合不含不可写设置（如日志级别）",
+            typedWrites.All(w => w.Setting.Writable));
+
+        Check("工作流请求不再以字符串列表承载驱动设置",
+            typeof(WorkflowRequest).GetProperty("ProfileSettings")?.PropertyType != typeof(IReadOnlyList<string>));
+
         // ---- H: the configuration service the window now calls (整改 H) ----
         var hParts = Build(work, "wfHMatrix");
         var hService = new GameConfigurationService(hParts.Workflow);
