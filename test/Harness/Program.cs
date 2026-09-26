@@ -4024,26 +4024,70 @@ public static class Program
         Section("自动 Smooth 编排（Stage 8）");
 
         // ---- evidence ladder is derived, never assumed ----
+        // These are the scenes the task book names explicitly. Each one is a way the ladder could be climbed
+        // without evidence, so each gets its own assertion.
         Check("单条强信号不足以判为 Verified",
-            VerificationReport.FromSignals(new[] { new VerificationSignal("s", true, "", Strong: true) })
+            VerificationReport.FromSignals(new[] { new VerificationSignal("s", true, "", SignalKind.FrameGeneration) })
                 .Level != SmoothMotionEvidence.Verified);
-        Check("两条弱信号也不足以判为 Verified",
-            VerificationReport.FromSignals(new[]
-            {
-                new VerificationSignal(SignalNames.FilesInstalled, true, "", Strong: false),
-                new VerificationSignal(SignalNames.ProxyLoaded, true, "", Strong: false),
-            }).Level != SmoothMotionEvidence.Verified);
+
         Check("无信号时为 None",
             VerificationReport.FromSignals(Array.Empty<VerificationSignal>()).Level == SmoothMotionEvidence.None);
-        Check("弱证据最远只到 Installed",
-            VerificationReport.FromSignals(new[] { new VerificationSignal(SignalNames.FilesInstalled, true, "", false) })
-                .Level == SmoothMotionEvidence.Installed);
-        Check("两条信号且含强证据才判 Verified",
+
+        Check("只有安装证据时最多到 Installed",
             VerificationReport.FromSignals(new[]
             {
-                new VerificationSignal(SignalNames.FilesInstalled, true, "", false),
-                new VerificationSignal(SignalNames.DebugBars, true, "", true),
+                new VerificationSignal(SignalNames.FilesInstalled, true, "", SignalKind.Installation),
+            }).Level == SmoothMotionEvidence.Installed);
+
+        // The assertion that used to be the other way round. A copied file plus debug bars is the most
+        // tempting false positive in this whole area: the file is there and the user saw something.
+        Check("文件已部署 + Debug Bars 仍不算 Verified",
+            VerificationReport.FromSignals(new[]
+            {
+                new VerificationSignal(SignalNames.FilesInstalled, true, "", SignalKind.Installation),
+                new VerificationSignal(SignalNames.DebugBars, true, "", SignalKind.FrameGeneration),
+            }).Level != SmoothMotionEvidence.Verified);
+
+        Check("游戏加载代理 + Debug Bars 判为 Verified",
+            VerificationReport.FromSignals(new[]
+            {
+                new VerificationSignal(SignalNames.ProxyLoaded, true, "", SignalKind.RuntimeOrDriver),
+                new VerificationSignal(SignalNames.DebugBars, true, "", SignalKind.FrameGeneration),
             }).Level == SmoothMotionEvidence.Verified);
+
+        Check("驱动已保存 + 补丁日志判为 Verified",
+            VerificationReport.FromSignals(new[]
+            {
+                new VerificationSignal(SignalNames.ProfileApplied, true, "", SignalKind.RuntimeOrDriver),
+                new VerificationSignal(SignalNames.PatchLog, true, "", SignalKind.FrameGeneration),
+            }).Level == SmoothMotionEvidence.Verified);
+
+        Check("只有补丁日志不算 Verified",
+            VerificationReport.FromSignals(new[]
+            {
+                new VerificationSignal(SignalNames.PatchLog, true, "", SignalKind.FrameGeneration),
+            }).Level != SmoothMotionEvidence.Verified);
+
+        Check("只有运行时证据（无生成帧证据）不算 Verified",
+            VerificationReport.FromSignals(new[]
+            {
+                new VerificationSignal(SignalNames.FilesInstalled, true, "", SignalKind.Installation),
+                new VerificationSignal(SignalNames.ProxyLoaded, true, "", SignalKind.RuntimeOrDriver),
+                new VerificationSignal(SignalNames.ProfileApplied, true, "", SignalKind.RuntimeOrDriver),
+            }).Level != SmoothMotionEvidence.Verified);
+
+        Check("证据带来源与时间时可追溯",
+            VerificationReport.FromSignals(new[]
+            {
+                new VerificationSignal(SignalNames.ProxyLoaded, true, "", SignalKind.RuntimeOrDriver,
+                    Source: "游戏进程模块", ObservedAt: DateTimeOffset.Now),
+            }).HasTraceableProvenance);
+
+        Check("缺少来源或时间的证据不可追溯",
+            !VerificationReport.FromSignals(new[]
+            {
+                new VerificationSignal(SignalNames.ProxyLoaded, true, "", SignalKind.RuntimeOrDriver),
+            }).HasTraceableProvenance);
 
         // ---- shared harness for the runs below ----
         static (SmoothMotionWorkflow Workflow, FakeWorkflowDetector Detector, FakeDrsAdapter Drs, CompatibilityMatrixStore Matrix, MfgSmoothProvider Provider, FakeAssetFetcher Fetcher) Build(string work, string name)

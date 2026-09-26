@@ -55,13 +55,48 @@ public enum WorkflowOutcome
 public sealed record WorkflowStep(string Stage, bool Ok, string Message);
 
 /// <summary>
+/// What a piece of evidence can actually establish.
+///
+/// <para>This distinction is the whole point of the ladder. Copying a file proves bytes reached a folder and
+/// nothing more; the game loading the proxy proves it was engaged; a frame-generation signal reaches what the
+/// game renders. Treating them as interchangeable is exactly how "we installed it" becomes "it works".</para>
+/// </summary>
+public enum SignalKind
+{
+    /// <summary>
+    /// Proves only that bytes were written. Present after <i>every</i> successful install, which is why it can
+    /// never be one of the two signals that establish verification.
+    /// </summary>
+    Installation,
+
+    /// <summary>The game or the driver actually engaged the feature.</summary>
+    RuntimeOrDriver,
+
+    /// <summary>Reaches what the game renders: frames being generated.</summary>
+    FrameGeneration,
+}
+
+/// <summary>
 /// One piece of evidence about whether the feature is working.
 ///
-/// <paramref name="Strong"/> marks evidence that reaches the driver's own behaviour (the debug bars the
-/// community uses, or a log showing frames being generated). File presence and module loading are real
-/// observations but they are not that, which is why they are weak.
+/// <paramref name="Kind"/> says what it can establish; <paramref name="Source"/> and
+/// <paramref name="ObservedAt"/> say where it came from and when. A verification record without provenance
+/// cannot be re-checked or aged out, and an observation without a time cannot expire.
 /// </summary>
-public sealed record VerificationSignal(string Name, bool Present, string Detail, bool Strong);
+public sealed record VerificationSignal(
+    string Name,
+    bool Present,
+    string Detail,
+    SignalKind Kind,
+    string Source = "",
+    DateTimeOffset? ObservedAt = null)
+{
+    /// <summary>
+    /// Only frame-generation evidence is strong. Runtime and installation evidence are real observations, but
+    /// neither of them reaches the thing being claimed.
+    /// </summary>
+    public bool Strong => Kind == SignalKind.FrameGeneration;
+}
 
 /// <summary>The evidence collected about one installation, and the rung it supports.</summary>
 public sealed record VerificationReport(
@@ -72,24 +107,35 @@ public sealed record VerificationReport(
     /// <summary>
     /// Derives the rung from the signals.
     ///
-    /// <para><b>Verified requires corroboration.</b> At least two independent signals must be present and
-    /// at least one of them must be strong. A single signal — however strong it looks on its own — is not
-    /// enough, because the project's rule is that no single observation may declare the feature verified.
-    /// This is why the file-copied case can never reach the top rung: one weak signal cannot.</para>
+    /// <para><b>Verification needs two different kinds of evidence, and neither substitutes for the other:</b>
+    /// a frame-generation signal (something that reaches what the game actually renders), and a
+    /// runtime/driver corroboration (the feature was actually engaged).</para>
+    ///
+    /// <para><b>Installation evidence is excluded from both on purpose.</b> It is present after every
+    /// successful install, so counting it towards the two would let "a DLL was copied and debug bars appeared"
+    /// pass as verified — the file being there says nothing about whether the game ever loaded it, and the
+    /// whole reason this ladder exists is to stop a rung from being reported as the one above it.</para>
     /// </summary>
     public static VerificationReport FromSignals(IReadOnlyList<VerificationSignal> signals)
     {
         var present = signals.Where(s => s.Present).ToList();
-        var strong = present.Count(s => s.Strong);
 
-        if (present.Count >= 2 && strong >= 1)
+        var frames = present.FirstOrDefault(s => s.Kind == SignalKind.FrameGeneration);
+        var runtime = present.FirstOrDefault(s => s.Kind == SignalKind.RuntimeOrDriver);
+
+        if (frames is not null && runtime is not null)
         {
             return new VerificationReport(SmoothMotionEvidence.Verified, signals,
-                $"多信号交叉确认（{present.Count} 项存在，其中强证据 {strong} 项）。");
+                $"生成帧证据「{frames.Name}」与运行时/驱动佐证「{runtime.Name}」同时成立。");
         }
 
         if (present.Any(s => s.Name == SignalNames.ProfileApplied))
-            return new VerificationReport(SmoothMotionEvidence.Applied, signals, "驱动已接受并保存了设置，但尚无生成帧的外部证据。");
+        {
+            return new VerificationReport(SmoothMotionEvidence.Applied, signals,
+                frames is null
+                    ? "驱动已接受并保存了设置，但尚无生成帧的证据。"
+                    : $"已观察到「{frames.Name}」，但缺少运行时或驱动侧的佐证，不足以判定已生效。");
+        }
 
         if (present.Any(s => s.Name == SignalNames.ProfileRequested))
             return new VerificationReport(SmoothMotionEvidence.Requested, signals, "已请求驱动启用，尚未确认已保存。");
@@ -102,6 +148,13 @@ public sealed record VerificationReport(
 
         return new VerificationReport(SmoothMotionEvidence.None, signals, "没有任何证据。");
     }
+
+    /// <summary>
+    /// True when every present signal carries provenance. Verification without a source and a time is a claim
+    /// nobody can check later, which is the state this project treats as unverified.
+    /// </summary>
+    public bool HasTraceableProvenance =>
+        Signals.Where(s => s.Present).All(s => s.Source.Length > 0 && s.ObservedAt is not null);
 }
 
 /// <summary>Signal names, shared so the report and its tests cannot drift apart.</summary>
@@ -419,9 +472,21 @@ public sealed class SmoothMotionWorkflow
                         new ProfileJournal(request.Game.Name), Array.Empty<string>());
 
                 profileJournal = apply.Journal;
-                profileWritten = apply.Ok;
+
+                // "Saved" is not "saved as asked". The save call says the driver accepted the request; only a
+                // read-back distinguishes the two, and a mismatch must not be reported as applied.
+                var readBack = apply.Ok && ReadBackMatches(writes);
+                profileWritten = readBack;
 
                 steps.Add(new WorkflowStep("配置 NVIDIA Profile", apply.Ok, apply.Message));
+
+                if (apply.Ok)
+                {
+                    steps.Add(new WorkflowStep("读回驱动设置", readBack,
+                        readBack
+                            ? "读回值与写入值一致。"
+                            : "无法确认读回值（驱动未读回、或不具备读取能力）—— 不按「已生效」处理。"));
+                }
 
                 if (!apply.Ok)
                 {
@@ -438,7 +503,7 @@ public sealed class SmoothMotionWorkflow
             }
 
             // ---- 7. verification ----
-            var signals = CollectSignals(request, profileWritten);
+            var signals = CollectSignals(request, profileWritten, DateTimeOffset.Now);
             var verification = VerificationReport.FromSignals(signals);
             steps.Add(new WorkflowStep("运行验证", true, verification.Reason));
 
@@ -548,18 +613,62 @@ public sealed class SmoothMotionWorkflow
         return new WorkflowResult(outcome, evidence, steps, plan, report, errors, filesRolledBack, profileRolledBack);
     }
 
-    private static IReadOnlyList<VerificationSignal> CollectSignals(WorkflowRequest request, bool profileApplied) =>
+    /// <summary>
+    /// Confirms the driver kept what was written, by reading it back.
+    ///
+    /// <para>A successful save call says the driver accepted the request; it does not say the stored value is
+    /// the one that was asked for. Reading it back is the only thing that separates "saved" from "saved as
+    /// something else", and a mismatch is reported as not applied.</para>
+    ///
+    /// <para><b>Returns false when the adapter cannot read.</b> Without the ability to check, the claim cannot
+    /// be made — an unverifiable "applied" is precisely the state this project treats as unverified, so the
+    /// honest answer here is "not confirmed" rather than "probably fine".</para>
+    /// </summary>
+    private bool ReadBackMatches(IReadOnlyList<ProfileSettingWrite> writes)
+    {
+        if (writes.Count == 0) return false;
+        if (!_profile.Adapter.CanRead) return false;
+
+        foreach (var write in writes)
+        {
+            var after = _profile.Adapter.Read(write.Setting.Id);
+
+            if (after.State != ProfileSettingState.ExplicitValue || after.Value != write.Value)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static IReadOnlyList<VerificationSignal> CollectSignals(
+        WorkflowRequest request, bool profileApplied, DateTimeOffset observedAt) =>
         new[]
         {
-            new VerificationSignal(SignalNames.FilesInstalled, true, "代理与 INI 已写入渲染目录。", Strong: false),
+            // Installation: present after every successful install, so it never counts towards verification.
+            new VerificationSignal(SignalNames.FilesInstalled, true,
+                "代理与 INI 已写入渲染目录。",
+                SignalKind.Installation, Source: "文件系统", ObservedAt: observedAt),
+
             new VerificationSignal(SignalNames.ProxyLoaded, request.ProxyLoadedInGame,
-                request.ProxyLoadedInGame ? "游戏进程模块中观察到代理。" : "尚未观察到游戏加载代理。", Strong: false),
+                request.ProxyLoadedInGame ? "游戏进程模块中观察到代理。" : "尚未观察到游戏加载代理。",
+                SignalKind.RuntimeOrDriver, Source: "游戏进程模块", ObservedAt: observedAt),
+
             new VerificationSignal(SignalNames.ProfileRequested, request.ProfileSettings is { Count: > 0 },
-                "已向驱动提交设置。", Strong: false),
-            new VerificationSignal(SignalNames.ProfileApplied, profileApplied, "驱动已保存设置。", Strong: false),
+                "已向驱动提交设置。",
+                SignalKind.RuntimeOrDriver, Source: "DRS 会话", ObservedAt: observedAt),
+
+            new VerificationSignal(SignalNames.ProfileApplied, profileApplied,
+                profileApplied
+                    ? "驱动已保存设置，且读回值与写入值一致。"
+                    : "驱动未确认保存，或读回值与写入值不一致。",
+                SignalKind.RuntimeOrDriver, Source: "DRS 读回", ObservedAt: observedAt),
+
             new VerificationSignal(SignalNames.DebugBars, request.ObservedDebugBars,
-                request.ObservedDebugBars ? "用户确认看到 Debug Bars。" : "未确认 Debug Bars。", Strong: true),
+                request.ObservedDebugBars ? "用户确认看到 Debug Bars。" : "未确认 Debug Bars。",
+                SignalKind.FrameGeneration, Source: "用户观察（Debug Bars）", ObservedAt: observedAt),
+
             new VerificationSignal(SignalNames.PatchLog, request.ObservedPatchLog,
-                request.ObservedPatchLog ? "补丁日志显示正在生成帧。" : "补丁日志无生成帧记录。", Strong: true),
+                request.ObservedPatchLog ? "补丁日志显示正在生成帧。" : "补丁日志无生成帧记录。",
+                SignalKind.FrameGeneration, Source: "补丁日志", ObservedAt: observedAt),
         };
 }
