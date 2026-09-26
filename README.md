@@ -2,8 +2,8 @@
 
 **简体中文** | [English](README.en.md)
 
-[![Release](https://img.shields.io/github/v/release/BUNNY-19C/DLSSG-30s-manager?style=flat-square&label=下载)](https://github.com/BUNNY-19C/DLSSG-30s-manager/releases/latest)
-[![License](https://img.shields.io/github/license/BUNNY-19C/DLSSG-30s-manager?style=flat-square)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/PLA0185/RTX30-FrameGen-Manager?style=flat-square&label=下载)](https://github.com/PLA0185/RTX30-FrameGen-Manager/releases/latest)
+[![License](https://img.shields.io/github/license/PLA0185/RTX30-FrameGen-Manager?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D4?style=flat-square)](#)
 [![GPU](https://img.shields.io/badge/GPU-RTX%2030%20%E7%B3%BB%20(SM86)-76B900?style=flat-square)](#)
 

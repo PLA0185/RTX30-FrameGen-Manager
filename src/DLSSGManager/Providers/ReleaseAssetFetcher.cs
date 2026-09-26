@@ -145,18 +145,44 @@ public sealed class ReleaseAssetFetcher : IReleaseAssetFetcher
 }
 
 /// <summary>
-/// Archive extraction that cannot write outside its destination.
+/// Archive extraction that cannot write outside its destination, cannot exhaust the disk, and leaves the
+/// destination unchanged when it fails.
 ///
-/// Zip entries carry their own relative paths, and an entry named <c>..\..\something</c> would otherwise
-/// be written wherever it points. Every entry is resolved to a full path first and rejected unless it
-/// stays inside the target directory — checked before the entry is opened, so a rejected archive leaves
-/// nothing behind.
+/// <para>Four rules, each of which exists because of a specific way this goes wrong:</para>
+/// <list type="number">
+/// <item><b>Zip slip.</b> Entries carry their own relative paths, and an entry named <c>..\..\something</c>
+/// would otherwise be written wherever it points. Every entry is resolved to a full path and rejected unless
+/// it stays inside the destination — checked before anything is opened.</item>
+/// <item><b>Size limits.</b> An archive that expands to a hundred gigabytes fills the disk while it is being
+/// unpacked. Entry count, per-file size, total expanded size and compression ratio are all bounded, so a bomb
+/// becomes a refusal rather than a full drive.</item>
+/// <item><b>Staging.</b> Everything is unpacked into a private folder first and moved into place only after
+/// the whole archive succeeded, so a failure never leaves a half-extracted payload where the installer would
+/// find it.</item>
+/// <item><b>Cleanup.</b> The staging folder is removed in a <c>finally</c>, on the failure path as well.</item>
+/// </list>
 /// </summary>
 public static class SafeZip
 {
+    /// <summary>More files than any real payload contains; beyond this the archive is not our shape.</summary>
+    public const int MaxEntries = 2048;
+
+    /// <summary>512 MiB for one file: the largest legitimate payload file is a DLL of a few tens of MB.</summary>
+    public const long MaxSingleFileBytes = 512L * 1024 * 1024;
+
+    /// <summary>2 GiB expanded in total.</summary>
+    public const long MaxTotalBytes = 2L * 1024 * 1024 * 1024;
+
+    /// <summary>
+    /// 200:1. Real payload zips compress their DLLs at roughly 2–4:1, so a ratio in the hundreds means the
+    /// archive is mostly repetition — which is what a bomb looks like.
+    /// </summary>
+    public const int MaxCompressionRatio = 200;
+
     public static bool TryExtract(string zipPath, string destination, out string error)
     {
         error = "";
+        string? staging = null;
 
         try
         {
@@ -165,27 +191,35 @@ public static class SafeZip
 
             using var archive = ZipFile.OpenRead(zipPath);
 
-            foreach (var entry in archive.Entries)
+            // ── 1. Everything is checked before a single byte is written.
+            var rejection = Validate(archive, root);
+            if (rejection is not null)
             {
-                // Directory entries end with a separator and carry no content.
-                if (string.IsNullOrEmpty(entry.Name)) continue;
-
-                var target = Path.GetFullPath(Path.Combine(root, entry.FullName));
-                if (!IsInside(root, target))
-                {
-                    error = $"压缩包中的条目会写到目标目录之外，已拒绝：{entry.FullName}";
-                    return false;
-                }
+                error = rejection;
+                return false;
             }
 
+            // ── 2. Unpack privately, so nothing partial ever appears at a final path.
+            staging = Path.Combine(root, ".staging-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(staging);
+
             foreach (var entry in archive.Entries)
             {
                 if (string.IsNullOrEmpty(entry.Name)) continue;
 
-                var target = Path.GetFullPath(Path.Combine(root, entry.FullName));
-                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                var staged = Path.GetFullPath(Path.Combine(staging, entry.FullName));
+                Directory.CreateDirectory(Path.GetDirectoryName(staged)!);
+                entry.ExtractToFile(staged, overwrite: true);
+            }
 
-                entry.ExtractToFile(target, overwrite: true);
+            // ── 3. Move into place only now that the whole archive unpacked.
+            foreach (var file in Directory.EnumerateFiles(staging, "*", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(staging, file);
+                var target = Path.GetFullPath(Path.Combine(root, relative));
+
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Move(file, target, overwrite: true);
             }
 
             return true;
@@ -195,6 +229,58 @@ public static class SafeZip
             error = $"解包失败：{ex.Message}";
             return false;
         }
+        finally
+        {
+            if (staging is not null)
+            {
+                try
+                {
+                    if (Directory.Exists(staging)) Directory.Delete(staging, recursive: true);
+                }
+                catch
+                {
+                    // Best effort: an empty staging folder left behind is not worth failing a good extract over.
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Checks an archive against the path and size rules. Returns null when it may be extracted, otherwise the
+    /// reason it may not.
+    /// </summary>
+    private static string? Validate(ZipArchive archive, string root)
+    {
+        if (archive.Entries.Count > MaxEntries)
+            return $"压缩包条目过多（{archive.Entries.Count} > {MaxEntries}），已拒绝。";
+
+        long total = 0;
+
+        foreach (var entry in archive.Entries)
+        {
+            // Directory entries end with a separator and carry no content.
+            if (string.IsNullOrEmpty(entry.Name)) continue;
+
+            var target = Path.GetFullPath(Path.Combine(root, entry.FullName));
+            if (!IsInside(root, target))
+                return $"压缩包中的条目会写到目标目录之外，已拒绝：{entry.FullName}";
+
+            if (entry.Length > MaxSingleFileBytes)
+                return $"压缩包中的单个文件过大，已拒绝：{entry.FullName}（{entry.Length} 字节）";
+
+            total += entry.Length;
+            if (total > MaxTotalBytes)
+                return $"压缩包解压后总大小超过上限，已拒绝（累计 {total} 字节）。";
+
+            if (entry.CompressedLength > 0)
+            {
+                var ratio = entry.Length / Math.Max(1, entry.CompressedLength);
+                if (ratio > MaxCompressionRatio)
+                    return $"压缩包压缩比异常，已拒绝：{entry.FullName}（约 {ratio}:1）";
+            }
+        }
+
+        return null;
     }
 
     /// <summary>True when <paramref name="candidate"/> is the root itself or sits underneath it.</summary>

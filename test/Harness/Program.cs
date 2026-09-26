@@ -4261,6 +4261,69 @@ public static class Program
 
         Check("确认后配置服务不再停在确认环节", !hConfirmed.NeedsUserConfirmation, hConfirmed.Outcome.ToString());
 
+        // ---- J: archive hard limits, staging and cleanup ----
+        Section("归档解包安全（整改 J）");
+
+        var zipDir = Path.Combine(work, "zip-limits");
+        Directory.CreateDirectory(zipDir);
+
+        static string MakeZip(string dir, string name, Action<System.IO.Compression.ZipArchive> fill)
+        {
+            var path = Path.Combine(dir, name + ".zip");
+            using var stream = File.Create(path);
+            using var archive = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create);
+            fill(archive);
+            return path;
+        }
+
+        static void AddEntry(System.IO.Compression.ZipArchive archive, string entryName, string content)
+        {
+            var entry = archive.CreateEntry(entryName);
+            using var writer = new StreamWriter(entry.Open());
+            writer.Write(content);
+        }
+
+        var destDir = Path.Combine(work, "zip-dest");
+        Directory.CreateDirectory(destDir);
+
+        // zip slip: the entry resolves outside the destination.
+        var slipZip = MakeZip(zipDir, "slip", a => AddEntry(a, "../escaped.txt", "x"));
+        Check("会写出目标目录的条被拒绝", !SafeZip.TryExtract(slipZip, destDir, out var slipError));
+        Check("拒绝原因点名该条目", slipError.Contains("escaped.txt"), slipError);
+        Check("拒绝后目标目录保持为空", Directory.GetFiles(destDir).Length == 0);
+        Check("拒绝后无 staging 残留", Directory.GetDirectories(destDir, ".staging-*").Length == 0);
+
+        // malformed archive.
+        var badZip = Path.Combine(zipDir, "malformed.zip");
+        File.WriteAllText(badZip, "this is not an archive");
+        Check("非压缩包被拒绝且不抛异常", !SafeZip.TryExtract(badZip, destDir, out _));
+
+        // entry count limit.
+        var manyZip = MakeZip(zipDir, "many", a =>
+        {
+            for (var i = 0; i < SafeZip.MaxEntries + 5; i++) a.CreateEntry($"f{i}.txt");
+        });
+        Check("条目数超限被拒绝", !SafeZip.TryExtract(manyZip, destDir, out var manyError));
+        Check("拒绝原因说明条目数", manyError.Contains("条目"), manyError);
+
+        // compression ratio limit: mostly repetition, which is what a bomb looks like.
+        var bombZip = MakeZip(zipDir, "bomb", a =>
+        {
+            var entry = a.CreateEntry("bomb.bin", System.IO.Compression.CompressionLevel.Optimal);
+            using var stream = entry.Open();
+            stream.Write(new byte[5 * 1024 * 1024]);
+        });
+        Check("异常压缩比被拒绝", !SafeZip.TryExtract(bombZip, destDir, out var bombError));
+        Check("拒绝原因说明压缩比", bombError.Contains("压缩比"), bombError);
+        Check("被拒绝的压缩包未写入任何内容", Directory.GetFiles(destDir).Length == 0);
+
+        // the ordinary case still works, through staging, leaving nothing behind.
+        var goodDir = Path.Combine(work, "zip-good");
+        var goodZip = MakeZip(zipDir, "good", a => AddEntry(a, "sub/ok.txt", "hello"));
+        Check("正常压缩包可解包", SafeZip.TryExtract(goodZip, goodDir, out var goodError), goodError);
+        Check("解包结果落在目标目录", File.Exists(Path.Combine(goodDir, "sub", "ok.txt")));
+        Check("成功后无 staging 残留", Directory.GetDirectories(goodDir, ".staging-*").Length == 0);
+
         // A detected API is what makes the API bitmask writable at all — an unknown API deliberately yields
         // the master switch alone — so the request has to carry one for this test to reach the second write.
         var rolledBack = rbParts.Workflow.RunAsync(

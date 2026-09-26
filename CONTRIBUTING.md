@@ -76,7 +76,7 @@ dotnet publish src/DLSSGManager/DLSSGManager.csproj \
 
 ## 新增游戏兼容性记录
 
-如果你实测了某款游戏，欢迎用[兼容性反馈](https://github.com/BUNNY-19C/DLSSG-30s-manager/issues/new?template=game_compatibility.yml)模板提交。**失败的案例同样有价值**——它能帮其他人省下折腾的时间。
+如果你实测了某款游戏，欢迎用[兼容性反馈](https://github.com/PLA0185/RTX30-FrameGen-Manager/issues/new?template=game_compatibility.yml)模板提交。**失败的案例同样有价值**——它能帮其他人省下折腾的时间。
 
 ## 不要做的事
 
