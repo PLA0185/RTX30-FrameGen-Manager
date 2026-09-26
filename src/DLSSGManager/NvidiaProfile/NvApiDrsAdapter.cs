@@ -214,6 +214,48 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
             : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteApplication 返回 {status}。");
     }
 
+    /// <summary>
+    /// 按名字删除一个 Profile 及其应用绑定，自己管会话生命周期。
+    ///
+    /// <para>**只供回滚「本次运行自己创建的东西」使用。** 调用方必须先确认该 Profile 由本次运行创建
+    /// （<c>ProfileJournal.WasProfileCreated</c>）—— <b>删掉用户原有的 Profile 比留下残留严重得多</b>，
+    /// 而名字本身无法区分这两种情况。</para>
+    /// </summary>
+    internal DrsStatus DeleteProfileByName(string profileName, string? executableName = null)
+    {
+        if (string.IsNullOrWhiteSpace(profileName))
+            return DrsStatus.Fail(-1, "未提供 Profile 名。");
+
+        var opened = Open(profileName);
+
+        if (!opened.Ok) return opened;
+
+        try
+        {
+            // 解绑排在删 Profile 前面：某些驱动版本在 Profile 仍持有应用时不接受删除。
+            if (!string.IsNullOrWhiteSpace(executableName))
+            {
+                var unbind = DeleteApplication(_profile, executableName);
+
+                // 绑定本来就不存在不算失败 —— 目标状态已经达成。
+                if (!unbind.Ok && unbind.Code != NvApiSettingNotFound) return unbind;
+            }
+
+            var removed = DeleteProfile(_profile);
+
+            // 删完之后 _profile 已失效，先清掉再保存，避免 Save 指向悬空句柄。
+            _profile = IntPtr.Zero;
+
+            if (!removed.Ok) return removed;
+
+            return SaveUngated();
+        }
+        finally
+        {
+            Close();
+        }
+    }
+
     public DrsApplicationLookup FindApplication(string executableName)
     {
         if (string.IsNullOrWhiteSpace(executableName))
