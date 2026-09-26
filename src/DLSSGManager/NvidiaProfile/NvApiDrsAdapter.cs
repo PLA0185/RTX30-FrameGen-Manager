@@ -31,6 +31,13 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
     /// <summary>Reads <c>NVDRS_PROFILE</c> for a handle — the only honest source of a profile's name.</summary>
     private const uint IdGetProfileInfo = 0x61cd6fd6;
+
+    // The four below are needed to build and then dismantle a throwaway profile for the write smoke. Without them
+    // there is no way to exercise a real write without touching a profile that belongs to the user.
+    private const uint IdCreateProfile = 0xcc176068;
+    private const uint IdDeleteProfile = 0x17093206;
+    private const uint IdCreateApplication = 0x4347a9de;
+    private const uint IdDeleteApplication = 0x2c694bc6;
     private const uint IdUnload = 0xd22bdd7e;
     private const uint IdDrsCreateSession = 0x0694d52e;
     private const uint IdDrsDestroySession = 0xdad9cff8;
@@ -828,6 +835,18 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
     /// <summary><c>NvAPI_DRS_GetProfileInfo</c> — fills an <c>NVDRS_PROFILE</c> from a profile handle.</summary>
     private delegate int DrsGetProfileInfoDelegate(IntPtr session, IntPtr profile, IntPtr profileInfo);
+
+    /// <summary><c>NvAPI_DRS_CreateProfile(hSession, NVDRS_PROFILE *pProfileInfo, NvDRSProfileHandle *phProfile)</c>.</summary>
+    private delegate int DrsCreateProfileDelegate(IntPtr session, IntPtr profileInfo, out IntPtr profile);
+
+    /// <summary><c>NvAPI_DRS_DeleteProfile(hSession, hProfile)</c>.</summary>
+    private delegate int DrsDeleteProfileDelegate(IntPtr session, IntPtr profile);
+
+    /// <summary><c>NvAPI_DRS_CreateApplication(hSession, hProfile, NVDRS_APPLICATION *pApplication)</c>.</summary>
+    private delegate int DrsCreateApplicationDelegate(IntPtr session, IntPtr profile, IntPtr application);
+
+    /// <summary><c>NvAPI_DRS_DeleteApplication(hSession, hProfile, NvAPI_UnicodeString appName)</c>.</summary>
+    private delegate int DrsDeleteApplicationDelegate(IntPtr session, IntPtr profile, ushort[] appName);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DrsCreateSessionDelegate(out IntPtr session);
