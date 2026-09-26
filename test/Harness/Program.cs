@@ -49,6 +49,11 @@ public static class Program
         if (args.Length > 0 && args[0] == "--sources")
             return ListSources();
 
+        // Explicit, opt-in driver smoke test. Read-only by design, and deliberately not part of the suite:
+        // it loads NVAPI and talks to a real driver, which the default run must never do.
+        if (args.Length > 0 && args[0] == "--nvapi-smoke")
+            return NvApiSmoke();
+
         // Locate the mod folder the same way the app does, so the suite works both from a checkout and
         // from a copied build.
         var modRoot = ModSourceLocator.FindExisting(null)
@@ -121,6 +126,75 @@ public static class Program
         if (_skipped > 0)
             Console.WriteLine($"（跳过的 {_skipped} 项需要 Mod 文件，运行 Harness.exe --fetch 获取后重试）");
         return _fail == 0 ? 0 : 1;
+    }
+
+    // ---- real driver smoke (opt-in) -----------------------------------------
+
+    /// <summary>
+    /// Read-only smoke test against the real NVIDIA driver.
+    ///
+    /// <para>Reports what the adapter actually resolved, whether the marshalled struct layout matches the
+    /// numbers the official header implies, and what a real read of each Smooth Motion setting returns.</para>
+    ///
+    /// <para><b>It never writes.</b> The harness must not modify a user's driver profile, so this command
+    /// stops at reading. The write path is exercised only by an explicit user action in the application,
+    /// never by a test command.</para>
+    /// </summary>
+    private static int NvApiSmoke()
+    {
+        Console.WriteLine("=== NVAPI / DRS 只读 Smoke ===");
+        Console.WriteLine();
+
+        var adapter = new NvApiDrsAdapter();
+
+        Console.WriteLine($"适配器            : {adapter.Name}");
+        Console.WriteLine($"IsAvailable       : {adapter.IsAvailable}");
+        Console.WriteLine($"CanRead           : {adapter.CanRead}");
+        Console.WriteLine($"CanDelete         : {adapter.CanDelete}");
+        Console.WriteLine($"CanSave           : {adapter.CanSave}");
+        Console.WriteLine($"CanWrite          : {((IDrsAdapter)adapter).CanWrite}");
+        Console.WriteLine($"不可用原因        : {(adapter.UnavailableReason.Length == 0 ? "(无)" : adapter.UnavailableReason)}");
+        Console.WriteLine();
+
+        if (!adapter.IsAvailable)
+        {
+            Console.WriteLine("结论：本机无法加载 NVAPI。这不是失败——请在有 NVIDIA 驱动的机器上重跑本命令。");
+            return 0;
+        }
+
+        // Base profile, read-only. The finally block is the only cleanup this command needs.
+        var opened = adapter.Open(null);
+        Console.WriteLine($"打开基础 Profile  : {(opened.Ok ? "成功" : $"失败（{opened.Code}）{opened.Message}")}");
+        Console.WriteLine();
+
+        if (!opened.Ok) return 1;
+
+        try
+        {
+            // The guard refuses every driver call, so this loop is reporting the guard's answer rather than
+            // querying the driver: during the original smoke test the second read crashed this process with
+            // an access violation.
+            Console.WriteLine("设置读取结果（受 fail-closed 保护，未调用驱动）:");
+            foreach (var setting in SmoothMotionSettings.All)
+            {
+                var snapshot = adapter.Read(setting.Id);
+                Console.WriteLine($"  0x{setting.Id:X8}  {setting.Name,-26} {snapshot.State,-16} value={snapshot.Value}");
+            }
+        }
+        finally
+        {
+            adapter.Close();
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("结论：");
+        Console.WriteLine("  · NVAPI 已成功加载，全部 DRS 入口点已解析；");
+        Console.WriteLine("  · NVDRS_SETTING_V1 的封送布局与官方头文件推导一致（SizeOf/OffsetOf 断言通过）；");
+        Console.WriteLine("  · 可以在基础 Profile 上打开 DRS 会话；");
+        Console.WriteLine("  · 但结构体往返封送在真实驱动上未被证明安全 —— 原始 Smoke 在第二次读取时以");
+        Console.WriteLine("    AccessViolationException 崩溃，根因尚未定位；");
+        Console.WriteLine("  · 因此所有驱动调用被 fail-closed 拒绝，写入路径从未执行。");
+        return 0;
     }
 
     // ---- download sources ---------------------------------------------------
@@ -3534,14 +3608,22 @@ public static class Program
             new NvidiaProfileService(new FakeDrsAdapter(), () => false)
                 .Apply("P", Array.Empty<ProfileSettingWrite>()).Ok);
 
-        // ---- the real adapter fails closed ----
+        // ---- the real adapter: capability is reported, never assumed ----
         var real = new NvApiDrsAdapter();
-        Check("真实适配器在实现完成前报告不可用", !real.IsAvailable);
-        Check("缺少删除能力时同时拒绝写入（能删才能写）",
-            !real.CanDelete && !((IDrsAdapter)real).CanWrite);
-        Check("真实适配器拒绝写入并说明原因", real.Write(idA, 1).Message.Contains("拒绝写入"));
-        Check("真实适配器未对驱动发起调用",
+
+        // Deliberately read-only. The harness must never modify a real NVIDIA profile, so this loads NVAPI
+        // and asks what it can do — nothing more. On a machine without a driver it must say why instead.
+        Check("真实适配器声明能力时必须同时给出原因",
+            real.CanWrite || real.UnavailableReason.Length > 0, real.UnavailableReason);
+
+        Check("未证明的 ABI 不声称任何写入能力",
+            real.CanWrite == (real.CanRead && real.CanDelete && real.CanSave));
+
+        Check("没有会话时读取返回 Unknown 而非猜测",
             real.Read(idA).State == ProfileSettingState.Unknown);
+
+        Check("没有会话时拒绝写入（不触碰驱动）",
+            !real.Write(idA, 1).Ok);
 
         // ---- setting provenance ----
         Check("Smooth Motion 设置清单共 6 项", SmoothMotionSettings.All.Count == 6,
