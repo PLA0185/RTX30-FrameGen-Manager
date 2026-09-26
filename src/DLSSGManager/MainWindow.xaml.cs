@@ -583,12 +583,38 @@ public partial class MainWindow : Window
             ? "未选中游戏。"
             : $"{Selected.Name}\n{Selected.RenderDir}";
 
-        UpdatesSummary.Text = $"当前版本 {AppVersion.Label}。本软件与第三方补丁的更新是两套独立流程。";
+        // Filled from state the window already holds, not from a sentence about the page. A summary that only
+        // describes where information lives cannot be wrong — and cannot be useful either. Each of these starts
+        // with what is true right now, then says where the rest is.
+        var deployed = games.Where(g => g.Deployment is not null).ToList();
 
-        DownloadsSummary.Text = "传输进度显示在窗口底部的进度条中；已完成的下载历史尚未在此页汇总。";
+        UpdatesSummary.Text = deployed.Count == 0
+            ? $"当前版本 {AppVersion.Label}。还没有游戏安装过补丁，因此没有可显示的补丁版本。"
+            : $"当前版本 {AppVersion.Label}。本软件与第三方补丁的更新是两套独立流程。\n已安装的补丁版本：\n" +
+              string.Join("\n", deployed.Select(g =>
+                  $"· {g.Name} — {g.Deployment!.ModVersion ?? "(未记录版本)"}" +
+                  (string.IsNullOrEmpty(g.Deployment.ProviderId)
+                      ? "（未记录来源 Provider）"
+                      : $"（{g.Deployment.ProviderId}）")));
 
-        DiagnosticsSummary.Text = "日志位于窗口底部。兼容性数据库与证据规则见 docs/COMPATIBILITY.md；" +
-                                  "数据库当前为空，因此没有任何条目达到 Project Verified。";
+        // Read from disk: this is the one page whose subject is the payload store itself, and the store is the file
+        // system. Listing nothing is a truthful answer when nothing has been downloaded.
+        var payloadRoot = DLSSGManager.Providers.PayloadPaths.Root;
+
+        var payloads = System.IO.Directory.Exists(payloadRoot)
+            ? System.IO.Directory.GetDirectories(payloadRoot)
+                .SelectMany(p => System.IO.Directory.GetDirectories(p)
+                    .Select(v => $"· {System.IO.Path.GetFileName(p)} → {System.IO.Path.GetFileName(v)}"))
+                .ToList()
+            : new List<string>();
+
+        DownloadsSummary.Text = payloads.Count == 0
+            ? "传输进度显示在窗口底部的进度条中。当前没有已下载的 Mod 文件。"
+            : "传输进度显示在窗口底部的进度条中。已下载的 Mod 文件：\n" + string.Join("\n", payloads);
+
+        DiagnosticsSummary.Text = $"日志位于窗口底部。兼容性数据库与证据规则见 docs/COMPATIBILITY.md；" +
+                                  "数据库当前为空，因此没有任何条目达到 Project Verified。\n" +
+                                  $"已登记游戏 {games.Count} 个，其中 {deployed.Count} 个有部署记录。";
 
         SettingsSummary.Text = "语言与主题在上方工具栏；代理入口、图形 API 与 NVIDIA Profile 相关设置" +
                                "属于高级项，默认折叠在「游戏详情」的高级区域。";
