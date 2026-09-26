@@ -564,38 +564,13 @@ public static class InstallPlanner
         return result;
     }
 
-    private static IReadOnlyList<string> Summarize(
-        IReadOnlyList<string> payloadFiles, string? proxyChoice, string? asiChoice)
-    {
-        static string Leaf(string path) => Path.GetFileName(path.Replace('/', '\\'));
-
-        var result = new List<string>();
-
-        foreach (var file in payloadFiles)
-        {
-            var leaf = Leaf(file);
-
-            if (ModSource.IsKnownProxyName(leaf)
-                || string.Equals(leaf, ModSource.IniName, StringComparison.OrdinalIgnoreCase))
-                result.Add(file);
-        }
-
-        // INI 是管理器自己生成的，payload 里没有这个文件 —— 但部署一定会写它，所以无条件放行。
-        // 少了这一条，单向校验会把刚写下的 INI 判成「计划外的意外文件」，把一次成功的安装判成失败。
-        if (!result.Any(f => string.Equals(Leaf(f), ModSource.IniName, StringComparison.OrdinalIgnoreCase)))
-            result.Add(ModSource.IniName);
-
-        // 选定值可能是 payload 里没有的（例如本地导入的入口），所以单独补一次而不是依赖上面的循环。
-        foreach (var chosen in new[] { proxyChoice, asiChoice })
-        {
-            if (chosen is null) continue;
-
-            if (!result.Any(f => string.Equals(Leaf(f), chosen, StringComparison.OrdinalIgnoreCase)))
-                result.Add(chosen);
-        }
-
-        return result;
-    }
+    // 这里曾经有一个 `Summarize(IReadOnlyList<string> payloadFiles, string? proxyChoice, string? asiChoice)`：
+    // 它把 payload 里命中 `ModSource.IsKnownProxyName`（**扫描**集合，含 `winhttp.dll`）的文件与 INI 拼成一个
+    // 扁平路径列表。
+    //
+    // **它已被 `BuildPlannedFiles` 取代，且没有任何调用者** —— 但留在文件里就是一个陷阱：谁把它接回去，
+    // §16 修掉的「计划用扫描名、部署用可部署名」缺陷会立刻复活，**而且没有任何测试会响**（新断言守的是
+    // `BuildPlannedFiles`）。**删除比留一句「已废弃」的注释更安全：没人会误用一个不存在的方法。**
 
     public static InstallPlan Plan(InstallPlanInput input)
     {

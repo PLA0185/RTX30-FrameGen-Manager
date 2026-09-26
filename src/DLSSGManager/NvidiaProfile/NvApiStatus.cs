@@ -116,6 +116,16 @@ public static class NvApiStatus
 
         if (name is not null && describe is not null) return $"{name}（{code}）：{describe}";
 
-        return $"状态码 {code}：未在已核对的官方头文件片段中找到定义 —— 需去官方完整源检索，不得按数值推断语义。";
+        // 措辞必须把「本工具没列」与「官方没有」分开。
+        //
+        // 官方 `nvapi_lite_common.h` 对 **200 多个**状态码都有定义，而本类只固化了 5 个 —— 所以遇到表外的码，
+        // 正确的说法是「**本工具尚未核对该码**」，而**不是**「官方未定义」。
+        //
+        // 这个区别有实际后果：`-158 NVAPI_SET_NOT_ALLOWED`（"Intended setting is not allowed"）恰恰是本项目
+        // 写 undocumented 的 `0xB0xxxxxx` 设置时**很可能**遇到的码。如果说成「官方未定义」，用户会去怀疑
+        // 设置 ID 本身，而不是去检查那个设置是否被驱动允许 —— 方向完全错了。
+        return $"状态码 {code}：本工具**尚未核对该码**（≠ 官方未定义：官方头文件对 200 多个码都有定义，"
+            + "本类只固化了已逐行核对过的几个）。请到官方 `nvapi_lite_common.h` 检索；"
+            + "**不得按数值相邻推断语义**。";
     }
 }
