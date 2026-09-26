@@ -4395,6 +4395,48 @@ public static class Program
         var rP = svcP.Apply("RollbackProfile", new[] { W(Setting(idA), 4u) });
         var opensAfterApply = p.OpenCount;
         svcP.Rollback(rP.Journal);
+
+        // ---- P1-13：回滚必须拆掉本次运行**自己创建**的东西 ----
+        //
+        // 只恢复设置会留下一个空的 RTX30FGM-* Profile 挂在用户机器上 —— 那不是回滚，那是残留。
+        // WasProfileCreated 是唯一的依据：只有它说「这是我们建的」才允许删除。
+        var ownedAdapter = new FakeDrsAdapter();
+        var ownedService = new NvidiaProfileService(ownedAdapter, () => false);
+        var ownedJournal = new ProfileJournal("RTX30FGM-SMOKE-OWNED")
+        {
+            ApplicationExe = "RTX30FGM-SMOKE.exe",
+            WasProfileCreated = true,
+            WasApplicationCreated = true,
+        };
+
+        ownedJournal.Entries.Add(new ProfileJournalEntry(
+            idA, "A",
+            new ProfileSettingSnapshot(idA, ProfileSettingState.Absent, 0, false, "原本未设置。"),
+            4u));
+
+        ownedService.Rollback(ownedJournal);
+
+        Check("回滚删除本次运行自己创建的 Profile",
+            ownedAdapter.DeletedProfiles.Contains("RTX30FGM-SMOKE-OWNED"),
+            string.Join("、", ownedAdapter.DeletedProfiles));
+
+        // 反向的一半，也是真正要防的那一半：不是自己建的，就绝不能删。
+        // 没有这一条，一个「永远删」的实现也能满足上面那条 —— 而那会删掉用户的 Profile，
+        // 后果比留下残留严重得多。
+        var strangerAdapter = new FakeDrsAdapter();
+        var strangerService = new NvidiaProfileService(strangerAdapter, () => false);
+        var strangerJournal = new ProfileJournal("UserOwnedProfile");
+
+        strangerJournal.Entries.Add(new ProfileJournalEntry(
+            idA, "A",
+            new ProfileSettingSnapshot(idA, ProfileSettingState.Absent, 0, false, "原本未设置。"),
+            4u));
+
+        strangerService.Rollback(strangerJournal);
+
+        Check("回滚不删除不是本次运行创建的 Profile",
+            strangerAdapter.DeletedProfiles.Count == 0,
+            string.Join("、", strangerAdapter.DeletedProfiles));
         Check("回滚自行打开 Profile 会话（不依赖 Apply 已关闭的会话）", p.OpenCount > opensAfterApply);
         Check("journal 携带 ProfileName", rP.Journal.ProfileName == "RollbackProfile");
 
