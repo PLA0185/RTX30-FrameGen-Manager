@@ -9,6 +9,7 @@ using DLSSGManager.Compatibility;
 using DLSSGManager.InstallPlanning;
 using DLSSGManager.NvidiaProfile;
 using DLSSGManager.Orchestration;
+using DLSSGManager.UI;
 
 namespace DLSSGManager;
 
@@ -102,6 +103,7 @@ public static class Program
             TestSmoothProvider(work);
             TestSmoothMotionWorkflow(work);
             TestCompatibilityEvidence(work);
+            TestPresentationLayer(work);
         }
         catch (Exception ex)
         {
@@ -3998,5 +4000,120 @@ public static class Program
         Check("矩阵记录仍可查询（新字段未破坏匹配）",
             matrixReloaded.Query(new CompatibilityQuery(Gpu: "RTX 3070 Ti", Provider: "mfg-smooth",
                 ProviderVersion: "2.9.0")).Kind != CompatibilityMatchKind.None);
+    }
+
+    /// <summary>
+    /// Stage 10: the presentation layer.
+    ///
+    /// The XAML itself cannot be exercised here, so what is tested is the part that decides what the
+    /// interface <i>says</i>. That is where honesty is either kept or lost: whether an unknown state is
+    /// shown as fine, and whether "files were copied" is shown as "working".
+    /// </summary>
+    private static void TestPresentationLayer(string work)
+    {
+        Section("界面呈现层（Stage 10）");
+
+        // ---- navigation ----
+        Check("七个页面齐备", NavigationModel.Pages.Count == 7, "实际: " + NavigationModel.Pages.Count);
+        Check("七个页面各不重复",
+            NavigationModel.Pages.Select(p => p.Page).Distinct().Count() == 7);
+        Check("页面顺序固定为设计顺序",
+            NavigationModel.Pages.Select(p => p.Page).SequenceEqual(new[]
+            {
+                AppPage.Dashboard, AppPage.Library, AppPage.GameDetails,
+                AppPage.Updates, AppPage.Downloads, AppPage.Diagnostics, AppPage.Settings,
+            }));
+        Check("默认页是总览", NavigationModel.DefaultPage == AppPage.Dashboard);
+        Check("主流程页不含高级页",
+            NavigationModel.PrimaryFlow.All(p => !NavigationModel.Describe(p).Advanced));
+        Check("主流程为 游戏库 → 详情 → 更新",
+            NavigationModel.PrimaryFlow.SequenceEqual(new[] { AppPage.Library, AppPage.GameDetails, AppPage.Updates }));
+        Check("高级页只有诊断与设置",
+            NavigationModel.AdvancedPages.Select(p => p.Page).OrderBy(p => p)
+                .SequenceEqual(new[] { AppPage.Diagnostics, AppPage.Settings }.OrderBy(p => p)));
+        Check("每个页面都有标题与用途", NavigationModel.Pages.All(p => p.Title.Length > 0 && p.Purpose.Length > 0));
+
+        // ---- advanced panel is folded by default ----
+        Check("高级分组全部默认折叠", AdvancedPanel.AllCollapsedByDefault);
+        Check("高级分组覆盖要求的全部条目",
+            new[] { "Proxy", "ASI", "API", "NVIDIA Profile", "Flip Pacing", "Low Latency", "Provider", "Release Channel", "Logs" }
+                .All(item => AdvancedPanel.AllItems.Contains(item)),
+            string.Join(", ", AdvancedPanel.AllItems));
+        Check("高级分组仍可展开（是折叠不是隐藏）", AdvancedPanel.Groups.Count > 0 && AdvancedPanel.Groups.All(g => g.Items.Count > 0));
+        Check("Profile 设置随界面携带出处",
+            AdvancedPanel.EditableProfileSettings.Count == 6 &&
+            AdvancedPanel.EditableProfileSettings.All(s => s.Provenance.Contains("Undocumented")));
+
+        // ---- the honesty rules ----
+        Check("未知状态不显示为正常",
+            StatusPresenter.ForProvider(ProviderHealth.Available("")).Tone == StatusTone.Good &&
+            StatusPresenter.ForProvider(new ProviderHealth(ProviderHealthState.Available, "")).Tone == StatusTone.Good);
+
+        Check("Provider 可用为 Good",
+            StatusPresenter.ForProvider(ProviderHealth.Available("ok")).Tone == StatusTone.Good);
+        Check("Provider 限流为 Warning",
+            StatusPresenter.ForProvider(ProviderHealth.RateLimited("rate")).Tone == StatusTone.Warning);
+        Check("Provider 结构变更为 Bad",
+            StatusPresenter.ForProvider(ProviderHealth.ReleaseFormatChanged("changed")).Tone == StatusTone.Bad);
+        Check("Provider 不可用不等于损坏",
+            StatusPresenter.ForProvider(ProviderHealth.Unavailable("offline")).Tone == StatusTone.Warning &&
+            StatusPresenter.ForProvider(ProviderHealth.Broken("bad")).Tone == StatusTone.Bad);
+
+        // The two rules that stop the interface from being reassuring but wrong.
+        Check("仅安装文件不显示为成功",
+            StatusPresenter.ForEvidence(SmoothMotionEvidence.Installed).Tone == StatusTone.Warning,
+            StatusPresenter.ForEvidence(SmoothMotionEvidence.Installed).Tone.ToString());
+        Check("仅安装文件时说明「不等于生效」",
+            StatusPresenter.ForEvidence(SmoothMotionEvidence.Installed).Detail.Contains("生效"));
+        Check("只有 Verified 显示为成功",
+            StatusPresenter.ForEvidence(SmoothMotionEvidence.Verified).Tone == StatusTone.Good &&
+            new[]
+            {
+                SmoothMotionEvidence.None, SmoothMotionEvidence.Installed, SmoothMotionEvidence.Loaded,
+                SmoothMotionEvidence.Requested, SmoothMotionEvidence.Applied,
+            }.All(e => StatusPresenter.ForEvidence(e).Tone != StatusTone.Good));
+        Check("未安装为中性", StatusPresenter.ForEvidence(SmoothMotionEvidence.None).Tone == StatusTone.Neutral);
+
+        Check("更新检查失败不显示为已是最新",
+            StatusPresenter.ForUpdate(UpdateCheckResult.Unknown("t", null, ReleaseChannel.Stable,
+                DateTimeOffset.Now, UpdateState.Unknown, UpdateNetworkState.Offline, "offline")).Tone != StatusTone.Good);
+        Check("确实是最新才显示为成功",
+            StatusPresenter.ForUpdate(UpdateCheckResult.Unknown("t", null, ReleaseChannel.Stable,
+                DateTimeOffset.Now, UpdateState.UpToDate, UpdateNetworkState.Ok, "ok")).Tone == StatusTone.Good);
+        Check("被阻止的编排为 Bad",
+            StatusPresenter.ForOutcome(WorkflowOutcome.Blocked).Tone == StatusTone.Bad);
+        Check("需要确认为 Warning 而非 Bad",
+            StatusPresenter.ForOutcome(WorkflowOutcome.NeedsConfirmation).Tone == StatusTone.Warning);
+
+        // ---- planner agreement ----
+        Check("仅精确匹配且记录可用时无需询问",
+            StatusPresenter.CanConfigureWithoutAsking(CompatibilityMatchKind.Exact, ValidationState.ReportedWorking));
+        Check("部分匹配时必须询问",
+            !StatusPresenter.CanConfigureWithoutAsking(CompatibilityMatchKind.Partial, ValidationState.ReportedWorking));
+        Check("精确匹配但记录不可用时必须询问",
+            !StatusPresenter.CanConfigureWithoutAsking(CompatibilityMatchKind.Exact, ValidationState.ReportedBroken));
+
+        Check("按钮文案随证据级别变化",
+            StatusPresenter.ConfigureButtonText(SmoothMotionEvidence.None) == "自动配置" &&
+            StatusPresenter.ConfigureButtonText(SmoothMotionEvidence.Installed) == "重新配置");
+
+        // ---- library rows ----
+        var noRecord = new GameEntry { Name = "Alpha", RenderDir = "C:\\games\\alpha" };
+        var withRecord = new GameEntry { Name = "Beta", RenderDir = "C:\\games\\beta" };
+        withRecord.Deployment = new DeploymentInfo { ProxyName = "version.dll" };
+
+        var row = LibraryPresenter.For(noRecord);
+        Check("未部署的游戏显示为未安装", row.StatusText == "未安装" && row.Tone == StatusTone.Neutral, row.StatusText);
+        Check("未部署不等于就绪", row.Tone != StatusTone.Good);
+        Check("已部署的游戏显示为「已安装，尚未验证」",
+            LibraryPresenter.For(withRecord).Tone == StatusTone.Warning,
+            LibraryPresenter.For(withRecord).StatusText);
+        Check("空名称有兜底显示",
+            LibraryPresenter.For(new GameEntry { Name = "", RenderDir = "x" }).Name == "(未命名)");
+
+        var rows = LibraryPresenter.Build(new[] { noRecord, withRecord });
+        Check("列表为每个游戏生成一行", rows.Count == 2);
+        Check("有部署记录的排在未安装之前", rows[0].Name == "Beta", rows[0].Name);
+        Check("全部行都可配置", rows.All(r => r.CanConfigure));
     }
 }

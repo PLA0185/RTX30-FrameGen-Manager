@@ -51,6 +51,7 @@
     <Compile Include="..\..\src\DLSSGManager\NvidiaProfile\NvidiaProfileService.cs" />
     <Compile Include="..\..\src\DLSSGManager\NvidiaProfile\NvApiDrsAdapter.cs" />
     <Compile Include="..\..\src\DLSSGManager\Orchestration\SmoothMotionWorkflow.cs" />
+    <Compile Include="..\..\src\DLSSGManager\UI\Presentation.cs" />
   </ItemGroup>
 
 </Project>
