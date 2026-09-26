@@ -238,6 +238,15 @@ public sealed record WorkflowResult(
     bool ProfileRolledBack)
 {
     public bool Succeeded => Outcome == WorkflowOutcome.Succeeded;
+
+    /// <summary>
+    /// 有一次回滚尝试没有成功 —— 机器上可能还留着本次运行写入的东西。
+    ///
+    /// <para>任务书 §10 要求回滚失败必须被<b>显式暴露</b>，而不是只写一句「已回滚」。条目级已经有
+    /// <see cref="RollbackState.Failed"/>，但那是逐条的；这一个是从整次运行的角度回答「还有没有没清干净
+    /// 的东西」，也正是调用者最需要先看到的那个判断。</para>
+    /// </summary>
+    public bool RollbackIncomplete { get; init; }
 }
 
 /// <summary>
@@ -754,6 +763,10 @@ public sealed class SmoothMotionWorkflow
         var filesRolledBack = false;
         var profileRolledBack = false;
 
+        // 任务书 §10：回滚失败必须显式暴露，而不是只写一句「已回滚」。这里记录的是「尝试过、但没成功」——
+        // 与「根本没有需要回滚的东西」不同：前者意味着机器上可能还留着本次运行写下的内容。
+        var rollbackIncomplete = false;
+
         // Driver first, then files: a profile left enabled for a game whose proxy has just been removed is
         // the more surprising of the two half-states for a user to find.
         if (journal is { Count: > 0 })
@@ -761,7 +774,11 @@ public sealed class SmoothMotionWorkflow
             var rollback = _profile.Rollback(journal);
             profileRolledBack = rollback.Ok;
             steps.Add(new WorkflowStep("回滚 NVIDIA Profile", rollback.Ok, rollback.Message));
-            if (!rollback.Ok) errors.Add(rollback.Message);
+            if (!rollback.Ok)
+            {
+                errors.Add(rollback.Message);
+                rollbackIncomplete = true;
+            }
         }
 
         if (filesWritten)
@@ -769,10 +786,17 @@ public sealed class SmoothMotionWorkflow
             var restore = request.Provider.Restore(request.Game, removeLogs: false);
             filesRolledBack = restore.Ok;
             steps.Add(new WorkflowStep("回滚文件部署", restore.Ok, restore.Message));
-            if (!restore.Ok) errors.Add(restore.Message);
+            if (!restore.Ok)
+            {
+                errors.Add(restore.Message);
+                rollbackIncomplete = true;
+            }
         }
 
-        return new WorkflowResult(outcome, evidence, steps, plan, report, errors, filesRolledBack, profileRolledBack);
+        return new WorkflowResult(outcome, evidence, steps, plan, report, errors, filesRolledBack, profileRolledBack)
+        {
+            RollbackIncomplete = rollbackIncomplete,
+        };
     }
 
     /// <summary>
