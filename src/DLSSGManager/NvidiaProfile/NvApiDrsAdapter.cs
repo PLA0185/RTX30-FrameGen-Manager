@@ -92,7 +92,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         if (string.IsNullOrWhiteSpace(executableName))
             return DrsApplicationLookup.NotFound(executableName ?? "", "未提供可执行文件名。");
 
-        if (!DriverCallsProven)
+        if (!ApplicationLookupProven)
             return DrsApplicationLookup.NotFound(executableName, UnprovenAbi);
 
         if (_session == IntPtr.Zero)
@@ -251,35 +251,69 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// <para>An unproven ABI fails closed. That rule does not stop applying just because the entry points
     /// were found — finding them was never the hard part.</para>
     /// </summary>
-    // Proven on 2026-09-26 by the diagnostic loop in `--nvapi-smoke --loop`: 200 real reads (100 rounds × A/B
-    // alternating settings), 0 exceptions, driver reached every time. The earlier failure was NOT the marshalling
+    // Capability gates, one per kind of driver call — deliberately not one flag.
+    //
+    // These were once a single `DriverCallsProven`, set true by the read loop. That made 200 proven reads silently
+    // open write, save and delete on a real driver, none of which had ever been exercised. The project's own rule is
+    // that read permission does not imply write permission; one flag cannot express five different facts.
+    //
+    // Read was proven on 2026-09-26 by the diagnostic loop in `--nvapi-smoke --loop`: 200 real reads (100 rounds ×
+    // A/B alternating settings), 0 exceptions, driver reached every time. The earlier failure was NOT the marshalling
     // layout — it was the profile handle: Open(null) used NVAPI_DRS_GLOBAL_PROFILE, the (NvDRSProfileHandle)-1
     // sentinel, where NvAPI_DRS_GetSetting expects the base profile's real handle from NvAPI_DRS_GetBaseProfile.
-    private static readonly bool DriverCallsProven = true;
-
-    /// <summary>The reason reported while <see cref="DriverCallsProven"/> is false.</summary>
-    private const string UnprovenAbi =
-        "NVAPI 已加载但驱动调用尚未被证明安全，因此拒绝调用任何驱动接口。";
-
-    /// <summary>Reads would go through <c>NvAPI_DRS_GetSetting</c> — refused until the layout is proven.</summary>
-    public bool CanRead => DriverCallsProven && IsAvailable && _getSetting is not null;
+    internal static bool ReadCallsProven { get; set; } = true;
 
     /// <summary>
-    /// Deletion would go through <c>NvAPI_DRS_DeleteProfileSetting</c>. Never optional: without it a setting
-    /// could be written and never removed again.
+    /// Set only by a smoke that actually wrote a setting to a real temporary profile.
+    ///
+    /// <para>Still false: nothing has ever written to a real driver profile. The single flag this replaced was true,
+    /// which meant the answer to "can we write?" was "yes" on the strength of a read test.</para>
     /// </summary>
-    public bool CanDelete => DriverCallsProven && IsAvailable && _deleteProfileSetting is not null;
+    internal static bool WriteCallsProven { get; set; }
 
-    /// <summary>Committing would go through <c>NvAPI_DRS_SaveSettings</c> — refused until the layout is proven.</summary>
-    public bool CanSave => DriverCallsProven && IsAvailable && _saveSettings is not null;
+    /// <summary>Set only by a smoke that actually deleted a setting from a real temporary profile. Still false.</summary>
+    internal static bool DeleteCallsProven { get; set; }
 
-    public bool CanWrite => CanRead && CanDelete && CanSave;
+    /// <summary>Set only by a smoke that actually committed settings to a real temporary profile. Still false.</summary>
+    internal static bool SaveCallsProven { get; set; }
+
+    /// <summary>
+    /// Set by a smoke that actually invoked <c>NvAPI_DRS_FindApplicationByName</c> on a real driver and got a
+    /// well-formed answer back.
+    ///
+    /// <para>True on the strength of a real call that returned <c>-166</c>. That is not a contradiction: this gate
+    /// answers "has this call been exercised without faulting", while <c>DrsApplicationLookup.Found</c> answers
+    /// "did it find anything". The application was genuinely not found, and the lookup is genuinely proven.</para>
+    /// </summary>
+    internal static bool ApplicationLookupProven { get; set; } = true;
+
+    /// <summary>The reason reported while a gate is still closed.</summary>
+    private const string UnprovenAbi =
+        "NVAPI 已加载，但对应的驱动调用尚未被证明安全，因此拒绝调用它。";
+
+    /// <summary>Reads go through <c>NvAPI_DRS_GetSetting</c> — refused until real reads have been proven.</summary>
+    public bool CanRead => ReadCallsProven && IsAvailable && _getSetting is not null;
+
+    /// <summary>
+    /// Deletion goes through <c>NvAPI_DRS_DeleteProfileSetting</c>. Never optional: without it a setting could be
+    /// written and never removed again.
+    /// </summary>
+    public bool CanDelete => DeleteCallsProven && IsAvailable && _deleteProfileSetting is not null;
+
+    /// <summary>Committing goes through <c>NvAPI_DRS_SaveSettings</c> — refused until a real save has been proven.</summary>
+    public bool CanSave => SaveCallsProven && IsAvailable && _saveSettings is not null;
+
+    /// <summary>
+    /// Writing needs every step of the round trip proven on a real driver: read (to capture the original), write,
+    /// delete (to restore an absent setting) and save. Any one of them unproven keeps this false.
+    /// </summary>
+    public bool CanWrite => CanRead && WriteCallsProven && CanDelete && CanSave;
 
     /// <summary>
     /// Why the adapter will not operate, for diagnostics. Empty only when it is genuinely usable.
     ///
-    /// Reports the unproven-ABI reason when the library loads but driver calls are refused, so a caller
-    /// asking "can I use this?" never sees an empty explanation next to a false capability.
+    /// Reports the unproven reason when the library loads but driver calls are refused, so a caller asking
+    /// "can I use this?" never sees an empty explanation next to a false capability.
     /// </summary>
     public string UnavailableReason
     {
@@ -287,7 +321,15 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         {
             EnsureLoaded();
             if (_unavailableReason.Length > 0) return _unavailableReason;
-            return DriverCallsProven ? "" : UnprovenAbi;
+            if (!CanRead) return UnprovenAbi;
+
+            // Read is available but some step of the write round trip is not. Saying nothing here would leave
+            // "why can't it write?" unanswered while the capability flags say false — which is the very
+            // contradiction this property exists to prevent.
+            if (!CanWrite)
+                return "只读已证明；写入、删除或保存尚未在真实驱动上验证，因此写路径保持关闭。";
+
+            return "";
         }
     }
 
@@ -426,7 +468,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     }
 
     /// <summary>
-    /// Diagnostic only: reads a setting while the <see cref="DriverCallsProven"/> gate is still closed.
+    /// Diagnostic only: reads a setting while the read gate is still closed.
     ///
     /// <para><b>Why this exists.</b> That gate is a compile-time constant, so a normal read is refused without ever
     /// reaching the driver — which means the hand-built marshalling cannot be exercised by any application path.
