@@ -1,0 +1,45 @@
+# 构建产物
+[Bb]in/
+[Oo]bj/
+/dist/
+/publish/
+
+# 安装包编译中间产物
+/installer/Output/
+
+# Mod 文件源：第三方版权作品，不随本仓库分发。
+#
+# 这些是 dlssg_for_sm86 发布的二进制，其 THIRD_PARTY_NOTICES.txt 说明 NVIDIA 运行时与
+# 提取的内核资源不属于该项目的授权范围（"not relicensed by LICENSE.md"），因此本仓库
+# 不转发。程序首次运行时会从上游下载，见 docs/mod-files.md。
+/mod/
+
+# 用户本地数据
+*.user
+*.suo
+.vs/
+
+# 工具生成的本地状态（安全扫描审计记录等）
+.mimosa/
+
+# CodeGraph 代码索引（本机生成，不入库）
+.codegraph/
+
+# 临时文件
+/_dl/
+*.tmp
+*.log
+
+# ── 本项目新增排除项 ──────────────────────────────────────────────
+# Phase 0 只读证据快照（GitHub 元数据 / 上游文档 / 社区实现证据 / 原管理器源码）
+# 体积约 16 MB，属调研中间产物，不随仓库分发
+/_research/
+
+# DSH 记忆插件生成的工作区文件
+/PROJECT_MEMORY.md
+
+# 第三方社区构建的代理入口副本（授权状态不明确，按 v5 §59.2 禁止提交）
+extra-proxies/*.dll
+
+# 基线构建日志（本地可复现，不入库）
+/_research/baseline/

@@ -1,0 +1,167 @@
+name: Release
+
+# 推送 v* 标签时自动构建并发布，也可以在 Actions 页面手动触发。
+#
+# 产出两个文件：
+#   · DLSSGManager.exe        —— 单文件绿色版，双击即用
+#   · DLSSGManager-*-setup.exe —— 安装包，安装路径可选，带卸载程序
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: 构建并测试
+        shell: pwsh
+        run: |
+          dotnet build -c Release --nologo
+
+          # 未获取 Mod 文件时，依赖它们的用例会自动跳过；其余用例必须全绿。
+          # 用 & 调用以免路径含空格时被当成字符串。
+          & ./test/Harness/bin/Release/net8.0-windows/Harness.exe
+          if ($LASTEXITCODE -ne 0) { throw "测试失败（退出码 $LASTEXITCODE）" }
+
+      - name: 解析版本号
+        id: version
+        shell: pwsh
+        run: |
+          # 标签形如 v1.2.3 时取版本号；手动触发则用 csproj 里的值。
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $v = $env:GITHUB_REF -replace '^refs/tags/v', ''
+          } else {
+            $v = '0.0.0-dev'
+          }
+          "value=$v" >> $env:GITHUB_OUTPUT
+          Write-Output "版本: $v"
+
+      - name: 发布绿色版 exe
+        shell: pwsh
+        run: |
+          # 自包含：目标机器无需安装 .NET 运行时，双击即可用。
+          dotnet publish src/DLSSGManager/DLSSGManager.csproj `
+            -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true `
+            -p:DebugType=none `
+            -p:Version=${{ steps.version.outputs.value }} `
+            -o publish --nologo
+
+      - name: 安装 Inno Setup
+        shell: pwsh
+        run: |
+          # runner 自带 Chocolatey，装 Inno Setup 6 用于编译安装包。
+          choco install innosetup --yes --no-progress
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { throw "未找到 ISCC.exe：$iscc" }
+          Write-Output "ISCC: $iscc"
+
+      - name: 编译安装包
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          & $iscc "/DAppVersion=${{ steps.version.outputs.value }}" "installer/setup.iss"
+          if ($LASTEXITCODE -ne 0) { throw "安装包编译失败（退出码 $LASTEXITCODE）" }
+
+      - name: 生成校验值
+        shell: pwsh
+        run: |
+          $files = @(
+            'publish/DLSSGManager.exe',
+            (Get-Item 'dist/DLSSGManager-*-setup.exe' | Select-Object -First 1).FullName
+          )
+
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash $f -Algorithm SHA256).Hash
+            "{0}  {1}" -f $hash, (Split-Path $f -Leaf)
+          }
+          $lines | Out-File -Encoding ascii dist/SHA256SUMS.txt
+
+          Get-Content dist/SHA256SUMS.txt
+          foreach ($f in $files) {
+            "{0}: {1:N1} MB" -f (Split-Path $f -Leaf), ((Get-Item $f).Length / 1MB) | Write-Output
+          }
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: DLSSGManager-${{ steps.version.outputs.value }}
+          path: |
+            publish/DLSSGManager.exe
+            dist/DLSSGManager-*-setup.exe
+            dist/SHA256SUMS.txt
+
+      - name: 创建 Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            publish/DLSSGManager.exe
+            dist/DLSSGManager-*-setup.exe
+            dist/SHA256SUMS.txt
+          body: |
+            ## 两种用法，任选其一 / Two ways to use it
+
+            | 文件 / File | 说明 / Description |
+            |---|---|
+            | `DLSSGManager-*-setup.exe` | **安装包**。可选安装路径与语言，带卸载程序 / **Installer.** Choose path and language, ships an uninstaller |
+            | `DLSSGManager.exe` | **绿色版**。单文件，放到任意目录双击即可 / **Portable.** One file, run it anywhere |
+
+            两者都不需要安装 .NET 运行时。 / Neither needs .NET installed.
+
+            ## 安装包 / Installer
+
+            向导先让你选安装语言（简体中文 / English），再选安装路径（默认 `C:\Program Files\DLSSG 30-Series Manager`）。
+            安装时可直接下载 Mod 文件（勾选「Mod 文件」选项组）——此时安装程序已提权，所以装到 `Program Files` 也能写入程序目录。
+
+            The wizard asks for the install language (Simplified Chinese / English), then the install location.
+            The **Mod files** task downloads the payload during setup — the installer is elevated at that point,
+            so this works even when installing to `Program Files`.
+
+            Mod 文件位置 / Where the mod files go：
+
+            - 程序目录可写 → 程序旁的 `mod\` / writable program folder → `mod\` beside it
+            - 不可写（如未提权的 `Program Files`）→ `%APPDATA%\DLSSGManager\mod`
+
+            卸载时会单独询问是否删除 Mod 文件与游戏数据；静默卸载一律保留。
+            Uninstalling asks separately; a silent uninstall keeps them, so reinstalling needs no re-download.
+
+            ## 使用 / Using it
+
+            1. 首次启动会提示获取 Mod 文件（约 75 MB）。 / The first start offers to fetch the mod files (about 75 MB).
+            2. 点「扫描 Steam 库」或「添加游戏…」，选中游戏，点「部署到该游戏」。 / Scan for games, pick one, click “Deploy to this game”.
+
+            要撤销就点「一键恢复」。程序只删除经签名和哈希确认属于本项目的文件。
+            Click “Restore” to undo; only files confirmed by signature and hash to be ours are deleted.
+
+            ## 注意 / Notes
+
+            - **带内核级反作弊的游戏不能用**（会让 Mod 失效并有账号风险）。程序会自动检测并禁止部署。
+              已确认：绝区零（米哈游 HoYoKProtect）、战争雷霆（BattlEye）、终末地（腾讯 ACE）、守望先锋（网易 NEAC）。
+            - **Games with kernel-level anti-cheat cannot use this mod** (it will not work, and a detection may risk your
+              account). The manager detects this and blocks deployment. Confirmed: Zenless Zone Zero (miHoYo HoYoKProtect),
+              War Thunder (BattlEye), Arknights: Endfield (Tencent ACE), Overwatch (NetEase NEAC).
+            - 需要 RTX 30 系（SM86）。RTX 20 系可用 SM75 路由；RTX 40/50 系原生支持帧生成，不需要本工具。
+              / Needs an RTX 30-series (SM86). RTX 20-series can use the SM75 route; RTX 40/50 support frame generation natively.
+            - 杀软可能误报——这类 DLL 代理行为容易被启发式检测盯上。 / Antivirus may flag it; DLL proxying is what heuristics watch for.
+            - 本程序只是 dlssg_for_sm86 的部署工具，不含也不修改 Mod 本身。 / This is a deployment tool only; it does not contain or modify the mod.
+
+            ## 校验 / Verify
+
+            ```powershell
+            Get-FileHash DLSSGManager.exe -Algorithm SHA256
+            ```
+

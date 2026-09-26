@@ -1,0 +1,827 @@
+<Window x:Class="DLSSGManager.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:DLSSGManager"
+        xmlns:loc="clr-namespace:DLSSGManager"
+        Title="{loc:Tr App.Name}" Height="820" Width="1240" MinHeight="640" MinWidth="1040"
+        Background="{DynamicResource WindowBackground}" Foreground="{DynamicResource TextPrimary}"
+        FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="13">
+
+    <Window.Resources>
+        <local:BoolToVisibility x:Key="BoolToVis" />
+        <local:NotEmptyToVisibility x:Key="NotEmptyToVis" />
+        <local:ThemeBrushConverter x:Key="ThemeBrush" />
+
+        <!--
+            颜色全部来自主题字典（Themes/Dark.xaml 或 Themes/Light.xaml），用 DynamicResource
+            引用。DynamicResource 是必需的：StaticResource 在元素创建时解析一次，
+            之后切换主题不会重新查表，界面会停在旧配色上。
+
+            圆角体系：容器 10，卡片/列表项 8，按钮/输入 6-7，徽章 4。
+        -->
+
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        </Style>
+
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource TextSection}" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+        </Style>
+
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource TextMuted}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="0,0,10,0" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+
+        <!-- 详情区卡片：一个主题块一张卡，留白和描边做出层次 -->
+        <Style x:Key="SectionCard" TargetType="Border">
+            <Setter Property="Background" Value="{DynamicResource PanelBackground}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource LineBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16,13" />
+            <Setter Property="Margin" Value="0,0,0,12" />
+        </Style>
+
+        <!-- 默认 TextBox 的模板不带圆角；这里给出带圆角的轻量模板。 -->
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{DynamicResource InputBackground}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+                            <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}"
+                                          VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- The stock ComboBox template paints its own light background regardless of the
+             Background/Foreground setters, which makes light-on-light text invisible.
+             A full template is required to render it on the dark theme. -->
+        <Style TargetType="ComboBox">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="Background" Value="{DynamicResource InputBackground}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <Border x:Name="Bd" Background="{DynamicResource InputBackground}" BorderBrush="{DynamicResource InputBorderBrush}"
+                                    BorderThickness="1" CornerRadius="6">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="24" />
+                                    </Grid.ColumnDefinitions>
+                                    <ContentPresenter Grid.Column="0" Margin="10,6,0,6"
+                                                      VerticalAlignment="Center" HorizontalAlignment="Left"
+                                                      IsHitTestVisible="False"
+                                                      Content="{TemplateBinding SelectionBoxItem}"
+                                                      ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                      ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}" />
+                                    <Path Grid.Column="1" Data="M 0 0 L 4 4 L 8 0 Z" Fill="{DynamicResource TextMuted}"
+                                          HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Grid>
+                            </Border>
+
+                            <!-- Sits on top so the whole control toggles the popup. -->
+                            <ToggleButton Focusable="False" ClickMode="Press" Background="Transparent"
+                                          BorderThickness="0"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay,
+                                                              RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="Transparent" />
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+
+                            <Popup x:Name="PART_Popup" Placement="Bottom" AllowsTransparency="True"
+                                   Focusable="False" PopupAnimation="Slide"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}">
+                                <Border Background="{DynamicResource PopupBackground}" BorderBrush="{DynamicResource ButtonBorderBrush}" BorderThickness="1"
+                                        CornerRadius="8" Margin="0,3,0,0"
+                                        MinWidth="{TemplateBinding ActualWidth}"
+                                        MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <ScrollViewer>
+                                        <ItemsPresenter Margin="4" />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource HoverBackground}" />
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBackground}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="Padding" Value="10,7" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="Transparent" Padding="{TemplateBinding Padding}" CornerRadius="5">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBackground}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ListSelectedBackground}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="ToolButton" TargetType="Button">
+            <Setter Property="Background" Value="{DynamicResource ButtonBackground}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ButtonBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="14,8" />
+            <Setter Property="Margin" Value="0,0,8,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource HoverBackground}" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource TextFaint}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Opacity" Value="0.8" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.4" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource ToolButton}">
+            <Setter Property="Background" Value="{DynamicResource PrimaryBackground}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBorderBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource OnPrimaryText}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="7">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource PrimaryHoverBackground}" />
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource PrimaryHoverBackground}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Opacity" Value="0.85" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Bd" Property="Opacity" Value="0.4" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource ToolButton}">
+            <Setter Property="Background" Value="{DynamicResource DangerBackground}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource DangerBorderBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource DangerText}" />
+        </Style>
+
+        <!-- 下载进度条：默认模板是 Windows 绿细线，与主题无关；这里换成圆角轨道 + 主色指示条。
+             PART_Track / PART_Indicator 是 ProgressBar 自动计算宽度所需的固定部件名。 -->
+        <Style TargetType="ProgressBar">
+            <Setter Property="Background" Value="{DynamicResource InputBackground}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource InputBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Height" Value="12" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="6">
+                            <Border x:Name="PART_Track">
+                                <Border x:Name="PART_Indicator" Background="{DynamicResource PrimaryBackground}"
+                                        CornerRadius="6" HorizontalAlignment="Left" MinWidth="6" />
+                            </Border>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!--
+            滚动条：默认模板是白色宽条带两端箭头，在深色界面上非常突兀。
+            这里换成 10px 细条、圆角拇指、无箭头；颜色走主题键，浅色主题同样成立。
+            隐式样式覆盖主窗口内全部滚动条（详情区、游戏列表、日志、下拉弹层）。
+        -->
+        <Style x:Key="ScrollPageButton" TargetType="RepeatButton">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Rectangle Fill="Transparent" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ScrollBarThumb" TargetType="Thumb">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="ThumbBd" Background="{DynamicResource ButtonBorderBrush}"
+                                CornerRadius="4" Margin="2" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ThumbBd" Property="Background" Value="{DynamicResource TextFaint}" />
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="ThumbBd" Property="Background" Value="{DynamicResource TextMuted}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ScrollBar">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Width" Value="10" />
+            <Setter Property="MinWidth" Value="10" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageUpCommand" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageDownCommand" />
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource ScrollBarThumb}" />
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width" Value="Auto" />
+                    <Setter Property="MinWidth" Value="0" />
+                    <Setter Property="Height" Value="10" />
+                    <Setter Property="MinHeight" Value="10" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ScrollBar">
+                                <Grid Background="Transparent">
+                                    <Track x:Name="PART_Track" IsDirectionReversed="False">
+                                        <Track.DecreaseRepeatButton>
+                                            <RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageLeftCommand" />
+                                        </Track.DecreaseRepeatButton>
+                                        <Track.IncreaseRepeatButton>
+                                            <RepeatButton Style="{StaticResource ScrollPageButton}" Command="ScrollBar.PageRightCommand" />
+                                        </Track.IncreaseRepeatButton>
+                                        <Track.Thumb>
+                                            <Thumb Style="{StaticResource ScrollBarThumb}" />
+                                        </Track.Thumb>
+                                    </Track>
+                                </Grid>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ═══════════ 顶栏：品牌 + 全局控件 ═══════════ -->
+        <Border Grid.Row="0" Background="{DynamicResource PanelBackground}"
+                BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,0,0,1"
+                Padding="16,9">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="4" Height="26" CornerRadius="2" Margin="0,0,12,0"
+                            Background="{DynamicResource AccentBrush}" />
+                    <TextBlock Text="{loc:Tr App.Name}" FontSize="17" FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                    <Border x:Name="VersionBadge" CornerRadius="4" Padding="7,1.5" Margin="10,0,0,0"
+                            Background="{DynamicResource CardBackground}" BorderBrush="{DynamicResource LineBrush}"
+                            BorderThickness="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="VersionText" FontSize="11" Foreground="{DynamicResource TextMuted}" />
+                    </Border>
+                    <TextBlock x:Name="SubtitleText" Foreground="{DynamicResource TextFaint}"
+                               FontSize="11.5" Margin="12,0,0,0" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" MaxWidth="420"
+                               Text="{loc:Tr App.Subtitle}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <ComboBox x:Name="ThemeCombo" Width="92" Margin="0,0,0,0" VerticalAlignment="Center"
+                              ToolTip="{loc:Tr Toolbar.Theme}"
+                              SelectionChanged="ThemeCombo_SelectionChanged" />
+                    <ComboBox x:Name="LanguageCombo" Width="112" Margin="6,0,0,0" VerticalAlignment="Center"
+                              ToolTip="{loc:Tr Toolbar.Language}"
+                              SelectionChanged="LanguageCombo_SelectionChanged" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ═══════════ 信息条：Mod 源 / 显卡 / 全局操作 ═══════════ -->
+        <Border Grid.Row="1" BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,0,0,1"
+                Padding="16,10">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="{loc:Tr Toolbar.ModSource}" Style="{StaticResource FieldLabel}" />
+                    <TextBlock x:Name="ModSourceText" VerticalAlignment="Center" FontSize="12"
+                               TextTrimming="CharacterEllipsis" MaxWidth="700" />
+                    <Border x:Name="ModSourceBadge" CornerRadius="4" Padding="7,2" Margin="8,0,0,0"
+                            Background="{DynamicResource BadgeOkBackground}" VerticalAlignment="Center">
+                        <TextBlock x:Name="ModSourceBadgeText" FontSize="11"
+                                   Foreground="{DynamicResource BadgeOkText}" />
+                    </Border>
+                </StackPanel>
+                <!-- 显卡型号与入口按钮固定一行；第二行只显示紧凑摘要，完整建议在悬停提示与启动日志里 -->
+                <StackPanel Margin="0,6,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="{loc:Tr Toolbar.Gpu}" Style="{StaticResource FieldLabel}" />
+                        <TextBlock x:Name="GpuText" VerticalAlignment="Center" FontSize="12" />
+                        <Button Content="{loc:Tr Toolbar.GpuName}" Style="{StaticResource ToolButton}"
+                                Padding="10,3.5" FontSize="12" Margin="12,0,0,0" Click="GpuName_Click" />
+                    </StackPanel>
+                    <TextBlock x:Name="RouterHintText" Foreground="{DynamicResource TextMuted}"
+                               FontSize="11.5" Margin="0,3,0,0" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+                <!-- 全局操作单独一行：左对齐、可折行，任何窗口宽度都不被裁掉 -->
+                <WrapPanel Margin="0,9,-6,0">
+                    <Button Content="{loc:Tr Toolbar.ScanSteam}" Style="{StaticResource ToolButton}"
+                            Padding="10,5" FontSize="12" Margin="0,0,6,6" Click="ScanSteam_Click" />
+                    <Button Content="{loc:Tr Toolbar.ScanFolder}" Style="{StaticResource ToolButton}"
+                            Padding="10,5" FontSize="12" Margin="0,0,6,6" Click="ScanFolder_Click" />
+                    <Button Content="{loc:Tr Toolbar.AddProxy}" Style="{StaticResource ToolButton}"
+                            Padding="10,5" FontSize="12" Margin="0,0,6,6" Click="AddProxy_Click" ToolTip="{loc:Tr Toolbar.AddProxyTip}" />
+                    <Button Content="{loc:Tr Toolbar.UpdateMod}" Style="{StaticResource ToolButton}"
+                            Padding="10,5" FontSize="12" Margin="0,0,6,6" Click="UpdateMod_Click"
+                            ToolTip="{loc:Tr Toolbar.UpdateModTip}" />
+                    <Button x:Name="AdminButton" Content="{loc:Tr Toolbar.RestartAdmin}" Style="{StaticResource ToolButton}"
+                            Padding="10,5" FontSize="12" Margin="0,0,6,6" Click="AdminButton_Click" />
+                    <Button Content="{loc:Tr Toolbar.OpenDataDir}" Style="{StaticResource ToolButton}"
+                            Padding="10,5" FontSize="12" Margin="0,0,6,6" Click="OpenDataDir_Click" />
+                </WrapPanel>
+            </StackPanel>
+        </Border>
+
+        <!-- ═══════════ 主体：侧边栏 + 详情卡片区 ═══════════ -->
+        <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="300" MinWidth="240" MaxWidth="420" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+
+            <!-- 侧边栏：游戏列表 + 批量操作 -->
+            <Border Grid.Column="0" Background="{DynamicResource PanelBackground}"
+                    BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,0,1,0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="14,12,12,10">
+                        <TextBlock Text="{loc:Tr List.Title}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="{loc:Tr List.Add}" Style="{StaticResource ToolButton}" Padding="9,4"
+                                    FontSize="12" Margin="0,0,6,0" Click="AddGame_Click"
+                                    ToolTip="{loc:Tr List.AddTip}" />
+                            <Button Content="{loc:Tr List.Remove}" Style="{StaticResource ToolButton}" Padding="9,4"
+                                    FontSize="12" Margin="0" Click="RemoveGame_Click" />
+                        </StackPanel>
+                    </Grid>
+
+                    <ListBox x:Name="GameList" Grid.Row="1" Background="Transparent" BorderThickness="0"
+                             Margin="8,0,8,6" SelectionChanged="GameList_SelectionChanged"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="Padding" Value="0" />
+                                <Setter Property="Margin" Value="0,0,0,4" />
+                                <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="ListBoxItem">
+                                            <Border x:Name="Bd" Background="Transparent" CornerRadius="8" Padding="12,10"
+                                                    BorderBrush="Transparent" BorderThickness="1">
+                                                <ContentPresenter />
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ListHoverBackground}" />
+                                                </Trigger>
+                                                <Trigger Property="IsSelected" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="{DynamicResource ListSelectedBackground}" />
+                                                    <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Width="8" Height="8" CornerRadius="4"
+                                            Background="{Binding StatusColor, Converter={StaticResource ThemeBrush}}"
+                                            VerticalAlignment="Top" Margin="0,6,10,0" />
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding StatusText}" FontSize="11.5"
+                                                   Foreground="{Binding StatusColor, Converter={StaticResource ThemeBrush}}"
+                                                   Margin="0,2,0,0" />
+                                        <TextBlock Text="{Binding Subtitle}" FontSize="11"
+                                                   Foreground="{DynamicResource TextFaint}" TextTrimming="CharacterEllipsis"
+                                                   Margin="0,2,0,0" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+
+                    <!-- 批量操作：低频，收在边栏底部 -->
+                    <Border Grid.Row="2" BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,1,0,0"
+                            Padding="12,9">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="{loc:Tr Action.DeployAll}" Style="{StaticResource ToolButton}"
+                                    Padding="10,5" FontSize="12" Margin="0,0,6,0" Click="DeployAll_Click" />
+                            <Button Content="{loc:Tr Action.RestoreAll}" Style="{StaticResource DangerButton}"
+                                    Padding="10,5" FontSize="12" Margin="0,0,6,0" Click="RestoreAll_Click" />
+                            <Button Content="{loc:Tr Action.RefreshAll}" Style="{StaticResource ToolButton}"
+                                    Padding="10,5" FontSize="12" Margin="0" Click="RefreshAll_Click" />
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- 详情区 -->
+            <Border Grid.Column="1" Background="{DynamicResource WindowBackground}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="16,14,16,14">
+                    <StackPanel>
+                        <TextBlock x:Name="NoSelectionText" Text="{loc:Tr List.Empty}"
+                                   Foreground="{DynamicResource TextMuted}" Margin="0,24,0,0" />
+
+                        <StackPanel x:Name="DetailPanel" Visibility="Collapsed">
+                            <Border x:Name="AntiCheatBanner" Background="{DynamicResource WarnBannerBackground}" BorderBrush="{DynamicResource WarnBannerBorder}"
+                                    BorderThickness="1" CornerRadius="8" Padding="14,11" Margin="0,0,0,12"
+                                    Visibility="{Binding ShowAntiCheatBanner, Converter={StaticResource BoolToVis}}">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding AntiCheatTitle}" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource WarnBannerTitle}" TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding AntiCheatBody}" Foreground="{DynamicResource WarnBannerBody}"
+                                               FontSize="11.5" TextWrapping="Wrap" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 卡片：游戏 -->
+                            <Border Style="{StaticResource SectionCard}">
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Tr Detail.GroupGame}" Style="{StaticResource SectionTitle}" />
+
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="88" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{loc:Tr Detail.Name}" Style="{StaticResource FieldLabel}" />
+                                        <TextBox Grid.Column="1" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" />
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="88" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{loc:Tr Detail.RenderDir}" Style="{StaticResource FieldLabel}" />
+                                        <TextBox Grid.Column="1" Text="{Binding RenderDir, UpdateSourceTrigger=PropertyChanged}" />
+                                        <Button Grid.Column="2" Content="{loc:Tr Common.Browse}" Style="{StaticResource ToolButton}"
+                                                Padding="10,5" Margin="8,0,4,0" Click="BrowseRenderDir_Click" />
+                                        <Button Grid.Column="3" Content="{loc:Tr Detail.Detect}" Style="{StaticResource ToolButton}"
+                                                Padding="10,5" Margin="0" Click="DetectRenderDir_Click" />
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="88" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{loc:Tr Detail.ExePath}" Style="{StaticResource FieldLabel}" />
+                                        <TextBox Grid.Column="1" Text="{Binding ExePath, UpdateSourceTrigger=PropertyChanged}" />
+                                        <Button Grid.Column="2" Content="{loc:Tr Common.Browse}" Style="{StaticResource ToolButton}"
+                                                Padding="10,5" Margin="8,0,0,0" Click="BrowseExe_Click" />
+                                    </Grid>
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="88" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{loc:Tr Detail.ProxyEntry}" Style="{StaticResource FieldLabel}" />
+                                        <!-- Items are built in code: the list is the source's available entry
+                                             names, which grows when the user adds a proxy DLL. Tag carries the
+                                             stable value the code compares against; Content is the localised
+                                             label. Binding SelectedValue to Content would break as soon as the
+                                             UI language changed. -->
+                                        <ComboBox x:Name="ProxyCombo" Grid.Column="1" SelectedValuePath="Tag"
+                                                  SelectionChanged="ProxyCombo_SelectionChanged" />
+                                    </Grid>
+
+                                    <TextBlock Text="{loc:Tr Detail.ProxyNote}"
+                                               Foreground="{DynamicResource TextFaint}" FontSize="11" TextWrapping="Wrap" Margin="88,4,0,0" />
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 卡片：插帧配置 -->
+                            <Border Style="{StaticResource SectionCard}">
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Tr Detail.GroupFg}" Style="{StaticResource SectionTitle}" />
+
+                                    <!--
+                                        两组配置项，按 mod 源里的 INI schema 显示一组：
+                                          · 0.3.3（当前）Enabled / Optimized(0-3 档位) / Preset
+                                          · 0.2.x（旧）  Router / KernelImage / HardwareBilinear + 诊断段
+                                        管理器只写模板里存在的键，所以显示另一组的键不会有任何作用——
+                                        与其留三个点了没反应的控件，不如按 schema 隐藏。
+                                    -->
+                                    <StackPanel x:Name="ModernSettings">
+                                        <CheckBox Content="{loc:Tr Detail.Enabled}"
+                                                  IsChecked="{Binding Profile.Enabled, Mode=TwoWay}" Margin="0,2,0,8" />
+                                        <!-- 0.3.3: Optimized is a 0-3 consistency tier, not a boolean. The
+                                             items are built in code (BuildLocalizedCombos) because their
+                                             labels are translated and must follow the interface language. -->
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="88" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{loc:Tr Detail.OptimizedTier}" Style="{StaticResource FieldLabel}" />
+                                            <ComboBox x:Name="TierCombo" Grid.Column="1"
+                                                      DisplayMemberPath="Text" SelectedValuePath="Value"
+                                                      SelectedValue="{Binding Profile.OptimizedTier, Mode=TwoWay}"
+                                                      ToolTip="{loc:Tr Detail.OptimizedTierTip}" />
+                                        </Grid>
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="88" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{loc:Tr Detail.Preset}" Style="{StaticResource FieldLabel}" />
+                                            <ComboBox Grid.Column="1" SelectedValuePath="Content"
+                                                      SelectedValue="{Binding Profile.Preset, Mode=TwoWay}"
+                                                      ToolTip="{loc:Tr Detail.PresetTip}">
+                                                <ComboBoxItem Content="Auto" />
+                                                <ComboBoxItem Content="A" />
+                                                <ComboBoxItem Content="B" />
+                                            </ComboBox>
+                                        </Grid>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="88" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="88" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{loc:Tr Detail.MaxFrames}" Style="{StaticResource FieldLabel}" />
+                                            <ComboBox x:Name="FrameCombo" Grid.Column="1" Margin="0,0,14,0"
+                                                      DisplayMemberPath="Text" SelectedValuePath="Value"
+                                                      SelectedValue="{Binding Profile.MaxGeneratedFrames, Mode=TwoWay}" />
+                                            <TextBlock Grid.Column="2" Text="{loc:Tr Detail.LogLevel}" Style="{StaticResource FieldLabel}" />
+                                            <ComboBox x:Name="LogCombo" Grid.Column="3" Width="150"
+                                                      DisplayMemberPath="Text" SelectedValuePath="Value"
+                                                      SelectedValue="{Binding Profile.LogLevel, Mode=TwoWay}" />
+                                        </Grid>
+                                    </StackPanel>
+
+                                    <StackPanel x:Name="LegacySettings">
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="88" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="88" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{loc:Tr Detail.Router}" Style="{StaticResource FieldLabel}" />
+                                            <ComboBox Grid.Column="1" SelectedValuePath="Content" Margin="0,0,14,0"
+                                                      SelectedValue="{Binding Profile.Router, Mode=TwoWay}">
+                                                <ComboBoxItem Content="SM86" />
+                                                <ComboBoxItem Content="SM75" />
+                                            </ComboBox>
+                                            <TextBlock Grid.Column="2" Text="{loc:Tr Detail.KernelImage}" Style="{StaticResource FieldLabel}" />
+                                            <ComboBox Grid.Column="3" Width="150" SelectedValuePath="Content"
+                                                      SelectedValue="{Binding Profile.KernelImage, Mode=TwoWay}">
+                                                <ComboBoxItem Content="PTX" />
+                                                <ComboBoxItem Content="Auto" />
+                                                <ComboBoxItem Content="Cubin" />
+                                            </ComboBox>
+                                        </Grid>
+                                        <CheckBox Content="{loc:Tr Detail.HardwareBilinear}"
+                                                  IsChecked="{Binding Profile.HardwareBilinear, Mode=TwoWay}" Margin="0,2,0,8" />
+                                        <CheckBox Content="{loc:Tr Detail.Diagnostics}"
+                                                  IsChecked="{Binding Profile.Diagnostics, Mode=TwoWay}" Margin="0,0,0,4" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 卡片：操作 -->
+                            <Border Style="{StaticResource SectionCard}">
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Tr Detail.GroupActions}" Style="{StaticResource SectionTitle}" />
+
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                        <Button x:Name="DeployButton" Content="{loc:Tr Action.Deploy}" Style="{StaticResource PrimaryButton}"
+                                                Click="Deploy_Click" />
+                                        <Button x:Name="RestoreButton" Content="{loc:Tr Action.Restore}" Style="{StaticResource DangerButton}"
+                                                Click="Restore_Click" />
+                                        <Button x:Name="AdoptButton" Content="{loc:Tr Action.Adopt}" Style="{StaticResource ToolButton}"
+                                                Click="Adopt_Click" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                        <Button Content="{loc:Tr Action.Check}" Style="{StaticResource ToolButton}"
+                                                Padding="11,5" FontSize="12" Click="Check_Click" />
+                                        <Button Content="{loc:Tr Action.OpenDir}" Style="{StaticResource ToolButton}"
+                                                Padding="11,5" FontSize="12" Click="OpenRenderDir_Click" />
+                                        <Button Content="{loc:Tr Action.Launch}" Style="{StaticResource ToolButton}"
+                                                Padding="11,5" FontSize="12" Click="Launch_Click" />
+                                        <Button x:Name="OpenLogButton" Content="{loc:Tr Action.ViewLog}" Style="{StaticResource ToolButton}"
+                                                Padding="11,5" FontSize="12" Click="OpenModLog_Click" Margin="0" />
+                                    </StackPanel>
+                                    <CheckBox x:Name="RemoveLogsCheck" Content="{loc:Tr Action.RemoveLogs}"
+                                              IsChecked="False" Margin="0,4,0,0" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="{DynamicResource CardBackground}" CornerRadius="8" Padding="14,11"
+                                    BorderBrush="{DynamicResource LineBrush}" BorderThickness="1"
+                                    x:Name="StatusCard">
+                                <StackPanel>
+                                    <TextBlock x:Name="StatusTitle" FontWeight="SemiBold" />
+                                    <TextBlock x:Name="StatusBody" Foreground="{DynamicResource TextMuted}"
+                                               FontSize="11.5" TextWrapping="Wrap" Margin="0,3,0,0" />
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+
+        <!-- ═══════════ 下载进度条（仅下载时可见）：源 · 文件 · 进度 · 速度 · 暂停 · 取消 ═══════════ -->
+        <Border Grid.Row="3" x:Name="FetchProgressPanel" Visibility="Collapsed"
+                Background="{DynamicResource PanelBackground}" BorderBrush="{DynamicResource LineBrush}"
+                BorderThickness="0,1,0,0" Padding="16,8">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" MinWidth="220" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <TextBlock x:Name="FetchProgressText" VerticalAlignment="Center" FontSize="12"
+                           Foreground="{DynamicResource TextMuted}" TextTrimming="CharacterEllipsis"
+                           Margin="0,0,12,0" />
+                <ProgressBar x:Name="FetchProgressBar" Grid.Column="1" Minimum="0" Maximum="100"
+                             VerticalAlignment="Center" Margin="0,0,12,0" />
+                <TextBlock x:Name="FetchProgressSpeed" Grid.Column="2" VerticalAlignment="Center"
+                           FontSize="12" FontFamily="Cascadia Mono, Consolas, monospace"
+                           Foreground="{DynamicResource TextMuted}" Margin="0,0,12,0" />
+                <Button x:Name="FetchPauseButton" Grid.Column="3" Content="{loc:Tr Fetch.Pause}"
+                        Style="{StaticResource ToolButton}" Padding="10,4" FontSize="12"
+                        Margin="0,0,6,0" Click="FetchPause_Click" ToolTip="{loc:Tr Fetch.PauseTip}" />
+                <Button Grid.Column="4" Content="{loc:Tr Fetch.Cancel}"
+                        Style="{StaticResource DangerButton}" Padding="10,4" FontSize="12" Margin="0"
+                        Click="FetchCancel_Click" ToolTip="{loc:Tr Fetch.CancelTip}" />
+            </Grid>
+        </Border>
+
+        <!-- ═══════════ 日志条 ═══════════ -->
+        <Border Grid.Row="4" Background="{DynamicResource LogBackground}"
+                BorderBrush="{DynamicResource LineBrush}" BorderThickness="0,1,0,0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="96" />
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0" Margin="14,8,14,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="{loc:Tr Action.Output}" FontWeight="SemiBold" FontSize="12"
+                               Foreground="{DynamicResource TextLogTitle}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="BatchStatusText" Grid.Column="1" VerticalAlignment="Center"
+                               Margin="12,0,0,0" TextTrimming="CharacterEllipsis"
+                               Foreground="{DynamicResource TextMuted}" FontSize="12" />
+                    <Button Grid.Column="2" Content="{loc:Tr Action.Clear}" Padding="10,3" FontSize="11"
+                            Style="{StaticResource ToolButton}" Margin="0" Click="ClearLog_Click" />
+                </Grid>
+                <TextBox x:Name="OutputBox" Grid.Row="1" Margin="12,0,12,10" IsReadOnly="True"
+                         Background="{DynamicResource LogBackground}" BorderThickness="0" Foreground="{DynamicResource TextOnLog}"
+                         FontFamily="Cascadia Mono, Consolas, monospace" FontSize="11.5"
+                         TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                         IsUndoEnabled="False" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
