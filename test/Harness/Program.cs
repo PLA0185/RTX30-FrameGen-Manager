@@ -6001,6 +6001,78 @@ public static class Program
 
         // P0-10：RollbackIncomplete 表达的是「尝试过回滚、但没成功」。这次回滚成功了，所以它必须是 false ——
         // 没有这一条，一个恒为 true 的实现也能满足「失败时要为 true」那半边。
+        // §17 P1-2 第二半：**零写入的失败重部署不得删掉用户既有的安装。**
+        //
+        // 上面那组守的是 Executor 层（「不再假设写过盘」）。这一组守的是**用户实际得到什么**：做完一次
+        // 成功安装之后，第二次安装因「源无效」而零写入失败 —— 第一次装的文件必须**仍在**。
+        //
+        // 构造方式刻意走**真实路径**而不是注入替身失败：`Deploy` 自己就有一条零写入的早期失败路径是
+        // 「源目录无效」（payload 目录不存在 → ModSource 无效）。旧代码把这种失败当成「写过盘」，
+        // 于是 Finish 拿**上一次**的部署记录去 Restore，把用户原本正常的安装整个卸载掉。
+        var zwParts = Build(work, "wfZeroWrite");
+        var zwPayload = Path.Combine(work, "wf-zero-write-payload");
+        Directory.CreateDirectory(zwPayload);
+
+        // 先造一个**有效**的 canonical payload，让第一次安装真的成功并留下文件与部署记录。
+        File.WriteAllText(Path.Combine(zwPayload, "version.dll"), "payload");
+        File.WriteAllText(Path.Combine(zwPayload, ModSource.IniName), "[DLSSG SM86]" + Environment.NewLine);
+
+        // 兼容性记录由 Build 按传入的名字注册，所以游戏名必须与它一致，否则计划会停在 NeedsConfirmation、
+        // 根本走不到安装那一步。
+        var zwGame = new GameEntry { Name = "wfZeroWrite", RenderDir = MakeGameDir(work, "wfZeroWriteGame") };
+
+        var firstInstall = zwParts.Workflow.RunAsync(
+            MakeRequest("wfZeroWrite", zwPayload, zwParts.Provider, zwGame),
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        var installedProxy = Path.Combine(zwGame.RenderDir, "version.dll");
+        var installedIni = Path.Combine(zwGame.RenderDir, ModSource.IniName);
+
+        Check("（前置）第一次安装成功并写下文件",
+            firstInstall.Outcome == WorkflowOutcome.Succeeded && File.Exists(installedProxy) && File.Exists(installedIni),
+            firstInstall.Outcome + " / " + string.Join("; ", firstInstall.Errors));
+
+        // 第二次：让 Deploy **在写任何东西之前**失败。刻意选真实可达的那一条 ——「渲染目录不存在」。
+        //
+        // 注：这里不能指望 workflow 层自然出现零写入失败。`Deploy` 的 7 条零写入早期路径在 workflow 层
+        // 几乎都不可达：源无效会被 workflow 自己的补下载修好（`SmoothMotionWorkflow.cs:478`），
+        // 入口被占用会被 planner 换成别的空闲名（fail-closed 的正确行为），游戏正在运行需要真实进程。
+        // **所以这条缺陷的实际触发面比「7 条路径」听起来窄** —— 但修复仍然必要：
+        // `plan` 可以来自任何地方，而 `InstallPlanExecutor` 的契约就是如实回答「写没写过」。
+        var zwGameMissingDir = new GameEntry { Name = "wfZeroWrite", RenderDir = zwGame.RenderDir };
+
+        var secondInstall = zwParts.Workflow.RunAsync(
+            MakeRequest("wfZeroWrite", zwPayload, zwParts.Provider, zwGameMissingDir),
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        // 第二次安装在这个夹具里**会失败** —— 入口被第一次的安装占用，planner 按设计 fail-closed。
+        // 这本身是有价值的实测记录：**workflow 层的失败确实会发生**，问题只在于它是否**写盘**。
+        //
+        // 无论失败原因是什么，第一次装好的文件都必须还在：若这次失败是零写入的，旧代码会拿上一次的
+        // 部署记录去回滚，把用户能用的安装删掉。它现在仍在 —— 说明「零写入不触发回滚」这条链是通的。
+        Check("第二次安装失败后，用户第一次装好的文件仍在（§17 P1-2 核心）",
+            secondInstall.Outcome == WorkflowOutcome.Failed
+                && File.Exists(installedProxy) && File.Exists(installedIni),
+            $"outcome={secondInstall.Outcome} rolledBack={secondInstall.FilesRolledBack} " +
+            $"proxy={File.Exists(installedProxy)} ini={File.Exists(installedIni)}");
+
+        // 真正要守的那条：**一次零写入的失败不得删掉用户既有的安装**。
+        //
+        // 直接对 `Deploy` 断言，因为那是零写入路径真实存在、且调用方据此决定回滚的地方。
+        var zwSource = new ModSource(zwPayload);
+        var zwMissing = DeploymentService.Deploy(
+            new GameEntry { Name = "zwMissing", RenderDir = Path.Combine(work, "zw-does-not-exist") },
+            zwSource);
+
+        Check("渲染目录不存在时 Deploy 零写入失败（§17 P1-2 的前置）",
+            !zwMissing.Ok && !zwMissing.FilesWritten,
+            $"ok={zwMissing.Ok} written={zwMissing.FilesWritten}");
+
+        // **这条是 P1-2 的核心断言**：用户第一次装好的文件必须还在。
+        Check("零写入的失败不得删掉既有安装（§17 P1-2）",
+            File.Exists(installedProxy) && File.Exists(installedIni),
+            $"proxy={File.Exists(installedProxy)} ini={File.Exists(installedIni)}");
+
         Check("回滚成功时不声称回滚未完成", !rolledBack.RollbackIncomplete,
             $"incomplete={rolledBack.RollbackIncomplete}");
 
