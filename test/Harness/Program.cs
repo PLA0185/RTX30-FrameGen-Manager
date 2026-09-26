@@ -6261,6 +6261,24 @@ public static class Program
         var holdProxyExists = File.Exists(holdProxy);
         var holdRecordAfterFirst = holdGame.Deployment;
 
+        // §17 P2-2：**成功的事务必须把自己的快照删掉。**
+        //
+        // `Deploy` 在 `%RestoreRoot%\<game>\<时间戳>\_pending\` 里建快照（装「这次要覆盖的原字节」），
+        // 而原来**只有 catch 分支**删它 ⇒ 每次成功的重部署都多留一份代理 + INI（真实代理约 15 MB）；
+        // 且 `backups.Count == 0` 时连 `RestoreFolder` 都不会被记录 —— **那些副本没有任何引用者**，
+        // 用户完全看不到磁盘在增长。
+        //
+        // 这条**可以测**：`AppPaths.RestoreRoot` 由 `DLSSGMANAGER_HOME` 决定，Harness 已经设过它。
+        // （与「`ScanForLeftovers` 的误报」不同 —— 那条需要串起三段夹具，这条只需要一次成功部署。）
+        var gameRestoreDir = Path.Combine(AppPaths.RestoreRoot, holdGame.Id);
+
+        var pendingLeft = Directory.Exists(gameRestoreDir)
+            && Directory.EnumerateDirectories(gameRestoreDir)
+                .Any(d => Directory.Exists(Path.Combine(d, "_pending")));
+
+        Check("成功的部署不留下事务快照（§17 P2-2）",
+            !pendingLeft, $"restore/{holdGame.Id} 下仍有 _pending");
+
         // 再部署一次，但独占源 DLL，让事务内的复制失败 → catch 自回滚。
         using (new FileStream(Path.Combine(holdPayload, "version.dll"),
                    FileMode.Open, FileAccess.Read, FileShare.None))
