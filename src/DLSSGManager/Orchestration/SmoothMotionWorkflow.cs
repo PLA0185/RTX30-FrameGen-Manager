@@ -821,8 +821,15 @@ public sealed class SmoothMotionWorkflow
 
         // Recorded here rather than on the success path alone, so a failed attempt is remembered too: knowing
         // that a combination did not work is exactly what stops the next attempt from repeating it.
-        RecordOutcome(request, report, succeeded: outcome == WorkflowOutcome.Succeeded,
-            providerVersion: plan.ProviderVersion ?? "");
+        //
+        // **但「记录」的前提是「真的尝试过」。** 两种情形不算：
+        //   · `PreviewOnly` —— 用户只是想看一眼，什么都没做；
+        //   · `NeedsConfirmation` —— 我们还停在等用户决定，谈不上成败。
+        // 两者都会走到这个 `Finish`（预览分支在 L426 就直接调它），把它们记下来会让 `RankFor` 在将来
+        // 把**从未发生的运行**当成历史证据 —— 一次批量预览会变成一批「成功过」的记忆。
+        if (!request.PreviewOnly && outcome != WorkflowOutcome.NeedsConfirmation)
+            RecordOutcome(request, report, succeeded: outcome == WorkflowOutcome.Succeeded,
+                providerVersion: plan.ProviderVersion ?? "");
 
         if (outcome != WorkflowOutcome.Failed)
             return new WorkflowResult(outcome, evidence, steps, plan, report, errors,

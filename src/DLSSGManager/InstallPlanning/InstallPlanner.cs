@@ -406,7 +406,6 @@ public enum DeploymentFileSource
     /// </summary>
     Generated,
 
-    /// <summary>游戏目录里已经存在、可以复用的文件（例如其它 Mod 留下的代理入口）。</summary>
     /// <summary>
     /// 游戏目录里已经存在、可以复用的文件（例如其它 Mod 留下的代理入口）。
     ///

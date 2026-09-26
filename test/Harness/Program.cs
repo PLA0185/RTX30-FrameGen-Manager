@@ -6069,8 +6069,14 @@ public static class Program
             rParts.Detector, new NvidiaProfileService(rParts.Drs, () => false), rParts.Matrix, recipes);
 
         var rGame = new GameEntry { Name = "wfRecipe", RenderDir = MakeGameDir(work, "wfRecipeGame") };
+
+        // **让这次运行真的尝试一次。** 它原来的 outcome 是 `NeedsConfirmation`（兼容性未知、停在等用户
+        // 确认），而「停在等用户决定」**不该**被记成一次尝试 —— 记录的前提是「真的做过」。所以这里补上
+        // 用户的确认，让流程走到真正的执行，那条记录才有意义。
+        // （与「预览不该被记录」是同一条判据：**从未发生的运行不能变成历史证据。**）
         rWorkflow.RunAsync(
-            MakeRequest("wfRecipe", Path.Combine(work, "wf-recipe-payload"), rParts.Provider, rGame),
+            MakeRequest("wfRecipe", Path.Combine(work, "wf-recipe-payload"), rParts.Provider, rGame)
+                with { UserConfirmedUnverified = true },
             null, CancellationToken.None).GetAwaiter().GetResult();
 
         Check("配置了配方记忆时运行会留下记录", recipes.Count > 0, "记录数 " + recipes.Count);
