@@ -57,6 +57,9 @@ public static class InstallPlanExecutor
     {
         var steps = new List<string>();
 
+        // 安装失败时要把用户保存的入口偏好改回去 —— 见下面赋值的注释。
+        var previousPreferredProxy = game.PreferredProxy;
+
         if (!plan.CanExecute)
             return PlanExecutionResult.Refused($"计划状态为 {plan.Status}，不执行。", steps);
 
@@ -142,7 +145,9 @@ public static class InstallPlanExecutor
                     "静默改用其他入口会与实际安装不符，已拒绝。", steps);
             }
 
-            game.PreferredProxy = plan.ProxyChoice!;
+            // 入口偏好**不在这里改** —— 它在真正安装之前才设（见下面 `Install` 之前那一段）。
+            // 这里曾经就地赋值，于是**在 payload 校验失败、安装被拒绝时也会把用户的偏好永久改掉**：
+            // 用户什么都没装上，界面上的入口却已经变了。
             steps.Add($"按计划使用入口「{plan.ProxyChoice}」。");
         }
 
@@ -205,6 +210,17 @@ public static class InstallPlanExecutor
         }
 
         // ── 5. Install, using the values the plan supplied.
+        //
+        // **入口偏好在这里才设** —— 它是给 `Deploy.PickFreeProxy` 用的（它读 `game.PreferredProxy`），
+        // 所以必须在 `Install` 之前生效；但它同时是一个**持久化的用户偏好**（`Models.cs:198`，
+        // 界面上的入口下拉跟着它变）。放在这里意味着**前面所有拒绝路径都不会改用户的偏好** ——
+        // 用户什么都没装上时，界面不该变。而 `Install` 之后的失败点会把它恢复回去（见下）。
+        if (!string.IsNullOrWhiteSpace(plan.ProxyChoice))
+        {
+            previousPreferredProxy = game.PreferredProxy;
+            game.PreferredProxy = plan.ProxyChoice!;
+        }
+
         var install = provider.Install(game, source, allowProtected);
         steps.Add(install.Message);
 
@@ -215,6 +231,7 @@ public static class InstallPlanExecutor
         foreach (var line in install.Lines) steps.Add(line);
 
         if (!install.Ok)
+        {
             // Install() 失败 ≠ 什么都没写 —— 但**也不等于写了**。
             //
             // 这里曾经无条件 `FilesWereWritten = true`（注释自陈「Assume files may be there」）。而 `Deploy`
@@ -230,10 +247,15 @@ public static class InstallPlanExecutor
             //
             // 曾经 `Deploy` 只置 `FilesWritten` 而从不收回，于是「写了又自己恢复」被透传成「需要回滚」，
             // 而回滚用的是**上一次**的部署记录 —— 删掉的是用户上一次装好的、正在用的安装。
+            // 安装失败 → **把用户保存的入口偏好改回原值**。否则一次失败的安装会永久改变界面上的入口，
+            // 而用户看不出发生过什么（他只知道这次没装上）。
+            game.PreferredProxy = previousPreferredProxy;
+
             return new PlanExecutionResult(false, install.Message, steps, plan.ProxyChoice)
             {
                 FilesWereWritten = install.FilesWritten,
             };
+        }
 
         // Record which provider did this, so a later restore uses the same one. Without it the restore has to
         // guess, and guessing a provider is how the wrong files end up being removed.
