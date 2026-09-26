@@ -433,6 +433,48 @@ public sealed record InstallPlan(
 /// </summary>
 public static class InstallPlanner
 {
+    /// <summary>
+    /// 计划要说「会写哪些文件」时，从 payload 里挑出真正可能落进游戏目录的那些。
+    ///
+    /// <para>判据是<b>既有的代理入口名集合</b>，不是目录结构 —— 上游的目录布局随时可能变，而「哪些名字是
+    /// 代理入口」是本项目与上游共同的稳定概念，`ModSource.IsKnownProxyName` 已经把它表达出来了。</para>
+    ///
+    /// <para>放行的是「可能被写入」而不是「一定被写入」：部署侧还会写入 0.3.3+ payload 里的待机代理，
+    /// 那些名字 planner 事先不知道。宁可放行得宽一点，也不能让真实的写入被自己的校验判成意外文件。</para>
+    /// </summary>
+    private static IReadOnlyList<string> Summarize(
+        IReadOnlyList<string> payloadFiles, string? proxyChoice, string? asiChoice)
+    {
+        static string Leaf(string path) => Path.GetFileName(path.Replace('/', '\\'));
+
+        var result = new List<string>();
+
+        foreach (var file in payloadFiles)
+        {
+            var leaf = Leaf(file);
+
+            if (ModSource.IsKnownProxyName(leaf)
+                || string.Equals(leaf, ModSource.IniName, StringComparison.OrdinalIgnoreCase))
+                result.Add(file);
+        }
+
+        // INI 是管理器自己生成的，payload 里没有这个文件 —— 但部署一定会写它，所以无条件放行。
+        // 少了这一条，单向校验会把刚写下的 INI 判成「计划外的意外文件」，把一次成功的安装判成失败。
+        if (!result.Any(f => string.Equals(Leaf(f), ModSource.IniName, StringComparison.OrdinalIgnoreCase)))
+            result.Add(ModSource.IniName);
+
+        // 选定值可能是 payload 里没有的（例如本地导入的入口），所以单独补一次而不是依赖上面的循环。
+        foreach (var chosen in new[] { proxyChoice, asiChoice })
+        {
+            if (chosen is null) continue;
+
+            if (!result.Any(f => string.Equals(Leaf(f), chosen, StringComparison.OrdinalIgnoreCase)))
+                result.Add(chosen);
+        }
+
+        return result;
+    }
+
     public static InstallPlan Plan(InstallPlanInput input)
     {
         var blockers = new List<string>();
@@ -562,12 +604,14 @@ public static class InstallPlanner
             ProviderVersion: input.ProviderVersion,
             Mode: mode,
             ProxyStrategy: strategy,
-            // The proxy is the point of the install, so it belongs in the list of files this plan says it will
-            // write. Leaving it out made the list describe the *payload* rather than the *deployment*, and the
-            // executor's post-install check then reported the proxy it had just placed as an unexpected file.
-            FilesToDeploy: proxyChoice is null
-                ? input.ProviderPayloadFiles
-                : input.ProviderPayloadFiles.Concat(new[] { proxyChoice }).ToList(),
+            // 计划描述的是**部署**，不是 payload。解压出来的是整个发行包 —— 文档、符号、源码、验证报告、
+            // 第三方许可 —— 而真正会落进游戏目录的只有代理入口和 INI。把解压目录整个列进去，等于让计划对
+            // 用户说「要写 313 个文件」，而实际部署只写两个。（P1-16 用真实 MFG payload 实测到的就是这个数。）
+            //
+            // 保留三类：选定的代理 · INI · payload 里其它**已知代理入口名**的文件 —— 0.3.3+ 会把这些作为
+            // 「待机代理」一并写入，planner 事先不知道具体是哪几个，所以必须按名字放行，否则单向校验会把
+            // 那些文件判成「计划外的意外文件」，把一次成功的安装判成失败。
+            FilesToDeploy: Summarize(input.ProviderPayloadFiles, proxyChoice, asi),
             ProxyChoice: proxyChoice,
             AsiChoice: asi,
             NvidiaProfileRequirements: profile,
