@@ -11,6 +11,19 @@ public sealed record PlanExecutionResult(
     IReadOnlyList<string> Steps,
     string? ProxyUsed = null)
 {
+    /// <summary>
+    /// Whether the provider actually put any file on disk, regardless of what <see cref="Ok"/> ended up being.
+    ///
+    /// <para>This exists because a failed install is not the same thing as an install that wrote nothing. The
+    /// workflow used to set its own <c>filesWritten</c> flag only after a success: when the provider had already
+    /// written files and the consistency check then failed, the workflow believed nothing had been written and
+    /// skipped the rollback — leaving the game directory modified. The two facts are now reported separately.</para>
+    /// </summary>
+    public bool FilesWereWritten { get; init; }
+
+    /// <summary>Whether the caller must restore: files went to disk and the run did not succeed.</summary>
+    public bool RollbackRequired => FilesWereWritten && !Ok;
+
     public static PlanExecutionResult Refused(string message, IReadOnlyList<string> steps) =>
         new(false, message, steps);
 }
@@ -147,7 +160,13 @@ public static class InstallPlanExecutor
         steps.Add(install.Message);
 
         if (!install.Ok)
-            return new PlanExecutionResult(false, install.Message, steps, plan.ProxyChoice);
+            // Install() failed, but a provider can fail after writing some of its files — Ok == false does not mean
+            // nothing reached the disk. Assume files may be there: an unnecessary restore is far cheaper than a
+            // missed one, and the caller cannot otherwise tell the two cases apart.
+            return new PlanExecutionResult(false, install.Message, steps, plan.ProxyChoice)
+            {
+                FilesWereWritten = true,
+            };
 
         // Record which provider did this, so a later restore uses the same one. Without it the restore has to
         // guess, and guessing a provider is how the wrong files end up being removed.
@@ -161,11 +180,17 @@ public static class InstallPlanExecutor
 
         if (deployed is null || deployed.Count == 0)
         {
-            // Not a pass: with no deployment record there is nothing to compare, and claiming agreement would be
-            // inventing evidence. It is reported as "could not check" rather than as a mismatch, because those are
-            // different facts and only one of them is actually known here.
-            steps.Add("部署记录为空，无法核对实际写入的文件是否与计划一致。");
-            return new PlanExecutionResult(true, install.Message, steps, plan.ProxyChoice);
+            // Not a pass — and no longer reported as one. This comment used to say "not a pass" while the code
+            // returned success. The project's promise is that the plan equals what was written, so being unable to
+            // compare is a failure, not a note. Install() already returned Ok, so files may well be on disk, which is
+            // why FilesWereWritten is set: the caller has to restore.
+            steps.Add("部署记录为空，无法核对实际写入的文件是否与计划一致，已按失败处理。");
+
+            return new PlanExecutionResult(false,
+                "部署记录缺失，无法核对计划与实际写入是否一致，已按失败处理。", steps, plan.ProxyChoice)
+            {
+                FilesWereWritten = true,
+            };
         }
 
         static string Leaf(string path) => Path.GetFileName(path.Replace('/', '\\'));
@@ -190,11 +215,17 @@ public static class InstallPlanExecutor
             steps.Add("部署结果与计划不一致 —— " + summary);
 
             return new PlanExecutionResult(false,
-                $"部署的文件与计划不一致（{summary}），已按失败处理。", steps, plan.ProxyChoice);
+                $"部署的文件与计划不一致（{summary}），已按失败处理。", steps, plan.ProxyChoice)
+            {
+                FilesWereWritten = true,
+            };
         }
 
         steps.Add($"部署结果与计划一致（{deployed.Count} 个文件）。");
 
-        return new PlanExecutionResult(true, install.Message, steps, plan.ProxyChoice);
+        return new PlanExecutionResult(true, install.Message, steps, plan.ProxyChoice)
+        {
+            FilesWereWritten = true,
+        };
     }
 }

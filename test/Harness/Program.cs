@@ -3755,7 +3755,12 @@ public static class Program
         var planSource = new ModSource(execDir);
         var execPlan = plan with { Status = PlanStatus.Ready, ProxyChoice = "winmm.dll" };
         var execGame = new GameEntry { Name = "ExecGame", RenderDir = MakeGameDir(work, "execGame") };
-        var recording = new RecordingProvider();
+        var recording = new RecordingProvider
+        {
+            // 记录的内容必须等于计划要求的文件 —— P0-09 之后，一致性检查会（正确地）拒绝任何不符，
+            // 包括「少记了计划中的文件」。
+            RecordsDeployed = execPlan.FilesToDeploy.ToList(),
+        };
 
         var executed = InstallPlanExecutor.Execute(recording, execPlan, execGame, planSource);
         Check("计划可执行时安装成功", executed.Ok, executed.Message);
@@ -3812,8 +3817,15 @@ public static class Program
         var noneGame = new GameEntry { Name = "NoRecord", RenderDir = MakeGameDir(work, "norecord") };
         var none = InstallPlanExecutor.Execute(new RecordingProvider(), execPlan, noneGame, planSource);
 
-        Check("没有部署记录时如实报「无从核对」，不报「一致」",
-            none.Ok && none.Steps.Any(s => s.Contains("无法核对")), string.Join("；", none.Steps));
+        // P0-09 之后这条断言必须是失败，而不是「如实报无从核对但返回成功」。任务书点名的正是这个分支：
+        // 注释写着 Not a pass，代码却返回 true。项目的承诺是「Plan = 实际写入」，核对不了就是失败。
+        Check("没有部署记录时按失败处理，而不是报「一致」",
+            !none.Ok && none.Message.Contains("部署记录缺失"),
+            $"ok={none.Ok} / {none.Message}");
+
+        Check("没有部署记录时要求回滚（Install 已返回 Ok，文件可能已在盘上）",
+            none.FilesWereWritten && none.RollbackRequired,
+            $"written={none.FilesWereWritten} rollback={none.RollbackRequired}");
 
         // ---- payload manifest: the plan's file list comes from what is actually there (整改 F) ----
         var manifestDir = Path.Combine(work, "payload-manifest");
@@ -3844,6 +3856,7 @@ public static class Program
         var unsigned = new RecordingProvider
         {
             Verification = _ => new PackageVerification(true, SignatureStatus.NotSigned, "未签名。"),
+            RecordsDeployed = execPlan.FilesToDeploy.ToList(),
         };
         var unsignedGame = new GameEntry { Name = "Unsigned", RenderDir = MakeGameDir(work, "unsigned") };
         var unsignedResult = InstallPlanExecutor.Execute(unsigned, execPlan, unsignedGame, planSource);
