@@ -305,11 +305,9 @@ public static class Program
             if (restored.State != ProfileSettingState.Absent) failures.Add("删除后状态未回到 Absent");
 
             // 只有完整往返才算证据；任何一步不成立，门就保持关闭。
+            // **这里不再置位** —— 清理（解绑 / 删 Profile / 残留反查）还没跑，而它们的结果同样属于
+            // 「这次写入能力是否被完整证明」的一部分。置位统一挪到 finally 之后。
             var proven = failures.Count == 0;
-
-            NvApiDrsAdapter.WriteCallsProven = proven;
-            NvApiDrsAdapter.SaveCallsProven = proven;
-            NvApiDrsAdapter.DeleteCallsProven = proven;
         }
         finally
         {
@@ -322,11 +320,26 @@ public static class Program
             // 失败运行留下的状态，所以清理必须比创建更宽松。
             //
             // 安全前提：Profile 名带本轮 GUID（`RTX30FGM-SMOKE-<GUID>`），**不可能是用户原有的 Profile**。
+            // 清理失败必须并入结论。原来 Report(...) 丢弃返回值，于是删除失败时仍会打印
+            // 「全部通过、写能力门已开启」—— 而那三个门在 try 块内、清理之前就已置位，谁也没看结果。
             if (profileCreated && profile != IntPtr.Zero)
-                Report("解绑测试 EXE", adapter.DeleteApplication(profile, smokeExe));
+            {
+                var unbind = adapter.DeleteApplication(profile, smokeExe);
+
+                Report("解绑测试 EXE", unbind);
+
+                if (!unbind.Ok) failures.Add($"解绑测试 EXE 失败（code={unbind.Code}）");
+            }
 
             if (profileCreated && profile != IntPtr.Zero)
-                Report("删除临时 Profile", adapter.DeleteProfile(profile));
+            {
+                var removed = adapter.DeleteProfile(profile);
+
+                Report("删除临时 Profile", removed);
+
+                if (!removed.Ok)
+                    failures.Add($"删除临时 Profile 失败（code={removed.Code}）—— 驱动上留下了残留");
+            }
 
             Report("最后一次保存", adapter.SaveUngated());
 
@@ -335,14 +348,45 @@ public static class Program
             // 只在当前 Profile 上删、然后据此宣布干净，是一个**无法证伪**的结论 —— 绑定完全可能在别的
             // Profile 里（那正是 `-167` 说的情形）。这里用 FindApplicationByName 反查，让结论可证伪。
             // 它自己开会话，所以不受上面 Close 的影响。
+            //
+            // **这个检查必须是三态而不是两态。** `DrsApplicationLookup` 只有 Found/NotFound，而
+            // `FindApplicationProfile` 的四个「不可用」分支（未证明 / 无会话 / 驱动不可用 / 入口未解析）
+            // **同样返回 NotFound** —— 只看 `Found` 的话，「查不了」会被打印成「✓ 驱动上已找不到」，
+            // 也就是把「未确定」报成「已验证」。这是本项目反复出现的同一个错误形状。
             var leftoverBinding = adapter.FindApplicationProfile(smokeExe);
 
-            Console.WriteLine(leftoverBinding.Found
-                ? $"  × 残留检查        : {smokeExe} 仍绑定在 Profile「{leftoverBinding.ProfileName}」上"
-                : $"  ✓ 残留检查        : 驱动上已找不到 {smokeExe} 的绑定");
+            var cannotTell = leftoverBinding.Message.Contains("没有已打开")
+                || leftoverBinding.Message.Contains("未被证明")
+                || leftoverBinding.Message.Contains("未被解析")
+                || leftoverBinding.Message.Contains("不可用");
+
+            if (leftoverBinding.Found)
+            {
+                Console.WriteLine($"  × 残留检查        : {smokeExe} 仍绑定在 Profile「{leftoverBinding.ProfileName}」上");
+                failures.Add($"残留：{smokeExe} 仍绑定在 Profile「{leftoverBinding.ProfileName}」上");
+            }
+            else if (cannotTell)
+            {
+                Console.WriteLine($"  ? 残留检查        : 无法判定 —— {leftoverBinding.Message}");
+                failures.Add($"残留检查无法判定：{leftoverBinding.Message}");
+            }
+            else
+            {
+                Console.WriteLine($"  ✓ 残留检查        : 驱动上已找不到 {smokeExe} 的绑定");
+            }
 
             adapter.Close();
         }
+
+        // 三个门只在**整轮跑完、清理也成功**之后才置位。
+        //
+        // 原来它们在 try 块内、清理之前就设好了 —— 于是「解绑失败 / 删除 Profile 失败 / 残留反查查不了」
+        // 这些情况都不会影响结论，门依然报 true。**那等于用一次不完整的运行去证明写入能力。**
+        var provenCompletely = failures.Count == 0;
+
+        NvApiDrsAdapter.WriteCallsProven = provenCompletely;
+        NvApiDrsAdapter.SaveCallsProven = provenCompletely;
+        NvApiDrsAdapter.DeleteCallsProven = provenCompletely;
 
         Console.WriteLine();
         Console.WriteLine($"WriteCallsProven  : {NvApiDrsAdapter.WriteCallsProven}");
