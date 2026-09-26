@@ -68,7 +68,25 @@ public sealed record ProviderMetadata(
     DistributionModel Distribution,
     LicenseClass License,
     string LicenseNote,
-    bool WritesNvidiaProfile,
+
+    /// <summary>
+    /// Whether this provider writes NVIDIA Profile settings itself, as part of its own install.
+    ///
+    /// <para>This is about who does it, not about whether it is needed.</para>
+    /// </summary>
+    bool ProviderWritesNvidiaProfile,
+
+    /// <summary>
+    /// Whether the deployed payload <b>needs</b> driver profile settings in order to do anything.
+    ///
+    /// <para>Separate from <see cref="ProviderWritesNvidiaProfile"/> because the two come apart in both
+    /// directions: a provider can ship a proxy that is inert until the driver is told to use it (needs
+    /// configuration, does not write it), and one can write a setting for a payload the user installs elsewhere
+    /// (writes it, does not require it here). Collapsing them made every payload look self-sufficient — which is
+    /// how a run could copy files, report success, and leave the feature switched off.</para>
+    /// </summary>
+    bool RequiresNvidiaProfileConfiguration,
+
     TriState RequiresAdministrator,
     bool TouchesGameProcess,
     bool Experimental);

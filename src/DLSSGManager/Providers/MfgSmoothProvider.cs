@@ -61,7 +61,10 @@ public sealed class MfgSmoothProvider : IPatchProvider, IReleaseVersionResolver
         License: LicenseClass.Mit,
         LicenseNote: "GitHub API 实测 license.spdx_id = \"MIT\"（2026-09-26）。Phase 0 曾记为「无 LICENSE」，"
                    + "以 API 实测为准并在此保留该更正记录。",
-        WritesNvidiaProfile: false,
+        // Same two facts as the built-in provider: the payload is a proxy that needs the driver told to use it,
+        // and this code is not what tells it.
+        ProviderWritesNvidiaProfile: false,
+        RequiresNvidiaProfileConfiguration: true,
         RequiresAdministrator: TriState.Conditional,
         TouchesGameProcess: true,
         Experimental: true);

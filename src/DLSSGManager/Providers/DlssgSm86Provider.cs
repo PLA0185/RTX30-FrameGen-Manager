@@ -70,7 +70,10 @@ public sealed class DlssgSm86Provider : IPatchProvider
         License: LicenseClass.NoLicenseDeclared,
         LicenseNote: "仓库无 LICENSE 文件；README 自称 GPLv3。LICENSE 缺失是已查证事实，故不按 GPL 归类，"
                    + "也不打包其二进制 —— 由用户端从原作者来源获取。",
-        WritesNvidiaProfile: false,
+        // Two separate facts. This provider does not write driver settings itself, but the proxy it deploys is
+        // inert until Smooth Motion is switched on for the game — so it does require that configuration.
+        ProviderWritesNvidiaProfile: false,
+        RequiresNvidiaProfileConfiguration: true,
         RequiresAdministrator: TriState.Conditional,
         TouchesGameProcess: true,
         Experimental: true);

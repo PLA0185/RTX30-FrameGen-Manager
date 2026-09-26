@@ -2632,7 +2632,7 @@ public static class Program
         Check("许可证说明同时含「无 LICENSE」与「README 自称」",
             meta.LicenseNote.Contains("LICENSE") && meta.LicenseNote.Contains("README"), meta.LicenseNote);
         Check("许可证不是 OpenSource 布尔（类别数 ≥ 6）", Enum.GetValues<LicenseClass>().Length >= 6);
-        Check("风险字段：不写 NVIDIA Profile", !meta.WritesNvidiaProfile);
+        Check("风险字段：不写 NVIDIA Profile", !meta.ProviderWritesNvidiaProfile);
         Check("风险字段：触碰游戏进程", meta.TouchesGameProcess);
         Check("风险字段：标记为实验性", meta.Experimental);
         Check("管理员需求为三态 Conditional",
@@ -2729,7 +2729,7 @@ public static class Program
 
         public ProviderMetadata Metadata => new(
             Id, "Fake", "example/fake", DistributionModel.ReleaseAsset, LicenseClass.Unknown,
-            "test double", false, TriState.No, false, false);
+            "test double", false, false, TriState.No, false, false);
 
         public ProviderHealth Health =>
             _throwsOnHealth ? throw new InvalidOperationException("健康状态读取失败") : _health;
@@ -3548,7 +3548,7 @@ public static class Program
         public string Id => "recording";
 
         public ProviderMetadata Metadata =>
-            new(Id, "Recording", "", default, default, "", false, default, false, false);
+            new(Id, "Recording", "", default, default, "", false, false, default, false, false);
 
         public ProviderHealth Health => ProviderHealth.Available("测试替身。");
 
@@ -4010,7 +4010,11 @@ public static class Program
         Check("MFG 许可证按 API 实测记为 MIT",
             provider.Metadata.License == LicenseClass.Mit, provider.Metadata.License.ToString());
         Check("许可证说明保留 Phase 0 更正记录", provider.Metadata.LicenseNote.Contains("Phase 0"));
-        Check("MFG 不写 NVIDIA Profile", !provider.Metadata.WritesNvidiaProfile);
+        Check("MFG 不写 NVIDIA Profile", !provider.Metadata.ProviderWritesNvidiaProfile);
+
+        // The other half of the split: this payload is inert until the driver is told to use it, and saying so is
+        // what stops a run from reporting success with the feature switched off.
+        Check("MFG 需要 NVIDIA Profile 配置才生效", provider.Metadata.RequiresNvidiaProfileConfiguration);
         Check("MFG 标记为实验性", provider.Metadata.Experimental);
 
         // ---- registry ----
