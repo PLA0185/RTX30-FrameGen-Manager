@@ -1716,3 +1716,112 @@ Update/
 | **S4-03** | Provider 侧健康状态仍保留文本启发式 | 结构化状态已可用，但 `DlssgSm86Provider.Classify` 尚未改用它（改动会触及 Stage 3 测试，留待需要时最小调整） |
 | **S4-04** | `SelfHostCompatibilitySelector` 的"自身更新即兼容"是设计判断 | 依据是发布流程固定运行时；若将来发布面向不同运行时的构建，此判断需要重审 |
 | **S4-05** | Release Cache 无上限清理 | 按 key 覆盖写入，键数量等于 Provider/频道组合，实际不会膨胀；未实现容量淘汰 |
+
+---
+
+## 41. Stage 5 实现记录：Game Detection + InstallPlanner（2026-09-26）
+
+> 基线 `1b00f5d`。本节只记录实际做了什么、与设计的偏差、以及仍未验证的部分。
+
+### 41.1 先确认职责归属（结论：检测层已存在，本阶段是分级与扩展）
+
+审查确认的现状，**没有新建重复实现**：
+
+| 现有能力 | 归属 | Stage 5 处置 |
+|---|---|---|
+| Steam 库枚举 / appmanifest 扫描 | `Detection.SteamLibraries` / `ScanSteam` | **保留**，商店来源不变 |
+| 渲染目录解析 | `Detection.ResolveRenderDir` | **保留**，作为静态启发式的一环 |
+| 静态 EXE 挑选 | `Detection.PickMainExe`（黑名单 + 体积排序） | **保留，但降级标注**：它现在只是 `StaticHeuristic` 级证据，不再是结论 |
+| 游戏条目 | `GameEntry`（Models.cs） | **复用**，不新建 `GameInfo` |
+| 反作弊扫描 | `AntiCheat.Scan` | **复用** |
+| 代理入口名 | `ModSource.ProxyCandidates`（6）/ `KnownProxyNames`（7） | **复用**，冲突扫描直接遍历它 |
+| 兼容性 seam | `Update.ICompatibilitySelector` | **未改动**，见 §41.4 |
+
+**没有** `SteamDiscovery.cs` / `GameDiscovery.cs` / `AntiCheatScanner.cs` —— 这些职责已分别由 `Detection.cs`、`Models.cs`、`AntiCheat.cs` 承担，因此未为文件名新造重复实现。
+
+### 41.2 Renderer EXE 分级判定（§9.2）
+
+`GameDetection/GameDetectionModels.cs`：`EvidenceLevel` 六级共用阶梯（`Unknown(0)` → `UserConfirmation(1)` → `StaticHeuristic(2)` → `RuntimeDetection(3)` → `StoreManifest(4)` → `VerifiedDatabase(5)`），数值即强度。
+
+`RendererDetector.Detect` 严格按 §9.2 顺序：**已验证记录 → 进程观察 → 静态启发式 → 用户确认**，返回 `RendererDetection(路径, 级别, 原因, 全部候选)`。
+
+两条关键规则：
+- **静态启发式永不升级为已验证**：`Game-Win64-Shipping.exe` 这类命名只作 `StaticHeuristic` 证据，`CanPlanWithoutAsking` 对它是 false。
+- **用户显式指定短路全部推导**：§9.2 把用户确认列在最后，那是**询问顺序**；一旦用户给出答案，再用文件名去覆盖它就是拿猜测推翻事实。故用户选择直接采纳，标 `UserConfirmation`，`HasSufficientEvidence` 为 false（它不是机器证据）。
+
+`ProcessRole` 区分 `Launcher` / `Game` / `Renderer` / `Child` / `StoreWrapper` / `Unknown`，`launcher`、`UnityCrashHandler`、`EasyAntiCheat` 等噪声名一律不判为渲染进程。
+
+### 41.3 Graphics API 四级判定（§9.3）
+
+`GraphicsApiDetector.Detect` 严格按 `Verified → Runtime → Static → User → Unknown` 取第一个非 Unknown 者，**并把全部证据留在结果上**。因此 `HasConflict` 可表达"静态读 DX12、运行时观察到 DX11"这类分歧，而不是静默取其一。
+
+- 邻近 `d3d12.dll` 只作 `StaticHeuristic`（§10 明确禁止"看到 d3d12.dll 就标 Verified DX12"）。
+- `Unknown` 时 `InstallPlanner` **返回 Blocked 并点名 `UnknownApi`**，绝不默认挑一个 API。
+
+### 41.4 12 维兼容性矩阵与 Stage 4 接入
+
+`Compatibility/CompatibilityMatrix.cs`：`CompatibilityRecord` 十二维（GPU / Driver / GraphicsApi / Game / Store / RendererExe / Provider / ProviderVersion / InstallMode / ProxyAsi / LaunchMode / ValidationState），`CompatibilityQuery` 为对应查询。
+
+**匹配规则（保守，§13）**：
+- 记录未涵盖某维 → 该维**不匹配**（缺失不等于相同），导致无法 Exact
+- 查询不知道某维 → 该维**无法核对**，同样无法 Exact
+- 存在**明确矛盾** → `None`（不是 `Partial`：把矛盾说成"部分吻合"正是错误记录被采用的路径）
+- 只有"部分吻合且其余无法核对"才是 `Partial`
+- `ValidationState` 是**记录的结论**而非环境属性，查询没有对应项 → 只检查其存在性
+
+**Stage 4 接入方式：没有改 `ICompatibilitySelector`。** 该接口只有 3 个参数，扩签名会改动 Stage 4 已测行为。改为**新增** `ICompatibilityEvaluator`（接受完整 `CompatibilityQuery`），由 `CompatibilityMatrixSelector` **同时实现两者**：
+- `Evaluate(query)`：完整 12 维判断，`Exact + ReportedWorking → Compatible`，`Exact + ReportedBroken → Incompatible`，其余一律 `Unknown`
+- `Decide(provider, installed, candidate)`：缺上下文 → 直接 `Unknown`，并在原因里说明缺哪些维度
+
+Stage 4 的 `UnknownCompatibilitySelector` 与其测试**原样保留**（回归验证通过）。
+
+### 41.5 InstallRecipe 与 InstallPlanner
+
+`InstallPlanning/InstallPlanner.cs`。
+
+`InstallRecipe` 字段按设计：Game / Store / GraphicsApi / RendererExePattern / ProviderId / ProviderVersionRange / RequiredFiles / ProxyStrategy / Mode / AsiStrategy / NvidiaProfileChanges / LaunchArguments / ValidationSteps / RollbackSteps。
+
+`AppliesTo` **不接受通配兜底**：API 或版本任一未知，配方即不适用；只有全部条件吻合才返回 true。
+
+`InstallPlanner.Plan` 是**纯函数**，只读文件系统判断入口是否被占用，**不写任何文件**（有测试在规划前后比对目录内容与文件字节）。判定顺序：
+1. 内核级反作弊且未授权 → **Blocked**
+2. `Api == Unknown` → **Blocked**（点名 `UnknownApi`，且计划不含任何待部署文件）
+3. 渲染 EXE 未确定或仅有静态证据 → **NeedsConfirmation**
+4. 无空闲代理入口 → **Blocked**；有冲突 → 警告 + 只选空闲入口
+5. 兼容性 `Incompatible` → **Blocked**；非 `Exact` → **NeedsConfirmation**
+6. 全部满足 → **Ready**
+
+`ProxyStrategy` 记 A/B/C，但**不宣布哪个最优**（等价性仍为 `Unresolved / Needs Validation`）。
+
+### 41.6 代理冲突规划
+
+`ProxyConflictScanner.Scan` 遍历全部 7 个已知入口名，按归属分类：`OwnedByThisTool`（依据部署记录）/ `KnownGameFile` / `KnownCompatibleMod` / `Unknown`。
+
+- **归属不明一律不算空闲**，也永不覆盖（"先备份再覆盖"同样禁止）
+- 我方部署的入口可被识别（读 `game.Deployment.ProxyName` 与备份记录）
+- `KnownCompatibleMod` 检测以 `Func<string,bool>` 钩子形式提供；**未接入识别器时保持 `Unknown`**（不猜）
+
+### 41.7 已验证 / 未验证
+
+**已验证**
+- `dotnet build -c Release` → **0 警告 / 0 错误**
+- Harness → **540 通过 / 0 失败 / 10 跳过**（基线 486/0/10，新增 54 项；**Stage 2/3/4 原测试未删**）
+- 覆盖：渲染 EXE 五级判定与噪声排除 · API 四级优先级与冲突保留 · 12 维匹配（Exact / Partial / None）· 损坏矩阵容错 · 代理占用分类 · 规划器全部 Blocked 分支 · **无副作用守卫（目录与字节比对）** · 配方适用性
+- 未修改任何真实游戏目录、未写入 NVIDIA Profile
+
+**未验证 / 不在本阶段范围**
+- 未在真实游戏上验证检测结果（自动测试通过 ≠ 实机验证通过）
+- 未实现进程观察的采集端（`observedRenderer` 由调用方提供；采集属后续阶段）
+- 未接入 Epic / Game Pass 枚举（`StoreSupport.NotImplemented` 如实表达）
+- 未实现 PE 导入表解析（静态证据目前仅邻近 DLL + 命名结构）
+- 未做 UI 接线；未做 Profile 写入（Stage 6）
+
+### 41.8 Remaining Risks
+
+| ID | 风险 | 说明 |
+|---|---|---|
+| **S5-01** | 静态启发式仍是唯一可得的自动证据来源 | `StoreManifest` 级需商店提供 EXE 信息，Steam appmanifest 不含；因此当前实际最高只能到 `RuntimeDetection`（需先观察进程） |
+| **S5-02** | 兼容性矩阵为空 | Stage 5 结束时会话内没有任何 12 维记录，故 `LatestCompatible` 仍恒为 null——与 Stage 4 一致的有意结果 |
+| **S5-03** | `KnownCompatibleMod` 只留钩子 | 未接入已知 mod 识别器，归属不明一概按冲突处理（保守方向，不影响安全性） |
+| **S5-04** | 进程观察缺少采集器 | `observedRenderer` 需外部提供；自动采集（启动游戏并在进程树中识别渲染进程）未实现 |
+| **S5-05** | `CompatibilityMatrixSelector.Decide` 做了两次查询 | 行为正确但有冗余；未优化以免在无测试覆盖动机下改动已验证路径 |

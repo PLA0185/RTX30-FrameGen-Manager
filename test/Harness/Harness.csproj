@@ -42,6 +42,9 @@
     <Compile Include="..\..\src\DLSSGManager\Update\UpdateInfrastructure.cs" />
     <Compile Include="..\..\src\DLSSGManager\Update\PatchUpdateService.cs" />
     <Compile Include="..\..\src\DLSSGManager\Update\SelfUpdateService.cs" />
+    <Compile Include="..\..\src\DLSSGManager\GameDetection\GameDetectionModels.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Compatibility\CompatibilityMatrix.cs" />
+    <Compile Include="..\..\src\DLSSGManager\InstallPlanning\InstallPlanner.cs" />
   </ItemGroup>
 
 </Project>

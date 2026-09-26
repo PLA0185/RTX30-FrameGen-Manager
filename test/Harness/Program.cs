@@ -4,6 +4,9 @@ using System.Text;
 using System.Text.RegularExpressions;
 using DLSSGManager.Providers;
 using DLSSGManager.Update;
+using DLSSGManager.GameDetection;
+using DLSSGManager.Compatibility;
+using DLSSGManager.InstallPlanning;
 
 namespace DLSSGManager;
 
@@ -92,6 +95,7 @@ public static class Program
             TestSignatureIntegrity(work);
             TestProviderFramework(work);
             TestUpdateFramework(work);
+            TestGameDetectionAndPlanning(work);
         }
         catch (Exception ex)
         {
@@ -3033,5 +3037,236 @@ public static class Program
                 .GetAwaiter().GetResult()).State == UpdateState.UpToDate);
         Check("Hold 通知区别于 Pinned", PatchUpdateService.Notify(rHold).State != PatchUpdateService.Notify(rPin).State);
         Check("Self 通知可生成", SelfUpdateService.Notify(selfResult).State == UpdateState.UpdateAvailable);
+    }
+
+    /// <summary>
+    /// Stage 5: game detection, the 12-dimension compatibility matrix, and installation planning.
+    ///
+    /// Runs entirely on throwaway folders. The guard section at the end re-checks the filesystem after
+    /// planning, because "the planner only computes" is a claim about side effects and has to be tested
+    /// as one.
+    /// </summary>
+    private static void TestGameDetectionAndPlanning(string work)
+    {
+        Section("游戏检测与安装规划（Stage 5）");
+
+        var dir = Path.Combine(work, "stage5-game");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "Game-Win64-Shipping.exe"), "x");
+        File.WriteAllText(Path.Combine(dir, "UnityCrashHandler64.exe"), "x");
+        File.WriteAllText(Path.Combine(dir, "launcher.exe"), "x");
+
+        var shippingExe = Path.Combine(dir, "Game-Win64-Shipping.exe");
+
+        // ---- 32.1 renderer detection by evidence level ----
+        var user = RendererDetector.Detect(dir, userChoice: shippingExe);
+        Check("用户显式指定被采纳", user.RendererExe == shippingExe && user.Level == EvidenceLevel.UserConfirmation);
+        Check("用户指定可作为规划依据（不再重复追问）", user.CanPlanWithoutAsking);
+        Check("用户指定不冒充机器证据", !user.HasSufficientEvidence);
+
+        var verifiedRenderer = RendererDetector.Detect(dir, verifiedRenderer: shippingExe);
+        Check("已验证记录优先于静态启发式",
+            verifiedRenderer.Level == EvidenceLevel.VerifiedDatabase && verifiedRenderer.HasSufficientEvidence);
+
+        var observed = RendererDetector.Detect(dir, observedRenderer: shippingExe);
+        Check("进程观察优先于静态启发式",
+            observed.Level == EvidenceLevel.RuntimeDetection && observed.HasSufficientEvidence);
+
+        var stat = RendererDetector.Detect(dir);
+        Check("静态启发式找到 Shipping 可执行文件",
+            stat.RendererExe is not null && stat.RendererExe.Contains("Shipping"), stat.RendererExe ?? "(null)");
+        Check("静态证据不得自动选择", stat.Level == EvidenceLevel.StaticHeuristic && !stat.CanPlanWithoutAsking);
+
+        var emptyDir = Path.Combine(work, "stage5-empty");
+        Directory.CreateDirectory(emptyDir);
+        var noEvidence = RendererDetector.Detect(emptyDir);
+        Check("无证据时返回 Unknown 而不猜", noEvidence.RendererExe is null && noEvidence.IsUnknown);
+        Check("指到不存在的文件不冒充为已确认证据",
+            RendererDetector.Detect(dir, userChoice: Path.Combine(dir, "nope.exe")).Level != EvidenceLevel.UserConfirmation);
+
+        Check("launcher 被判为启动器而非渲染进程",
+            RendererDetector.ClassifyByStaticHint(Path.Combine(dir, "launcher.exe"), dir, out _) == ProcessRole.Launcher);
+        Check("Shipping 被判为渲染进程",
+            RendererDetector.ClassifyByStaticHint(shippingExe, dir, out _) == ProcessRole.Renderer);
+        Check("崩溃处理器不被当作渲染进程",
+            RendererDetector.ClassifyByStaticHint(Path.Combine(dir, "UnityCrashHandler64.exe"), dir, out _) != ProcessRole.Renderer);
+
+        // ---- 32.2 graphics API by strict priority ----
+        var apiDir = Path.Combine(work, "stage5-api");
+        Directory.CreateDirectory(apiDir);
+        File.WriteAllText(Path.Combine(apiDir, "d3d12.dll"), "x");
+
+        var neighbour = GraphicsApiDetector.DetectFromNeighbourModules(apiDir);
+        Check("邻近 d3d12.dll 被读为静态证据", neighbour == GraphicsApi.Dx12, neighbour.ToString());
+
+        var staticApi = GraphicsApiDetector.Detect(apiDir, staticApi: neighbour);
+        Check("静态读取不升级为已验证",
+            staticApi.Api == GraphicsApi.Dx12 && staticApi.Level == EvidenceLevel.StaticHeuristic);
+
+        var runtimeWins = GraphicsApiDetector.Detect(apiDir, runtimeApi: GraphicsApi.Dx11, staticApi: GraphicsApi.Dx12);
+        Check("运行时证据优先于静态证据",
+            runtimeWins.Api == GraphicsApi.Dx11 && runtimeWins.Level == EvidenceLevel.RuntimeDetection);
+        Check("冲突证据被保留而非静默丢弃", runtimeWins.HasConflict && runtimeWins.Evidence.Count == 2);
+
+        var verifiedApi = GraphicsApiDetector.Detect(apiDir, verifiedApi: GraphicsApi.Vulkan, runtimeApi: GraphicsApi.Dx12);
+        Check("已验证记录优先于运行时观察",
+            verifiedApi.Api == GraphicsApi.Vulkan && verifiedApi.Level == EvidenceLevel.VerifiedDatabase);
+
+        var unknownApi = GraphicsApiDetector.Detect(emptyDir);
+        Check("无证据时 API 为 Unknown", unknownApi.Api == GraphicsApi.Unknown && !unknownApi.CanAutoSelect);
+
+        // ---- 32.3 the 12-dimension matrix ----
+        var matrixPath = Path.Combine(work, "compat.json");
+        var matrix = new CompatibilityMatrixStore(matrixPath);
+        matrix.Add(new CompatibilityRecord(
+            Gpu: "RTX 3070 Ti", Driver: "617.14", GraphicsApi: GraphicsApi.Dx12,
+            Game: "TestGame", Store: StoreKind.Steam, RendererExe: "Game-Win64-Shipping.exe",
+            Provider: "dlssg-sm86", ProviderVersion: "0.3.5", InstallMode: InstallMode.DirectProxy,
+            ProxyAsi: "version.dll", LaunchMode: "normal", Validation: ValidationState.ReportedWorking));
+
+        CompatibilityQuery FullQuery(string? launchMode = "normal") => new(
+            "RTX 3070 Ti", "617.14", GraphicsApi.Dx12, "TestGame", StoreKind.Steam,
+            "Game-Win64-Shipping.exe", "dlssg-sm86", "0.3.5", InstallMode.DirectProxy, "version.dll", launchMode);
+
+        Check("12 维全匹配判为 Exact", matrix.Query(FullQuery()).Kind == CompatibilityMatchKind.Exact);
+        Check("缺失维度导致 Partial 而非 Exact",
+            matrix.Query(FullQuery(launchMode: null)).Kind == CompatibilityMatchKind.Partial);
+        Check("不同 GPU 不判为匹配",
+            matrix.Query(new CompatibilityQuery("RTX 4090", "617.14", GraphicsApi.Dx12, "TestGame",
+                StoreKind.Steam, "Game-Win64-Shipping.exe", "dlssg-sm86", "0.3.5",
+                InstallMode.DirectProxy, "version.dll", "normal")).Kind == CompatibilityMatchKind.None);
+        Check("无记录时说明原因", matrix.Query(new CompatibilityQuery(Provider: "other")).Reason.Length > 0);
+        Check("维度明细可查", matrix.Query(FullQuery(launchMode: null)).Outcomes.Count > 0);
+
+        var selector = new CompatibilityMatrixSelector(matrix);
+        Check("Exact + ReportedWorking → Compatible",
+            selector.Evaluate(FullQuery()).State == CompatibilityState.Compatible);
+        Check("Partial 不产生 Compatible 结论",
+            selector.Evaluate(FullQuery(launchMode: null)).State != CompatibilityState.Compatible);
+        Check("窄接口缺上下文时返回 Unknown 而不推测",
+            selector.Decide("dlssg-sm86", "0.3.0", "0.3.5").State == CompatibilityState.Unknown);
+
+        var brokenRecord = new CompatibilityMatrixStore(Path.Combine(work, "compat-broken.json"));
+        brokenRecord.Add(new CompatibilityRecord(Gpu: "RTX 3070 Ti", Provider: "dlssg-sm86",
+            ProviderVersion: "0.3.5", Validation: ValidationState.ReportedBroken));
+        Check("不兼容记录不被判为 Compatible",
+            new CompatibilityMatrixSelector(brokenRecord).Decide("dlssg-sm86", null, "0.3.5").State
+                != CompatibilityState.Compatible);
+
+        matrix.Persist();
+        var reloaded = new CompatibilityMatrixStore(matrixPath);
+        reloaded.Load();
+        Check("矩阵可持久化并重载", reloaded.Count == 1, "实际: " + reloaded.Count);
+
+        var corruptPath = Path.Combine(work, "compat-corrupt.json");
+        File.WriteAllText(corruptPath, "{ this is not json");
+        var corrupt = new CompatibilityMatrixStore(corruptPath);
+        var threw = false;
+        try { corrupt.Load(); } catch { threw = true; }
+        Check("损坏的矩阵文件不影响启动", !threw);
+
+        // ---- Proxy occupancy ----
+        Section("代理冲突与安装计划（Stage 5）");
+
+        var gameDir = Path.Combine(work, "stage5-proxy");
+        Directory.CreateDirectory(gameDir);
+        File.WriteAllText(Path.Combine(gameDir, "version.dll"), "occupied-by-someone-else");
+        File.WriteAllText(Path.Combine(gameDir, "Game-Win64-Shipping.exe"), "x");
+
+        var game = new GameEntry { Name = "TestGame", RenderDir = gameDir };
+        var report = ProxyConflictScanner.Scan(game);
+
+        Check("扫描覆盖全部已知入口名", report.Slots.Count == ModSource.KnownProxyNames.Length,
+            $"实际 {report.Slots.Count} / 期望 {ModSource.KnownProxyNames.Length}");
+        Check("已占用入口进入冲突列表", report.HasConflict && report.Conflicts.Any(c => c.FileName == "version.dll"));
+        Check("归属不明的占用不进入安全候选", !report.SafeCandidates.Contains("version.dll"));
+        Check("归属不明标记为 Unknown",
+            report.Conflicts.First(c => c.FileName == "version.dll").Ownership == ProxyOwnership.Unknown);
+        Check("其余入口仍可用", report.HasSafeSlot);
+
+        var ourGame = new GameEntry { Name = "Ours", RenderDir = gameDir };
+        ourGame.Deployment = new DeploymentInfo { ProxyName = "version.dll" };
+        Check("本工具部署的入口可被识别",
+            ProxyConflictScanner.Scan(ourGame).Conflicts
+                .First(c => c.FileName == "version.dll").Ownership == ProxyOwnership.OwnedByThisTool);
+
+        var compatible = selector.Evaluate(FullQuery());
+
+        var input = new InstallPlanInput(
+            Game: game,
+            Renderer: stat,
+            Api: staticApi,
+            ProviderId: "dlssg-sm86",
+            ProviderVersion: "0.3.5",
+            ProviderPayloadFiles: new[] { "version.dll", "dlssg_sm86.ini" },
+            ProxyConflicts: report,
+            Compatibility: compatible,
+            Recipe: null,
+            HasKernelAntiCheat: false,
+            AllowProtected: false);
+
+        var plan = InstallPlanner.Plan(input);
+        Check("仅有静态渲染证据时需要确认",
+            plan.Status == PlanStatus.NeedsConfirmation, plan.Status.ToString());
+        Check("计划避开被占用的入口",
+            plan.ProxyChoice is not null && plan.ProxyChoice != "version.dll", plan.ProxyChoice ?? "(null)");
+
+        var unknownApiPlan = InstallPlanner.Plan(input with { Api = unknownApi });
+        Check("Unknown API 时计划被 Blocked", unknownApiPlan.Status == PlanStatus.Blocked, unknownApiPlan.Status.ToString());
+        Check("Blocked 原因点名 UnknownApi", unknownApiPlan.Blockers.Any(b => b.Contains("UnknownApi")));
+        Check("Blocked 计划不包含任何待部署文件", unknownApiPlan.FilesToDeploy.Count == 0);
+
+        Check("内核反作弊未授权时 Blocked",
+            InstallPlanner.Plan(input with { HasKernelAntiCheat = true }).Status == PlanStatus.Blocked);
+
+        Check("不兼容组合导致 Blocked",
+            InstallPlanner.Plan(input with { Compatibility = CompatibilityDecision.Incompatible("0.3.5", "recorded broken") })
+                .Status == PlanStatus.Blocked);
+
+        var fullDir = Path.Combine(work, "stage5-full");
+        Directory.CreateDirectory(fullDir);
+        foreach (var name in ModSource.KnownProxyNames) File.WriteAllText(Path.Combine(fullDir, name), "x");
+        var fullReport = ProxyConflictScanner.Scan(new GameEntry { Name = "Full", RenderDir = fullDir });
+        Check("全部入口被占用时无安全候选", !fullReport.HasSafeSlot);
+        var fullPlan = InstallPlanner.Plan(input with { ProxyConflicts = fullReport });
+        Check("无可用入口时 Blocked", fullPlan.Status == PlanStatus.Blocked);
+        Check("Blocked 原因说明入口冲突", fullPlan.Blockers.Any(b => b.Contains("入口")));
+
+        // ---- 32.4 guard: planning has no side effects ----
+        var before = Directory.GetFiles(gameDir).OrderBy(f => f).ToArray();
+        var beforeBytes = File.ReadAllText(Path.Combine(gameDir, "version.dll"));
+        _ = InstallPlanner.Plan(input);
+        var after = Directory.GetFiles(gameDir).OrderBy(f => f).ToArray();
+
+        Check("规划过程不写入游戏目录", before.SequenceEqual(after));
+        Check("规划过程不覆盖归属不明的 DLL",
+            File.ReadAllText(Path.Combine(gameDir, "version.dll")) == beforeBytes);
+        Check("规划不修改 NVIDIA Profile（计划中只记录需求）",
+            plan.NvidiaProfileRequirements.Count == 0);
+
+        // ---- recipe applicability ----
+        var recipe = new InstallRecipe(
+            "test-recipe", "TestGame", StoreKind.Steam, GraphicsApi.Dx12, "Shipping",
+            "dlssg-sm86", "0.3.0-0.3.9", new[] { "version.dll" }, ProxyStrategy.SafeSingle,
+            InstallMode.DirectProxy, "", Array.Empty<string>(), Array.Empty<string>(),
+            Array.Empty<string>(), new[] { "restore backup" });
+
+        Check("配方在全部条件一致时适用",
+            recipe.AppliesTo(GraphicsApi.Dx12, StoreKind.Steam, "Game-Win64-Shipping.exe", "dlssg-sm86", "0.3.5"));
+        Check("配方在 API 不一致时不适用",
+            !recipe.AppliesTo(GraphicsApi.Dx11, StoreKind.Steam, "Game-Win64-Shipping.exe", "dlssg-sm86", "0.3.5"));
+        Check("配方在版本超出范围时不适用",
+            !recipe.AppliesTo(GraphicsApi.Dx12, StoreKind.Steam, "Game-Win64-Shipping.exe", "dlssg-sm86", "0.4.0"));
+        Check("API 未知时配方不适用",
+            !recipe.AppliesTo(GraphicsApi.Unknown, StoreKind.Steam, "Game-Win64-Shipping.exe", "dlssg-sm86", "0.3.5"));
+
+        var recipePlan = InstallPlanner.Plan(input with
+        {
+            Recipe = recipe,
+            Renderer = verifiedRenderer,
+        });
+        Check("配方参与的计划记录代理策略",
+            recipePlan.ProxyStrategy == ProxyStrategy.SafeSingle, recipePlan.ProxyStrategy.ToString());
+        Check("配方计划带回滚步骤", recipePlan.RollbackRequirements.Count > 0);
     }
 }
