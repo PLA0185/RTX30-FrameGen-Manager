@@ -1,6 +1,9 @@
-# DLSSG 30-Series Manager
+# RTX 30 Frame Generation Manager
 
 [简体中文](README.md) | **English**
+
+> The Chinese README is the reference version and carries the full Provider notes, compatibility-level rules
+> and current release status: [README.md](README.md).
 
 [![Release](https://img.shields.io/github/v/release/PLA0185/RTX30-FrameGen-Manager?style=flat-square&label=download)](https://github.com/PLA0185/RTX30-FrameGen-Manager/releases/latest)
 [![License](https://img.shields.io/github/license/PLA0185/RTX30-FrameGen-Manager?style=flat-square)](LICENSE)

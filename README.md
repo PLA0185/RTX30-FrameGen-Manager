@@ -1,4 +1,4 @@
-# DLSSG 30 系管理器
+# RTX 30 Frame Generation Manager（DLSSG 30 系管理器）
 
 **简体中文** | [English](README.en.md)
 
@@ -12,6 +12,25 @@
 
 给 [dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) 做的图形化管理器：按游戏部署 mod、一键恢复，不用手工往游戏目录里拷 DLL。mod 本身是个 DLL 代理——把代理 DLL 和 `dlssg_sm86.ini` 放到游戏渲染 EXE 旁边，RTX 30 系（SM86）就能用上 DLSS 帧生成。
 
+## Provider 框架
+
+管理器不绑定单一 mod 来源。每个 **Provider** 负责一个来源的下载、校验与安装，界面上的「配置方式」下拉决定用哪一个（默认是内置的 `dlssg-sm86`）。
+
+| Provider | 来源 | 说明 |
+|---|---|---|
+| `dlssg-sm86` | [sdli1995/dlssg_for_sm86](https://github.com/sdli1995/dlssg_for_sm86) | 默认。二进制在 git 树里，逐文件取回 |
+| `mfg-smooth` | [pipotoufikxyz-lgtm/dlssg_for_sm86-MFG-version](https://github.com/pipotoufikxyz-lgtm/dlssg_for_sm86-MFG-version) | Release Asset。**标记为实验性**——上游的 tag 是标签而不是版本号，版本号在 asset 名里，因此解析失败时会停止自动安装而不是猜 |
+
+几点使用前应知道的事：
+
+- **NVIDIA Profile 需求**：两者部署的都是代理 DLL，**在驱动被要求为这个游戏启用 Smooth Motion 之前不产生任何作用**。管理器会尝试写这个设置，并如实报告读到的是什么；如果读不回来，它不会声称写入成功。
+- **兼容性矩阵与验证等级**：每条兼容性记录都带一个来源与验证等级。「上游文档写了」与「本机实测过」是**两个不同的等级**——前者不会因为被反复引用而变成后者。没有任何实机证据的记录不会标成已验证。
+- **遇到未知组合时**：管理器会停下来，把原因说清楚，然后**问你**是否继续。你点继续只表示你知情，**不会**把这条组合改写成「兼容」或「已验证」。
+- **代理入口**：计划选定的入口会被真正使用；如果来源不支持你选的安装形态，它会拒绝，而不是悄悄降级成另一种。
+
+> [!NOTE]
+> 以上几条不是措辞谨慎，而是实现的约束：它们各自都有断言守着，改动会让测试失败。
+
 > [!IMPORTANT]
 > **游戏特有事项**
 >
@@ -24,6 +43,9 @@
 到 [Releases](../../releases/latest) 拿，两个文件任选，都不需要装 .NET：`DLSSGManager-*-setup.exe`（安装包，安装路径可选、带卸载）或 `DLSSGManager.exe`（绿色版，单文件）。
 
 Mod 文件（约 101 MB）不随安装包分发，安装过程也不联网：**首次启动时程序会自动检测上游版本并取回**，之后点「下载 / 更新 Mod 文件」更新。
+
+> [!IMPORTANT]
+> **当前状态：Release Candidate，没有 Stable 标签。** 部署、还原、Provider 校验与兼容性判定已有完整回归覆盖；**真实 NVIDIA Profile 写入与视觉界面仍未在真机上验证**——这两项按待用户验证记录，不算已完成。
 
 ## 用法
 
