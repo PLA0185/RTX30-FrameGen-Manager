@@ -438,6 +438,27 @@ public static class Program
             if (lookup.Found) Console.WriteLine($"  匹配的 Profile  : {lookup.ProfileName}");
             Console.WriteLine();
 
+            // P1-15: report every stage of the chain separately. Collapsing this into one "PASS" would let a stage
+            // that never ran look like one that succeeded — and "the ABI call worked", "nothing was found" and "the
+            // later stages did not run" are three different facts.
+            Console.WriteLine("阶段状态（§19 Phase A → D）:");
+            Console.WriteLine($"  A1 NVAPI Load                    : {(adapter.IsAvailable ? "PASS" : "FAIL")}");
+            Console.WriteLine($"  A2 CreateSession                 : {(opened.Ok ? "PASS" : "FAIL")}");
+            Console.WriteLine($"  A3 LoadSettings + GetBaseProfile : {(adapter.CanRead ? "PASS" : "NOT_PROVEN")}");
+            // 「没运行」和「运行了但失败」是不同的事实，不能都写成 FAIL —— 这条阶段表刚刚自己犯过这个错：
+            // 不带 --loop 时 reads 为 0，A4 报成了 FAIL，而它其实从未运行。
+            var readStage = iterations == 0
+                ? "NOT_RUN（加 --loop 才跑读写循环）"
+                : marshallingProven ? "PASS" : "FAIL";
+
+            Console.WriteLine($"  A4 Read Calls（{iterations * 2} 次）         : {readStage}");
+            Console.WriteLine("  B1 FindApplicationByName（ABI 层）: PASS（调用返回了结果，未抛异常）");
+            Console.WriteLine($"  B2 Application Found             : {(lookup.Found ? "PASS" : "NOT_FOUND")}");
+            Console.WriteLine($"  C  GetProfileInfo                : {(lookup.Found ? "PASS" : "NOT_RUN")}");
+            Console.WriteLine("  D1 Write / ReadBack / Delete / Save : NOT_RUN（见 --nvapi-write-smoke）");
+            Console.WriteLine("  D2 Cleanup                       : NOT_RUN（见 --nvapi-write-smoke）");
+            Console.WriteLine();
+
             // The gate is open as of c27e154-era work: the earlier failure was the profile handle, not the layout.
             Console.WriteLine("设置读取结果（经真实驱动读取）:");
             foreach (var setting in SmoothMotionSettings.All)
