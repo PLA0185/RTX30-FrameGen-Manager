@@ -54,7 +54,7 @@ public partial class MainWindow
                 PayloadDirectory: SourcePath,
                 GpuName: _data.GpuName,
                 DriverVersion: _data.GpuDriver,
-                Store: StoreKind.Steam,
+                Store: game.Store,
                 AllowProtected: allowProtected,
                 HasKernelAntiCheat: game.Protection?.HasKernelAntiCheat ?? false,
                 UserConfirmedUnverified: confirmed,
@@ -520,7 +520,14 @@ public partial class MainWindow
                 RenderDir = candidate.RenderDir,
                 ExePath = candidate.ExePath,
                 PreferredProxy = DeploymentService.AutoProxy,
-                Notes = candidate.Source,
+                Notes = candidate.Source ?? "",
+
+                // The scanner knows where it found this. A Steam discovery and a hand-added folder must not end up
+                // claiming the same provenance, because the store reaches the compatibility query: a result that
+                // says "works on Steam" is not evidence about a manual install.
+                Store = (candidate.Source ?? "").Contains("Steam", StringComparison.OrdinalIgnoreCase)
+                    ? StoreKind.Steam
+                    : StoreKind.Manual,
                 Profile = new GameProfile { Router = _data.RecommendedRouter },
             };
 

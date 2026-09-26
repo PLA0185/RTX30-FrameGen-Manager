@@ -909,6 +909,11 @@ public partial class MainWindow : Window
         var game = new GameEntry
         {
             Name = Detection.FriendlyName(folder),
+
+            // A folder picked by hand is not a Steam install. Recording that keeps a store-specific compatibility
+            // result from being applied to something it never covered.
+            Store = GameDetection.StoreKind.Manual,
+
             PreferredProxy = DeploymentService.AutoProxy,
             Profile = new GameProfile { Router = _data.RecommendedRouter },
         };

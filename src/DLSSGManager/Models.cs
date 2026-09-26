@@ -187,6 +187,18 @@ public sealed class GameEntry : Observable
     public string PreferredProxy { get => _preferredProxy; set => Set(ref _preferredProxy, value); }
 
     public string Notes { get => _notes; set => Set(ref _notes, value); }
+
+    /// <summary>
+    /// Where this game came from.
+    ///
+    /// <para>Carried on the entry rather than assumed, because it reaches the compatibility query and the plan: a
+    /// record that says "works on Steam" is not evidence about a hand-added install of the same executable, and
+    /// reporting one as the other is how a store-specific result gets applied to something it never covered.</para>
+    ///
+    /// <para><see cref="GameDetection.StoreKind.Unknown"/> is the honest default. An entry added by hand has no
+    /// store, and saying so is better than claiming Steam — which is what the code used to do unconditionally.</para>
+    /// </summary>
+    public GameDetection.StoreKind Store { get; set; } = GameDetection.StoreKind.Unknown;
     public GameProfile Profile { get; set; } = new();
     public DeploymentInfo? Deployment { get; set; }
 
