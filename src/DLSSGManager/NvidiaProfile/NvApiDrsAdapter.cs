@@ -94,6 +94,126 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         }
     }
 
+    // ── Profile / application lifecycle ──────────────────────────────────────────────────────────────────────
+    //
+    // Sizes and offsets, all from the official headers: NVDRS_PROFILE is typedef'd to V1 (4116 bytes, profileName
+    // at 4); NVDRS_APPLICATION is typedef'd to V4 (20492 bytes, appName at 8 — the field FindApplicationByName
+    // matches on). Kept here rather than duplicated inside each call that needs them.
+    private const int ProfileSize = 4116;
+    private const int ProfileNameOffset = 4;
+    private const int ApplicationSizeV4 = 20492;
+    private const int ApplicationNameOffset = 8;
+
+    private static void WriteUnicode(IntPtr destination, string value)
+    {
+        var chars = ToUnicodeString(value);
+        var raw = new short[chars.Length];
+
+        for (var i = 0; i < chars.Length; i++) raw[i] = unchecked((short)chars[i]);
+
+        Marshal.Copy(raw, 0, destination, raw.Length);
+    }
+
+    /// <summary>Creates a profile. Assumes an open session.</summary>
+    internal DrsStatus CreateProfile(string profileName, out IntPtr profile)
+    {
+        profile = IntPtr.Zero;
+
+        if (string.IsNullOrWhiteSpace(profileName))
+            return DrsStatus.Fail(-1, "未提供 Profile 名。");
+
+        var create = Resolve<DrsCreateProfileDelegate>(IdCreateProfile);
+
+        if (create is null) return DrsStatus.Fail(-1, "NvAPI_DRS_CreateProfile 未被解析。");
+
+        var info = Marshal.AllocHGlobal(ProfileSize);
+
+        try
+        {
+            Marshal.Copy(new byte[ProfileSize], 0, info, ProfileSize);
+            Marshal.WriteInt32(info, 0, unchecked((int)((uint)ProfileSize | (1u << 16))));
+            WriteUnicode(info + ProfileNameOffset, profileName);
+
+            var status = create(_session, info, out profile);
+
+            return status == NvApiOk
+                ? DrsStatus.Success
+                : DrsStatus.Fail(status, $"NvAPI_DRS_CreateProfile 返回 {status}。");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(info);
+        }
+    }
+
+    /// <summary>Deletes a profile. Assumes an open session.</summary>
+    internal DrsStatus DeleteProfile(IntPtr profile)
+    {
+        if (profile == IntPtr.Zero) return DrsStatus.Fail(-1, "未提供 Profile 句柄。");
+
+        var delete = Resolve<DrsDeleteProfileDelegate>(IdDeleteProfile);
+
+        if (delete is null) return DrsStatus.Fail(-1, "NvAPI_DRS_DeleteProfile 未被解析。");
+
+        var status = delete(_session, profile);
+
+        return status == NvApiOk
+            ? DrsStatus.Success
+            : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteProfile 返回 {status}。");
+    }
+
+    /// <summary>Binds an executable to a profile. Assumes an open session.</summary>
+    internal DrsStatus CreateApplication(IntPtr profile, string executableName)
+    {
+        if (profile == IntPtr.Zero) return DrsStatus.Fail(-1, "未提供 Profile 句柄。");
+        if (string.IsNullOrWhiteSpace(executableName)) return DrsStatus.Fail(-1, "未提供可执行文件名。");
+
+        var create = Resolve<DrsCreateApplicationDelegate>(IdCreateApplication);
+
+        if (create is null) return DrsStatus.Fail(-1, "NvAPI_DRS_CreateApplication 未被解析。");
+
+        var application = Marshal.AllocHGlobal(ApplicationSizeV4);
+
+        try
+        {
+            Marshal.Copy(new byte[ApplicationSizeV4], 0, application, ApplicationSizeV4);
+            Marshal.WriteInt32(application, 0, unchecked((int)((uint)ApplicationSizeV4 | (4u << 16))));
+            WriteUnicode(application + ApplicationNameOffset, executableName);
+
+            var status = create(_session, profile, application);
+
+            return status == NvApiOk
+                ? DrsStatus.Success
+                : DrsStatus.Fail(status, $"NvAPI_DRS_CreateApplication 返回 {status}。");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(application);
+        }
+    }
+
+    /// <summary>
+    /// Removes an executable's binding. Assumes an open session.
+    ///
+    /// <para>Uses <c>NvAPI_DRS_DeleteApplication</c>, not the <c>Ex</c> variant — they are different functions with
+    /// different parameters, and this one takes the executable name we already have.</para>
+    /// </summary>
+    internal DrsStatus DeleteApplication(IntPtr profile, string executableName)
+    {
+        if (profile == IntPtr.Zero) return DrsStatus.Fail(-1, "未提供 Profile 句柄。");
+        if (string.IsNullOrWhiteSpace(executableName)) return DrsStatus.Fail(-1, "未提供可执行文件名。");
+
+        var delete = Resolve<DrsDeleteApplicationDelegate>(IdDeleteApplication);
+
+        if (delete is null) return DrsStatus.Fail(-1, "NvAPI_DRS_DeleteApplication 未被解析。");
+
+        var status = delete(_session, profile, ToUnicodeString(executableName));
+
+        return status == NvApiOk
+            ? DrsStatus.Success
+            : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteApplication 返回 {status}。");
+    }
+
     public DrsApplicationLookup FindApplication(string executableName)
     {
         if (string.IsNullOrWhiteSpace(executableName))
