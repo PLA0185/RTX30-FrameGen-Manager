@@ -4015,6 +4015,18 @@ public static class Program
         // The other half of the split: this payload is inert until the driver is told to use it, and saying so is
         // what stops a run from reporting success with the feature switched off.
         Check("MFG 需要 NVIDIA Profile 配置才生效", provider.Metadata.RequiresNvidiaProfileConfiguration);
+
+        // ---- 第二轮 §4：回滚必须可以重试 ----
+        // The defect this covers: the journal was marked consumed in a `finally`, whether or not every entry was
+        // restored. A half-undone profile could then never be finished — and the entries that still needed work
+        // were indistinguishable from the ones that had already been put back.
+        Check("回滚状态按条目区分「待处理 / 已恢复 / 失败」三态",
+            Enum.IsDefined(typeof(NvidiaProfile.RollbackState), NvidiaProfile.RollbackState.Pending) &&
+            Enum.IsDefined(typeof(NvidiaProfile.RollbackState), NvidiaProfile.RollbackState.Restored) &&
+            Enum.IsDefined(typeof(NvidiaProfile.RollbackState), NvidiaProfile.RollbackState.Failed));
+
+        Check("日志条目带可读写的回滚状态（供重试只处理未成功项）",
+            typeof(NvidiaProfile.ProfileJournalEntry).GetProperty("State") is { CanRead: true, CanWrite: true });
         Check("MFG 标记为实验性", provider.Metadata.Experimental);
 
         // ---- registry ----

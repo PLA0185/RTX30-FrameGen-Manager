@@ -102,12 +102,38 @@ public sealed record ProfileSettingSnapshot(
     public bool WasRead => State != ProfileSettingState.Unknown;
 }
 
+/// <summary>How far a single journal entry has been undone.</summary>
+public enum RollbackState
+{
+    /// <summary>Not attempted, or attempted and left for a retry.</summary>
+    Pending,
+
+    /// <summary>Put back the way it was found.</summary>
+    Restored,
+
+    /// <summary>
+    /// The attempt failed. Kept — not dropped — because the retry has to know which entries still need work, and
+    /// because a silently discarded failure is indistinguishable from a success.
+    /// </summary>
+    Failed,
+}
+
 /// <summary>One applied write, paired with what it replaced.</summary>
 public sealed record ProfileJournalEntry(
     uint SettingId,
     string Name,
     ProfileSettingSnapshot Before,
-    uint WrittenValue);
+    uint WrittenValue)
+{
+    /// <summary>
+    /// Where this entry stands in the rollback.
+    ///
+    /// <para>Per entry rather than per journal, because a rollback can half-succeed: one setting may be restored
+    /// while another fails. A single flag for the whole journal cannot express that, so it either re-runs
+    /// everything (undoing what was already put back) or runs nothing (leaving the profile half-configured).</para>
+    /// </summary>
+    public RollbackState State { get; set; } = RollbackState.Pending;
+}
 
 /// <summary>
 /// The record of one apply, and the thing a rollback is performed from.
@@ -483,6 +509,10 @@ public sealed class NvidiaProfileService
         {
             foreach (var entry in journal.Entries.AsEnumerable().Reverse())
             {
+                // A retry exists precisely because a pass can half-succeed, so an entry already put back must not be
+                // touched again — undoing it twice is not a restore, it is a new change.
+                if (entry.State == RollbackState.Restored) continue;
+
                 switch (entry.Before.State)
                 {
                     case ProfileSettingState.Absent:
@@ -492,11 +522,13 @@ public sealed class NvidiaProfileService
                         if (status.Ok)
                         {
                             restored++;
+                            entry.State = RollbackState.Restored;
                             notes.Add($"已删除 0x{entry.SettingId:X8}（{entry.Name}），恢复为未设置。");
                         }
                         else
                         {
                             failed++;
+                            entry.State = RollbackState.Failed;
                             notes.Add($"删除 0x{entry.SettingId:X8} 失败（code {status.Code}）：{status.Message}");
                         }
 
@@ -509,11 +541,13 @@ public sealed class NvidiaProfileService
                         if (status.Ok)
                         {
                             restored++;
+                            entry.State = RollbackState.Restored;
                             notes.Add($"已恢复 0x{entry.SettingId:X8}（{entry.Name}）= {entry.Before.Value}。");
                         }
                         else
                         {
                             failed++;
+                            entry.State = RollbackState.Failed;
                             notes.Add($"恢复 0x{entry.SettingId:X8} 失败（code {status.Code}）：{status.Message}");
                         }
 
@@ -541,8 +575,10 @@ public sealed class NvidiaProfileService
         {
             _adapter.Close();
 
-            // Single-shot from here on: the attempt has run, whether or not every entry succeeded.
-            journal.MarkRolledBack();
+            // Single-shot only when it actually finished. A partially failed rollback stays open to a retry — the
+            // entries that came back are marked Restored and will be skipped, so the retry touches only what is
+            // still wrong. Marking it consumed regardless is what made a half-undone profile unrecoverable.
+            if (failed == 0 && skipped == 0) journal.MarkRolledBack();
         }
 
         var summary = $"已恢复 {restored} 项";
