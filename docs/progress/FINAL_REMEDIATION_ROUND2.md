@@ -31,7 +31,8 @@
 | §9 | SafeZip 原子性：**播种式故障注入**证明 commit 前失败时 destination 完全不变 | ✅ | `128f00c` |
 | §11 | README 按现状重写（Provider 框架、实验性标记、边界说明、RC 状态） | ✅ | `f8db9b9` |
 | §2 | NVAPI AccessViolation 专项 | ❌ **未做** | — |
-| §10 | `--mfg-asset-smoke` 真实下载 | ❌ **未做** | — |
+| §10 | `--mfg-asset-smoke` 真实下载 | ✅ **已完成**（真实下载 312 文件 / exit 0） | `882ab9b` |
+| — | **额外修掉**：`ModFetcher.AllowedHosts` 缺 `release-assets.githubusercontent.com` | ✅ 真实下载此前**不可能完成**（每一跳都做白名单检查） | `882ab9b` |
 | §12 | Updates/Downloads/Diagnostics 接真实状态 | ❌ **未做** | — |
 | §13 | 补测试（确认流程/Profile Wiring/Read-back/ProviderVersion/Payload 隔离/Verification/Plan 精确执行/Batch/Restore/Store/SafeZip） | ⚠️ **部分**（各修复项已随附断言，并补了 Store 默认值 / `PreviewAsync` / `PreviewOnly` 三项；**清单式逐项核对未做完**） | `82bfac5` |
 | P0-09 | 预览汇总接入确认框 | ✅ **已完成**（确认前逐个预览，把「被阻止的计划」与「需要确认的计划」追加进确认正文） | `8ea5438` |
@@ -41,15 +42,19 @@
 ```
 Build:                              0 warnings / 0 errors（dotnet build --no-incremental -c Release）
 Harness:                            854 passed / 0 failed / 10 skipped（原 801 项全保留，新增 53 项）
+Network smoke:                      PASS（Release 解析 + host 白名单）
+Real MFG Asset Smoke:               PASS（真实下载 mfg-smooth 2.8.2 → 312 个文件，二进制 8 / 配置 304，exit 0）
 dotnet test:                        exit 0
 RC Packaging:                       PASS（scripts/package-release.ps1 exit 0）
 UI Process Smoke:                   PASS（从最终 ZIP 解压到全新临时目录，进程稳定 20 秒，句柄非 0，日志无 Exception/Fatal/Unhandled，只终止本次 PID，未误杀其他进程）
-EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,061,120 B）
+EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,061,093 B）
 ZIP:                                artifacts/RTX30-FrameGen-Manager-win-x64-1.9.3.zip（57.7 MB）
-SHA256 (EXE):                       C11BC6FAC672909C88F89FF98CB39291D744F8FA6C76AE7708365E49622C2ECA
-SHA256 (ZIP):                       E2373264A1571844BAF0647D7E9911563E09C668E0C127BB77E607B111A72C78
+SHA256 (EXE):                       0C4EA8B7CB0D649A8F5B7D8D8A0A909E8C909F13D73F9956B7205A1C860E67DA
+SHA256 (ZIP):                       37E0CC6068BA343F765A7AF3FDB9FFBA0E60407B4C1F703688B0546537B32113
 发布目录内容:                        恰好 4 个文件（EXE + LICENSE + README.md + THIRD_PARTY_NOTICES.txt）
 ```
+
+> **关于 §10 这个额外发现**：`--network-smoke` 覆盖了「解析 Release + 检查 host 白名单」，看起来网络路径已经测过——但它**从未跟随重定向**。真实下载第一跳是 `github.com`，随后重定向到 CDN 主机；白名单对每一跳都校验，缺了那一个就拒绝。**编译、单元测试、结构断言都不可能发现它**，只有真的去下载才会撞上。这正是 §10 单独列一项的理由。
 
 `--no-incremental` 是刻意的：**增量编译不会重新报告未改动文件的警告**——本轮之前有一条 `CS8601` 被增量缓存掩盖了多轮。
 
