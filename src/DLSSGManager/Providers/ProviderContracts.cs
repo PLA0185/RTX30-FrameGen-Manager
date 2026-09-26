@@ -222,6 +222,21 @@ public interface IPatchProvider
     PayloadManifest? ManifestOf(string payloadDirectory) => null;
 
     /// <summary>
+    /// 把 provider 自己的 payload 布局**正规化**成通用 <c>ModSource</c> 能消费的 canonical 目录，返回该目录；
+    /// 若这个 provider 的 payload 本来就是 canonical 布局，返回 <b>null</b>（调用方沿用原目录）。
+    ///
+    /// <para><b>为什么不能靠通用类型去猜。</b>真实 MFG payload 是<b>嵌套发行包</b>
+    /// （<c>Manual/Version/version.dll</c> · <c>payload/native/normal.asi</c> …），而 <c>ModSource</c> 期望
+    /// 扁平的 canonical 布局（根目录有 <c>dlssg_sm86.ini</c>、代理 DLL 在根或 <c>altnative/</c>）。
+    /// <b>实测</b>把前者直接交给后者会得到 <c>IsValid = False</c>，校验消息是「缺少 dlssg_sm86.ini，
+    /// 且未找到任何代理 DLL」。让通用类型去猜嵌套目录，等于把「上游布局可能变」这件事变成一次静默的错误安装。</para>
+    ///
+    /// <para>默认 <b>null</b>：不声明就没有正规化，调用方沿用原目录 —— 对已经是 canonical 布局的 provider
+    /// 来说这是正确行为，也让既有路径零改动。</para>
+    /// </summary>
+    string? PrepareCanonicalPayload(string payloadDirectory) => null;
+
+    /// <summary>
     /// 这个 provider 是否**要求**写 NVIDIA DRS Profile 才算配置完成。
     ///
     /// <para><b>为什么必须与「能不能部署文件」分开。</b>DRS 写入需要管理员权限（实测：非提权返回
