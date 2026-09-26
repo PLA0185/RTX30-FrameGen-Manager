@@ -3,6 +3,8 @@
 [Oo]bj/
 /dist/
 /publish/
+# 发布候选产物（EXE / ZIP / SHA256SUMS）：本机生成，不入库；由 scripts/package-release.ps1 重建
+/artifacts/
 
 # 安装包编译中间产物
 /installer/Output/
