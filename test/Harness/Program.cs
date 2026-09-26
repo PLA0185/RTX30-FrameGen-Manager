@@ -5440,6 +5440,22 @@ public static class Program
         Check("回滚成功时不声称回滚未完成", !rolledBack.RollbackIncomplete,
             $"incomplete={rolledBack.RollbackIncomplete}");
 
+        // P0-10 的另一半，也是真正要防的那一半：回滚**尝试过但没成功**时必须被显式暴露，而不是只写一句
+        // 「已回滚」—— 机器上可能还留着本次写下的东西，这是用户最需要先知道的事实。
+        // ⚠️ 失败侧的场景还不能这样写，两个方向都试过了：
+        //
+        //  · 换成 `new RecordingProvider { FailRestore = true }` —— 兼容性记录是按 provider id `mfg-smooth`
+        //    注册的，换替身后查询落空，流程停在 NeedsConfirmation，**根本走不到安装与回滚**
+        //    （实测 outcome=NeedsConfirmation）；
+        //  · 强转 `(RecordingProvider)rbParts.Provider` —— `Build` 造的是 `MfgSmoothProvider`，
+        //    运行期抛 InvalidCastException，**把整个套件从 887 项腰斩到 807 项**（中途崩溃表现为总数下降，
+        //    而不是单个失败 —— 这正是本项目记录过的观测方式）。
+        //
+        // 要测 RollbackIncomplete 的失败侧，需要让 `MfgSmoothProvider` 支持注入还原失败（它内部走
+        // `DeploymentService.Restore` 静态方法，不是可替换的实例成员）。**在那之前，这条断言留空比留一条
+        // 假的更有价值** —— 成功侧的「回滚成功时不声称回滚未完成」已经在上面覆盖，它至少能挡住「恒为 true」
+        // 的实现。
+
         // ---- 7. profile journal wiring ----
         var jParts = Build(work, "wfJournal");
         var jDir = Path.Combine(work, "wf-journal-payload");
