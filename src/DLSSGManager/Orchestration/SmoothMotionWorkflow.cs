@@ -144,6 +144,16 @@ public sealed record WorkflowRequest(
     bool AllowProtected = false,
     bool HasKernelAntiCheat = false,
     GraphicsApi UserApi = GraphicsApi.Unknown,
+
+    /// <summary>
+    /// Set only after the user has been shown the warnings and chosen to continue anyway.
+    ///
+    /// <para>This is <b>consent, not evidence</b>: it lets a run proceed with unknown compatibility, and it
+    /// must never be used to change what the compatibility state says. Writing it back as "Compatible" would
+    /// turn "the user accepted the risk" into "this combination was verified".</para>
+    /// </summary>
+    bool UserConfirmedUnverified = false,
+
     bool ObservedDebugBars = false,
     bool ObservedPatchLog = false,
     bool ProxyLoadedInGame = false,
@@ -213,8 +223,15 @@ public sealed class SmoothMotionWorkflow
         var renderer = _detector.DetectRenderer(request.Game, request.UserRendererChoice);
         steps.Add(new WorkflowStep("检测渲染 EXE", true, renderer.Reason));
 
-        var api = _detector.DetectApi(request.Game);
-        steps.Add(new WorkflowStep("检测图形 API", api.Api != GraphicsApi.Unknown, api.Reason));
+        // A user-specified API is used, because the person running the game knows more than a heuristic — but it
+        // may not silently overrule evidence that reaches runtime detection. A disagreement becomes a question
+        // for the user rather than a coin toss inside the code.
+        var detectedApi = _detector.DetectApi(request.Game);
+        var apiChoice = ResolveApi(request.UserApi, detectedApi);
+
+        steps.Add(new WorkflowStep("检测图形 API", apiChoice.Api != GraphicsApi.Unknown, apiChoice.Reason));
+
+        if (apiChoice.Conflicts) errors.Add(apiChoice.Reason);
 
         var conflicts = _detector.ScanProxyConflicts(request.Game);
         steps.Add(new WorkflowStep("扫描代理入口", true,
@@ -224,7 +241,7 @@ public sealed class SmoothMotionWorkflow
         var environment = new CompatibilityQuery(
             Gpu: request.GpuName,
             Driver: request.DriverVersion,
-            GraphicsApi: api.Api,
+            GraphicsApi: apiChoice.Api,
             Game: request.Game.Name,
             Store: request.Store,
             RendererExe: renderer.RendererExe is null ? null : System.IO.Path.GetFileName(renderer.RendererExe),
@@ -256,7 +273,10 @@ public sealed class SmoothMotionWorkflow
         InstallPlanInput MakeInput(CompatibilityDecision d) => new(
             Game: request.Game,
             Renderer: renderer,
-            Api: api,
+            // The plan receives the API actually in play. The evidence behind the detector's own reading is kept
+            // as-is: it records what was observed, and rewriting it to match the decision would destroy the very
+            // disagreement the user is being asked about.
+            Api: detectedApi with { Api = apiChoice.Api, Reason = apiChoice.Reason },
             ProviderId: request.Provider.Id,
             ProviderVersion: request.ProviderVersion,
             ProviderPayloadFiles: payloadFiles,
@@ -293,11 +313,25 @@ public sealed class SmoothMotionWorkflow
                 errors, filesWritten: false, profileWritten: false, journal: profileJournal);
         }
 
-        if (plan.Status == PlanStatus.NeedsConfirmation)
+        var needsConfirmation = plan.Status == PlanStatus.NeedsConfirmation || apiChoice.Conflicts;
+
+        if (needsConfirmation && !request.UserConfirmedUnverified)
         {
             errors.AddRange(plan.Warnings);
+
+            steps.Add(new WorkflowStep("等待用户确认", true,
+                "兼容性未知或存在 API 冲突：需要用户明确确认后才会继续，本步骤未写入任何内容。"));
+
             return Finish(WorkflowOutcome.NeedsConfirmation, SmoothMotionEvidence.None, steps, plan, request,
                 errors, filesWritten: false, profileWritten: false, journal: profileJournal);
+        }
+
+        if (needsConfirmation)
+        {
+            // Consent, not evidence. The compatibility state keeps saying whatever it said — recording a
+            // confirmation as "Compatible" would turn "the user accepted the risk" into "this was verified".
+            steps.Add(new WorkflowStep("用户确认继续", true,
+                $"用户已知情确认在兼容性为 {plan.Compatibility.State} 的情况下继续；该状态保持不变，不作为已验证。"));
         }
 
         // From here on something is actually written, so every failure path must undo what it did.
@@ -372,9 +406,10 @@ public sealed class SmoothMotionWorkflow
             if (request.ProfileSettings is { Count: > 0 })
             {
                 // Values come from the setting definitions, never from a blanket 1: the API bitmask is derived
-                // from the API actually in play, and a setting whose values are not established is not written
-                // at all. An unknown API therefore yields the master switch alone — never a guessed bitmask.
-                var writes = SmoothMotionSettings.EnableWrites(request.UserApi)
+                // from the API actually in play (the user's choice when given, otherwise the detected one), and
+                // a setting whose values are not established is not written at all. An unknown API therefore
+                // yields the master switch alone — never a guessed bitmask.
+                var writes = SmoothMotionSettings.EnableWrites(apiChoice.Api)
                     .Where(w => request.ProfileSettings.Any(s => s.Id == w.Setting.Id))
                     .ToList();
 
@@ -439,6 +474,36 @@ public sealed class SmoothMotionWorkflow
             ValidationState.ReportedBroken => CompatibilityDecision.Incompatible(version ?? "", match.Reason),
             _ => CompatibilityDecision.Unknown(match.Reason),
         };
+    }
+
+    /// <summary>
+    /// Picks the graphics API to plan with, and reports whether the user's choice contradicts an observation
+    /// strong enough to argue with it.
+    ///
+    /// <para>A user-specified API wins over a static guess — the person running the game knows more than a
+    /// filename heuristic. It does <b>not</b> silently win over runtime evidence: a disagreement at that rung
+    /// is exactly the kind of question the user should answer, so it is surfaced rather than resolved.</para>
+    /// </summary>
+    private static (GraphicsApi Api, string Reason, bool Conflicts) ResolveApi(
+        GraphicsApi userApi, GraphicsApiDetection detected)
+    {
+        if (userApi == GraphicsApi.Unknown)
+            return (detected.Api, detected.Reason, false);
+
+        var strong = detected.Level >= EvidenceLevel.RuntimeDetection && detected.Api != GraphicsApi.Unknown;
+        var conflicts = strong && detected.Api != userApi;
+
+        if (conflicts)
+        {
+            return (userApi,
+                $"用户指定 {userApi}，但运行时检测到 {detected.Api}（证据等级 {detected.Level}）："
+                + "两者冲突，需要用户确认后才会继续。",
+                true);
+        }
+
+        return (userApi,
+            $"采用用户指定的 {userApi}（检测结果为 {detected.Api}，证据等级 {detected.Level}）。",
+            false);
     }
 
     private WorkflowResult Finish(

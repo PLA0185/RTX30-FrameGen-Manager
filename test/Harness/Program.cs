@@ -4154,6 +4154,38 @@ public static class Program
         var settings = new[] { SmoothMotionSettings.All[0], SmoothMotionSettings.All[1] };
         rbParts.Drs.FailWriteId = SmoothMotionSettings.EnabledApis;
 
+        // ---- G: unknown compatibility proceeds only with explicit user consent ----
+        // The fixture registers a record under the name passed to Build, so the game is deliberately named
+        // something else: querying a game with no record is the only way to get genuinely Unknown compatibility.
+        var gParts = Build(work, "wfGMatrix");
+        var gGame = new GameEntry { Name = "wfGUnknown", RenderDir = MakeGameDir(work, "wfGUnknownGame") };
+        var gDir = Path.Combine(work, "wf-g-unknown-payload");
+
+        var unconfirmed = gParts.Workflow.RunAsync(
+            MakeRequest("wfGUnknown", gDir, gParts.Provider, gGame), null, CancellationToken.None)
+            .GetAwaiter().GetResult();
+
+        Check("兼容性未知且未确认时要求确认",
+            unconfirmed.Outcome == WorkflowOutcome.NeedsConfirmation, unconfirmed.Outcome.ToString());
+        Check("要求确认时不写入任何文件", !File.Exists(Path.Combine(gGame.RenderDir, "version.dll")));
+        Check("要求确认时给出原因", unconfirmed.Errors.Count > 0);
+
+        var confirmedParts = Build(work, "wfGConfirmedMatrix");
+        var confirmedGame = new GameEntry { Name = "wfGConfirmed", RenderDir = MakeGameDir(work, "wfGConfirmedGame") };
+        var confirmed = confirmedParts.Workflow.RunAsync(
+            MakeRequest("wfGConfirmed", gDir, confirmedParts.Provider, confirmedGame)
+                with { UserConfirmedUnverified = true },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("用户明确确认后不再停在确认环节",
+            confirmed.Outcome != WorkflowOutcome.NeedsConfirmation, confirmed.Outcome.ToString());
+        Check("确认被记录为步骤", confirmed.Steps.Any(s => s.Stage.Contains("用户确认")));
+
+        // Consent is not evidence: the compatibility state must not be rewritten just because the user agreed.
+        Check("确认不会把兼容性写成 Compatible",
+            confirmed.Plan is null || confirmed.Plan.Compatibility.State != CompatibilityState.Compatible,
+            confirmed.Plan?.Compatibility.State.ToString() ?? "(无计划)");
+
         // A detected API is what makes the API bitmask writable at all — an unknown API deliberately yields
         // the master switch alone — so the request has to carry one for this test to reach the second write.
         var rolledBack = rbParts.Workflow.RunAsync(
