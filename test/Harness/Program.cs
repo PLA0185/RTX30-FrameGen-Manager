@@ -3785,9 +3785,12 @@ public static class Program
             new NvidiaProfileService(new FakeDrsAdapter { FailOpenCode = -9 }, () => false)
                 .ProbeElevation("P").Requirement == ElevationRequirement.Required);
 
-        Check("非提权调用成功 → 判为不需要提权",
+        // Was "非提权调用成功 → 判为不需要提权". That assertion locked in the very inference the second remediation
+        // round removed: a successful read says nothing about whether writing needs elevation, so the read probe
+        // now reports ReadAvailable and only a real write probe can conclude NotRequired.
+        Check("非提权读成功 → 只判为「读取可用」，不推断写入权限",
             new NvidiaProfileService(new FakeDrsAdapter(), () => false)
-                .ProbeElevation("P").Requirement == ElevationRequirement.NotRequired);
+                .ProbeElevation("P").Requirement == ElevationRequirement.ReadAvailable);
 
         Check("已提权仍失败 → 不归因为权限",
             new NvidiaProfileService(new FakeDrsAdapter { FailOpenCode = -9 }, () => true)
@@ -4515,6 +4518,29 @@ public static class Program
 
         // The executor-side half of this is covered by the plan-execution section's own cases (a ready plan
         // installs, an unapproved one is refused), which is where the post-install comparison actually runs.
+
+        // ---- 第二轮 §3：不得从读权限推导写权限 ----
+        // The defect this covers: a successful non-elevated *read* was reported as "writes do not need elevation".
+        // Reading and writing are different privileges here, so the read only proves the read.
+        Check("存在独立的「仅读可用」状态，不与「写入不需要提权」混同",
+            Enum.IsDefined(typeof(NvidiaProfile.ElevationRequirement),
+                NvidiaProfile.ElevationRequirement.ReadAvailable) &&
+            NvidiaProfile.ElevationRequirement.ReadAvailable != NvidiaProfile.ElevationRequirement.NotRequired);
+
+        var elevDrs = new FakeDrsAdapter();
+        var elevService = new NvidiaProfileService(elevDrs, () => false);
+
+        var readProbe = elevService.ProbeElevation(null);
+
+        Check("非提权读成功只报 ReadAvailable，不得报 NotRequired",
+            readProbe.Requirement == NvidiaProfile.ElevationRequirement.ReadAvailable,
+            $"{readProbe.Requirement}：{readProbe.Evidence}");
+
+        var writeProbe = elevService.ProbeWriteElevation(null);
+
+        Check("受控写探测（写入→保存→读回一致）成功后才报 NotRequired",
+            writeProbe.Requirement == NvidiaProfile.ElevationRequirement.NotRequired,
+            $"{writeProbe.Requirement}：{writeProbe.Evidence}");
 
         // ---- H: the configuration service the window now calls (整改 H) ----
         var hParts = Build(work, "wfHMatrix");

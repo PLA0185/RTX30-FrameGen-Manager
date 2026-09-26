@@ -263,8 +263,18 @@ public enum ElevationRequirement
     /// <summary>Not established. Not a synonym for "no".</summary>
     Unknown,
 
-    /// <summary>A non-elevated call succeeded, so elevation is not needed here.</summary>
+    /// <summary>A non-elevated write actually succeeded, so elevation is not needed here.</summary>
     NotRequired,
+
+    /// <summary>
+    /// A non-elevated <b>read</b> succeeded — and nothing more.
+    ///
+    /// <para>Reading and writing are different privileges on this API, and this project's rule is that a
+    /// successful read only proves a successful read. Concluding "writes do not need elevation" from one is the
+    /// exact inference this state exists to prevent: <see cref="NotRequired"/> is reserved for a probe that
+    /// actually wrote, committed and read the value back.</para>
+    /// </summary>
+    ReadAvailable,
 
     /// <summary>A call failed while the process was not elevated, which is consistent with a privilege requirement.</summary>
     Required,
@@ -573,8 +583,8 @@ public sealed class NvidiaProfileService
                     return elevated
                         ? new ElevationProbe(ElevationRequirement.Unknown,
                             "已在提权状态下调用成功，无法据此判断非提权是否需要提权。")
-                        : new ElevationProbe(ElevationRequirement.NotRequired,
-                            "非提权状态下成功读取 DRS，因此本机写入不需要管理员权限。");
+                        : new ElevationProbe(ElevationRequirement.ReadAvailable,
+                            "非提权状态下成功读取 DRS —— 这只证明读取可用，不证明写入也不需要提权。");
                 }
 
                 return new ElevationProbe(ElevationRequirement.Unknown, $"读取探测失败：{probe.Reason}");
@@ -590,6 +600,111 @@ public sealed class NvidiaProfileService
                 $"已提权仍失败（code {opened.Code}），原因不是权限。")
             : new ElevationProbe(ElevationRequirement.Required,
                 $"非提权调用失败（code {opened.Code}），与权限要求一致；官方文档未声明该要求，故记为社区经验。");
+    }
+
+    /// <summary>
+    /// Establishes whether a non-elevated <b>write</b> works, by performing one and reading it back.
+    ///
+    /// <para><b>This writes to the driver profile.</b> It is deliberately absent from the default path: it saves
+    /// the original value, writes a different one, commits, reads it back, and restores what was there — and it is
+    /// reachable only from an explicit, user-initiated probe (the <c>--nvapi-smoke</c> mode), never from a normal
+    /// configure run. A probe that silently modified someone's profile would be worse than not knowing.</para>
+    ///
+    /// <para>It answers <see cref="ElevationRequirement.NotRequired"/> only when the <i>whole</i> sequence
+    /// succeeded without elevation. Anything less leaves the question open, which is the honest answer.</para>
+    /// </summary>
+    public ElevationProbe ProbeWriteElevation(string? profileName)
+    {
+        if (!_adapter.IsAvailable)
+            return new ElevationProbe(ElevationRequirement.Unknown, $"{_adapter.Name} 不可用，无法探测。");
+
+        if (!_adapter.CanWrite)
+            return new ElevationProbe(ElevationRequirement.Unknown,
+                "适配器不具备写入能力（需读、删、保存三者齐备），无法探测写入权限。");
+
+        var elevated = _isElevated();
+
+        var opened = _adapter.Open(profileName);
+        if (!opened.Ok)
+        {
+            return elevated
+                ? new ElevationProbe(ElevationRequirement.Unknown,
+                    $"已提权仍失败（code {opened.Code}），原因不是权限。")
+                : new ElevationProbe(ElevationRequirement.Required,
+                    $"非提权打开会话失败（code {opened.Code}），与权限要求一致。");
+        }
+
+        try
+        {
+            var before = _adapter.Read(SmoothMotionSettings.FeatureEnabled);
+
+            if (!before.WasRead)
+                return new ElevationProbe(ElevationRequirement.Unknown,
+                    $"无法读取原值，不能做可恢复的写入探测：{before.Reason}");
+
+            // The probe value differs from whatever is there, so a matching read-back cannot be a coincidence of
+            // writing back the same number.
+            var probeValue = before.State == ProfileSettingState.ExplicitValue && before.Value == 1u ? 0u : 1u;
+
+            var written = _adapter.Write(SmoothMotionSettings.FeatureEnabled, probeValue);
+            if (!written.Ok)
+            {
+                return elevated
+                    ? new ElevationProbe(ElevationRequirement.Unknown,
+                        $"已提权仍无法写入（code {written.Code}），原因不是权限。")
+                    : new ElevationProbe(ElevationRequirement.Required,
+                        $"非提权写入失败（code {written.Code}），与权限要求一致；官方文档未声明该要求，故记为社区经验。");
+            }
+
+            var saved = _adapter.Save();
+            if (!saved.Ok)
+            {
+                RestoreProbeValue(before);
+                return new ElevationProbe(ElevationRequirement.Unknown,
+                    $"写入成功但保存失败（code {saved.Code}），无法判定写入权限；已尝试恢复原值。");
+            }
+
+            var after = _adapter.Read(SmoothMotionSettings.FeatureEnabled);
+            RestoreProbeValue(before);
+
+            if (!after.WasRead || after.State != ProfileSettingState.ExplicitValue || after.Value != probeValue)
+                return new ElevationProbe(ElevationRequirement.Unknown,
+                    "写入与读回不一致，无法判定写入权限；已尝试恢复原值。");
+
+            return elevated
+                ? new ElevationProbe(ElevationRequirement.Unknown,
+                    "已在提权状态下写入成功，无法据此判断非提权是否需要提权。")
+                : new ElevationProbe(ElevationRequirement.NotRequired,
+                    "非提权状态下完成「写入 → 保存 → 读回一致」全序列，本机写入确实不需要管理员权限。");
+        }
+        finally
+        {
+            _adapter.Close();
+        }
+    }
+
+    /// <summary>
+    /// Puts the probed setting back the way it was found.
+    ///
+    /// <para>Best effort on purpose. A failure here is not hidden — it is expressed by the probe's answer
+    /// remaining "unknown", rather than by claiming the profile was restored.</para>
+    /// </summary>
+    private void RestoreProbeValue(ProfileSettingSnapshot before)
+    {
+        try
+        {
+            if (before.State == ProfileSettingState.Absent)
+                _adapter.Delete(SmoothMotionSettings.FeatureEnabled);
+            else if (before.State == ProfileSettingState.ExplicitValue)
+                _adapter.Write(SmoothMotionSettings.FeatureEnabled, before.Value);
+
+            _adapter.Save();
+        }
+        catch
+        {
+            // Swallowed deliberately: the caller's answer is already "unknown", which is what an unclean probe
+            // actually establishes.
+        }
     }
 }
 
