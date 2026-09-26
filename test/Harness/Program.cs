@@ -52,7 +52,7 @@ public static class Program
         // Explicit, opt-in driver smoke test. Read-only by design, and deliberately not part of the suite:
         // it loads NVAPI and talks to a real driver, which the default run must never do.
         if (args.Length > 0 && args[0] == "--nvapi-smoke")
-            return NvApiSmoke();
+            return NvApiSmoke(args.Length > 1 && args[1] == "--loop");
 
         // Explicit, opt-in network smoke test for the release-asset path.
         if (args.Length > 0 && args[0] == "--network-smoke")
@@ -150,7 +150,7 @@ public static class Program
     /// stops at reading. The write path is exercised only by an explicit user action in the application,
     /// never by a test command.</para>
     /// </summary>
-    private static int NvApiSmoke()
+    private static int NvApiSmoke(bool runLoop)
     {
         Console.WriteLine("=== NVAPI / DRS 只读 Smoke ===");
         Console.WriteLine();
@@ -181,6 +181,59 @@ public static class Program
 
         try
         {
+            // ── Real reads, through the diagnostic entry point ──────────────────────────────────────────
+            //
+            // The loop below reports the guard's answer, not the driver's: the guard refuses every call. These
+            // reads bypass it on purpose — the hand-built marshalling has to be exercised against the real driver
+            // before the gate can be opened, and no application path reaches it.
+            //
+            // A/B alternation uses two different settings so more than one union length is covered. Read-only: this
+            // never writes and never saves.
+            // Opt-in, because it really does read the driver: while the marshalling question is open this ends the
+            // process with an AccessViolationException, and a smoke test that always crashes is not a smoke test.
+            var iterations = runLoop ? 100 : 0;
+            var ids = new[] { SmoothMotionSettings.Feature.Id, SmoothMotionSettings.Apis.Id };
+
+            var reached = 0;
+            var crashed = 0;
+            var notes = new List<string>();
+
+            Console.WriteLine($"诊断读取（绕过 gate，真实调用）：{iterations} 轮 × A/B = {iterations * 2} 次");
+
+            for (var i = 0; i < iterations; i++)
+            {
+                foreach (var id in ids)
+                {
+                    try
+                    {
+                        var probe = adapter.ReadForDiagnostics(id);
+
+                        if (probe.Called) reached++;
+                        else if (notes.Count < 3) notes.Add($"未被触达：{probe.Detail}");
+                    }
+                    catch (Exception ex)
+                    {
+                        crashed++;
+                        if (notes.Count < 3) notes.Add($"{ex.GetType().Name}：{ex.Message}");
+                    }
+                }
+            }
+
+            Console.WriteLine($"  驱动被触达      : {reached} / {iterations * 2}");
+            Console.WriteLine($"  异常            : {crashed}");
+
+            foreach (var note in notes) Console.WriteLine($"  · {note}");
+
+            // "No crash" only means something if the driver was actually reached — zero calls also give zero
+            // crashes. Both conditions are required, which is why `reached` is reported next to `crashed`.
+            // `iterations > 0` is not decoration: without it, skipping the loop reads as a pass.
+            var marshallingProven = iterations > 0 && crashed == 0 && reached == iterations * 2;
+
+            Console.WriteLine(marshallingProven
+                ? "  判定            : 往返封送未再崩溃 —— 满足开 gate 的条件"
+                : "  判定            : 未通过（有异常，或驱动未被触达）—— gate 必须保持关闭");
+            Console.WriteLine();
+
             // The guard refuses every driver call, so this loop is reporting the guard's answer rather than
             // querying the driver: during the original smoke test the second read crashed this process with
             // an access violation.
