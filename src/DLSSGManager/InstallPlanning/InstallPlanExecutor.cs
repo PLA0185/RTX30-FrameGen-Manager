@@ -104,6 +104,13 @@ public static class InstallPlanExecutor
         steps.Add("payload 已包含计划要求的全部文件（代理由 mod source 提供，不在其中）。");
 
         // ── 2. The chosen entry is what gets installed into — or nothing does.
+        //
+        // **这道守卫目前永不触发**：`plan.Mode` 在生产路径上恒为 `Unknown`（`ConfigurationRequest`
+        // 有一个 `InstallMode` 参数，但两个界面构造点都不传它）。**方向是安全的** —— 恒不触发意味着
+        // 它不会拒绝任何安装，而「计划没指定入口时必须拒绝」由下面 `SupportsProxyChoice` 那段守住。
+        //
+        // **刻意保留而不是删除**：一旦有人把 `InstallMode` 接上线（那是个合理的后续功能），
+        // 这道守卫就是「DirectProxy 必须给出入口」的唯一检查点。删掉它，那个功能上线时会带着一个缺口。
         if (plan.Mode == InstallMode.DirectProxy && string.IsNullOrWhiteSpace(plan.ProxyChoice))
             return PlanExecutionResult.Refused("计划为 DirectProxy 却没有指定代理入口，已拒绝安装。", steps);
 

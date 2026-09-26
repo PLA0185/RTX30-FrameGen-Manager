@@ -888,7 +888,13 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
                 if (status != NvApiOk)
                 {
                     _available = false;
-                    _unavailableReason = $"NvAPI_Initialize 返回 {status}（可能未安装 NVIDIA 驱动）。";
+
+                    // 这条是**面向用户**的不可用原因，所以要用官方名与含义（`Report` 会输出
+                    // 「NVAPI_XXX（-N）：……」），并保留「可能未安装 NVIDIA 驱动」这句可操作的上下文 ——
+                    // 那是用户最可能遇到的原因，比错误码本身更有用。
+                    _unavailableReason =
+                        $"NvAPI_Initialize 返回 {NvApiStatus.Report(status)}（可能未安装 NVIDIA 驱动）。";
+
                     return;
                 }
 

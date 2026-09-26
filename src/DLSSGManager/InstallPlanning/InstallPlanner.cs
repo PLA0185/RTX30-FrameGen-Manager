@@ -407,6 +407,17 @@ public enum DeploymentFileSource
     Generated,
 
     /// <summary>游戏目录里已经存在、可以复用的文件（例如其它 Mod 留下的代理入口）。</summary>
+    /// <summary>
+    /// 游戏目录里已经存在、可以复用的文件（例如其它 Mod 留下的代理入口）。
+    ///
+    /// <para><b>当前没有任何生产者</b>：`BuildPlannedFiles` 只产出 <see cref="Payload"/> 与
+    /// <see cref="Generated"/>。这个值是**指令 §13 明确点名要求的三个之一**
+    /// （「至少：Payload / Generated / ExistingReusable」），所以保留 —— 缺了它，枚举就无法表达
+    /// 「复用已有文件」这种将来可能出现的情形。</para>
+    ///
+    /// <para><b>保留与「已接线」是两件事，这里如实标注为前者。</b>一个零生产者、零消费者的枚举值
+    /// 有两种可能：为将来预留（保留 + 标注），或废弃残留（删除更安全）。这一个属于前者。</para>
+    /// </summary>
     ExistingReusable,
 }
 
