@@ -6370,6 +6370,22 @@ public static class Program
         Check("成功的部署不留下事务快照（§17 P2-2）",
             !pendingLeft, $"restore/{holdGame.Id} 下仍有 _pending");
 
+        // ⚠️ **「回滚失败」这一态在本套件里仍然没有断言守护 —— 而这是我尝试失败后的记录。**
+        //
+        // 我按审查者给的思路把 `%RestoreRoot%\<gameId>` 占成一个**文件**，期望 `Snapshot` 里的
+        // `Directory.CreateDirectory(txFolder)` 抛。**实测：它确实让 `Snapshot` 失败，但 `Snapshot`
+        // 自己吞掉异常、返回 null，部署照常成功完成**（这是合理的 —— 快照失败不该阻止部署）。
+        // 于是我得到的是「成功的部署」，而它在成功路径上同样是 `FilesWritten=true / RollbackHandled=false`
+        // ⇒ 这个夹具**证明不了**任何与「回滚失败」有关的事。
+        //
+        // **留一个恒真的断言比没有断言更糟**（它会让报告里的「已覆盖」变成假话），所以我删掉了它，
+        // 而不是把它改成「尽量能通过」的样子。
+        //
+        // 审查者用它的自建探针**做到了**这一态（`Ok=False / FilesWritten=True / RollbackHandled=False`），
+        // 说明入口确实存在 —— **只是不是我现在用的这个**：需要让 `Deploy` **在写入之后**才失败
+        // （例如让第 4 步之后某一步抛），而不是让它「预感知」到快照不可用。
+        // **下一步若要补这条：从「写入完成后、收尾之前」找一个可注入的失败点。**
+
         // 再部署一次，但独占源 DLL，让事务内的复制失败 → catch 自回滚。
         using (new FileStream(Path.Combine(holdPayload, "version.dll"),
                    FileMode.Open, FileAccess.Read, FileShare.None))
