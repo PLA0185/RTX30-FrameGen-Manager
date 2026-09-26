@@ -774,7 +774,7 @@ public sealed class SmoothMotionWorkflow
     /// 按**内容哈希**判断它是不是我们写的。**只按名字判断会让用户的文件背锅；只按存在判断会让漏掉的残留
     /// 被说成已清理。**</para>
     /// </summary>
-    private static List<string> ScanForLeftovers(InstallPlan plan, GameEntry game)
+    private static List<string> ScanForLeftovers(InstallPlan plan, GameEntry game, DeploymentInfo? deployed)
     {
         var candidates = new List<string>();
 
@@ -782,8 +782,12 @@ public sealed class SmoothMotionWorkflow
             if (!string.IsNullOrWhiteSpace(relative)) candidates.Add(relative);
 
         // 部署记录里写过的文件 —— 覆盖「计划外」那一类（待机代理等）。
-        foreach (var deployed in game.Deployment?.Files ?? new List<DeployedFile>())
-            if (!string.IsNullOrWhiteSpace(deployed.FileName)) candidates.Add(deployed.FileName);
+        //
+        // **记录由调用方在 `Restore` 之前取好并传进来**：`Restore` 成功会清空 `game.Deployment`，
+        // 而在这里现读只会拿到 null ⇒ 下面按哈希判归属的整段都成了空转、两个候选源只剩计划那一个
+        // （曾经就是这样，于是未签名的计划外残留扫不到）。
+        foreach (var file in deployed?.Files ?? new List<DeployedFile>())
+            if (!string.IsNullOrWhiteSpace(file.FileName)) candidates.Add(file.FileName);
 
         var leftovers = new List<string>();
 
@@ -795,7 +799,7 @@ public sealed class SmoothMotionWorkflow
             if (!File.Exists(path)) continue;
 
             // **存在 ≠ 是我们的。** 用部署记录里的哈希判断这是不是我们写下去的那个文件。
-            var recorded = game.Deployment?.Files.FirstOrDefault(f =>
+            var recorded = deployed?.Files.FirstOrDefault(f =>
                 string.Equals(Path.GetFileName(f.FileName), leaf, StringComparison.OrdinalIgnoreCase));
 
             if (DeploymentService.IsOurs(path, recorded?.Sha256))
@@ -858,12 +862,19 @@ public sealed class SmoothMotionWorkflow
 
         if (filesWritten)
         {
+            // **先把部署记录取出来，再回滚。** `Restore` 成功后会**清空 `game.Deployment`** ——
+            // 而 `ScanForLeftovers` 正需要这份记录（它要靠记录里的哈希判断「这个文件是不是我们写的」）。
+            // 在 `Restore` 之后读它，读到的是 null ⇒ 归属判据退化成「有没有本项目签名」，
+            // **未签名的残留（社区 `d3d12.dll`、上游未签名 DLL）就扫不到**，于是「已回滚」在
+            // 不成立时也说出口 —— 那正是 `ScanForLeftovers` 的文档声称已经修掉的那一类误判。
+            var deploymentBeforeRestore = request.Game.Deployment;
+
             var restore = request.Provider.Restore(request.Game, removeLogs: false);
 
             // 任务书 §10：执行 Restore **并重新扫描确认**。Restore 返回 Ok 只说明它没报错，不说明目录回到了
             // 原样 —— 只有真的再看一眼，才能区分「调用成功」与「文件确实没了」。缺了这一步时，一次沉默失败的
             // 还原会被报成「已回滚」。
-            var leftover = ScanForLeftovers(plan, request.Game);
+            var leftover = ScanForLeftovers(plan, request.Game, deploymentBeforeRestore);
 
             filesRolledBack = restore.Ok && leftover.Count == 0;
 

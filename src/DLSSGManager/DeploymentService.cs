@@ -714,14 +714,29 @@ public static class DeploymentService
             // `UnknownConflict`，planner 于是改选下一个空闲名，**可能同时存在两个代理**。
             //
             // 「尝试过回滚」与「回滚成功」是两件事 —— 只有后者才配得上「已收尾」。
-            r.FilesWritten = !(proxyUndone && iniUndone);
-            r.RollbackHandled = !r.FilesWritten;
+            var fullyUndone = proxyUndone && iniUndone;
+            r.FilesWritten = !fullyUndone;
+            r.RollbackHandled = fullyUndone;
 
             r.Fail(Loc.T("Deploy.Failed", ex.Message));
             foreach (var note in rollbackNotes) r.Note(note);
 
-            try { if (Directory.Exists(txFolder)) Directory.Delete(txFolder, recursive: true); }
-            catch { /* the snapshot folder is disposable */ }
+            // **只有回滚真的完成了才删快照。**
+            //
+            // `txFolder` 里装的是「本次要覆盖的文件的原字节」，**没有第二份**（`Backup()` 只对被判为
+            // 外来的 INI 另存一份到 `restoreFolder`）。回滚因目标被占用而**失败**时，这份原字节是用户
+            // 恢复文件的唯一希望 —— 而这里曾经**无条件**删掉它，**同时还告诉用户「请手工检查该文件」**：
+            // 让他去检查一个我们已经把恢复材料删掉的文件。
+            if (fullyUndone)
+            {
+                try { if (Directory.Exists(txFolder)) Directory.Delete(txFolder, recursive: true); }
+                catch { /* 快照目录可丢弃；删不掉不影响这次部署的结果 */ }
+            }
+            else
+            {
+                // 留着它，并把位置写出来 —— 用户需要一个能自己动手的入口。
+                r.Note($"未完成的回滚快照保留在：{txFolder}");
+            }
         }
 
         return r;
