@@ -5362,6 +5362,20 @@ public static class Program
         Check("不同 provider 的 payload 目录不同",
             PayloadPaths.For("mfg-smooth", "2.8.2") != PayloadPaths.For("dlssg-sm86", "2.8.2"));
 
+        // ---- §18.4：payload 隔离 ----
+        //
+        // 「同 provider 不同版本」与「不同 provider」两条隔离断言就在上面两行，已经覆盖了 P0-07 依赖的
+        // 机制。P0-07 本身修的是 UI 主流程把界面上的 mod 源路径（SourcePath）当 payload 目录传下来，
+        // 于是所有 provider、所有版本共用同一个目录 —— 隔离只存在于代码里，从未在主流程生效。
+        //
+        // ⚠️ 这条覆盖的边界必须写清楚：MainWindow.Actions.cs **不在 Harness 的编译白名单里**（它只由 WPF
+        // 工程编译），所以「UI 现在确实传 null」无法在这里断言 —— 那一侧只能在代码里守住（单游戏运行与
+        // 批量预览两处都是 `PayloadDirectory: null`，各带说明理由的注释）。报告里不能把机制正确写成
+        // UI 行为已验证。这里只补一条：payload 目录不能与 staging 目录重合。
+        Check("payload 目录不与 staging 目录重合",
+            PayloadPaths.Staging("p", "1.0") != PayloadPaths.For("p", "1.0"),
+            $"{PayloadPaths.Staging("p", "1.0")} / {PayloadPaths.For("p", "1.0")}");
+
         Check("payload 根目录位于应用数据目录之下，不在游戏目录里",
             SafeZip.IsInside(AppPaths.Root, PayloadPaths.Root));
 
