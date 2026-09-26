@@ -1,3 +1,4 @@
+using System.IO;
 using DLSSGManager.Compatibility;
 using DLSSGManager.GameDetection;
 using DLSSGManager.InstallPlanning;
@@ -737,6 +738,25 @@ public sealed class SmoothMotionWorkflow
         }
     }
 
+    /// <summary>
+    /// 回滚后重新看一眼：计划要求部署的那些文件，是不是真的不在了。
+    ///
+    /// <para>任务书 §10 要求「执行 Restore <b>并重新扫描确认</b>」。只看 <c>Restore</c> 的返回值不够 —— 它回答的
+    /// 是「这次调用有没有报错」，而这里问的是「目录有没有回到原样」。两者在还原部分失败时会分叉，而分叉的
+    /// 后果是「已回滚」这句话变成假话。</para>
+    /// </summary>
+    private static List<string> ScanForLeftovers(InstallPlan plan, GameEntry game)
+    {
+        var leftovers = new List<string>();
+
+        foreach (var relative in plan.FilesToDeploy)
+        {
+            if (File.Exists(Path.Combine(game.RenderDir, relative))) leftovers.Add(relative);
+        }
+
+        return leftovers;
+    }
+
     private WorkflowResult Finish(
         WorkflowOutcome outcome,
         SmoothMotionEvidence evidence,
@@ -784,11 +804,25 @@ public sealed class SmoothMotionWorkflow
         if (filesWritten)
         {
             var restore = request.Provider.Restore(request.Game, removeLogs: false);
-            filesRolledBack = restore.Ok;
-            steps.Add(new WorkflowStep("回滚文件部署", restore.Ok, restore.Message));
-            if (!restore.Ok)
+
+            // 任务书 §10：执行 Restore **并重新扫描确认**。Restore 返回 Ok 只说明它没报错，不说明目录回到了
+            // 原样 —— 只有真的再看一眼，才能区分「调用成功」与「文件确实没了」。缺了这一步时，一次沉默失败的
+            // 还原会被报成「已回滚」。
+            var leftover = ScanForLeftovers(plan, request.Game);
+
+            filesRolledBack = restore.Ok && leftover.Count == 0;
+
+            steps.Add(new WorkflowStep("回滚文件部署", filesRolledBack,
+                leftover.Count == 0
+                    ? restore.Message
+                    : $"{restore.Message}；重新扫描后仍发现 {leftover.Count} 个文件残留：{string.Join("、", leftover)}"));
+
+            if (!filesRolledBack)
             {
-                errors.Add(restore.Message);
+                errors.Add(leftover.Count == 0
+                    ? restore.Message
+                    : $"回滚未完成：游戏目录仍留有 {string.Join("、", leftover)}");
+
                 rollbackIncomplete = true;
             }
         }
