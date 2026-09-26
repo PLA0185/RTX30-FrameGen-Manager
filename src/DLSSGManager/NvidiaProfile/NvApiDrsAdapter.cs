@@ -25,6 +25,9 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
     /// <summary>Returns the <i>base</i> profile's real handle — distinct from the global-profile sentinel.</summary>
     private const uint IdGetBaseProfile = 0xda8466a0;
+
+    /// <summary>Locates the profile that owns an executable — the renderer EXE, not the game's display name.</summary>
+    private const uint IdFindApplicationByName = 0xeee566b2;
     private const uint IdUnload = 0xd22bdd7e;
     private const uint IdDrsCreateSession = 0x0694d52e;
     private const uint IdDrsDestroySession = 0xdad9cff8;
@@ -65,8 +68,47 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         if (_session == IntPtr.Zero)
             return DrsApplicationLookup.NotFound(executableName, "没有已打开的 DRS 会话。");
 
-        return DrsApplicationLookup.NotFound(executableName,
-            "应用查找的结构体封送尚未接入：在只读循环证明封送安全之前，不新增第二条会触碰驱动结构体的调用路径。");
+        EnsureLoaded();
+        if (!_available) return DrsApplicationLookup.NotFound(executableName, _unavailableReason);
+
+        var find = Resolve<DrsFindApplicationByNameDelegate>(IdFindApplicationByName);
+
+        if (find is null)
+            return DrsApplicationLookup.NotFound(executableName, "NvAPI_DRS_FindApplicationByName 未被解析。");
+
+        // NVDRS_APPLICATION is typedef'd to V4 (nvapi.h L24578) — not V1. Layout: version 0 | isPredefined 4 |
+        // appName 8 | userFriendlyName 4104 | launcher 8200 | fileInFolder 12296 | bitfield 16392 |
+        // commandLine 16396, each UnicodeString being 4096 bytes — 20492 in total. Built by hand, like
+        // NVDRS_SETTING, and for the same reason.
+        const int size = 20492;
+        const int userFriendlyNameOffset = 4104;
+
+        var application = Marshal.AllocHGlobal(size);
+
+        try
+        {
+            Marshal.Copy(new byte[size], 0, application, size);
+            Marshal.WriteInt32(application, 0, unchecked((int)((uint)size | (4u << 16))));
+
+            var status = find(_session, ToUnicodeString(executableName), out var profile, application);
+
+            if (status != NvApiOk || profile == IntPtr.Zero)
+            {
+                return DrsApplicationLookup.NotFound(executableName,
+                    $"NvAPI_DRS_FindApplicationByName 返回 {status}：该可执行文件尚未被分配到任何驱动 Profile。");
+            }
+
+            // The name is read back only so the caller can show what matched — the handle is what identifies it.
+            var profileName = Marshal.PtrToStringUni(application + userFriendlyNameOffset) ?? "";
+
+            return DrsApplicationLookup.Matched(executableName,
+                string.IsNullOrEmpty(profileName) ? executableName : profileName,
+                $"已通过可执行文件定位到 Profile「{profileName}」。");
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(application);
+        }
     }
 
     /// <summary>NVAPI_OK. Every other value is a failure and is reported by number, never swallowed.</summary>
@@ -673,6 +715,13 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     private delegate int InitializeDelegate();
 
     private delegate int DrsGetBaseProfileDelegate(IntPtr session, out IntPtr profile);
+
+    /// <summary>
+    /// <c>NvAPI_DRS_FindApplicationByName</c>. <c>appName</c> is <c>__in NvAPI_UnicodeString</c> — a UTF-16 array
+    /// pointer — which is why it marshals as <c>ushort[]</c> rather than as a struct field.
+    /// </summary>
+    private delegate int DrsFindApplicationByNameDelegate(
+        IntPtr session, ushort[] appName, out IntPtr profile, IntPtr application);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DrsCreateSessionDelegate(out IntPtr session);

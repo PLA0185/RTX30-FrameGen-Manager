@@ -232,6 +232,14 @@ public static class Program
             Console.WriteLine(marshallingProven
                 ? "  判定            : 往返封送未再崩溃 —— 满足开 gate 的条件"
                 : "  判定            : 未通过（有异常，或驱动未被触达）—— gate 必须保持关闭");
+
+            // P0-04: locating a profile by the renderer executable. Read-only, and exercised here for the same
+            // reason the diagnostic loop exists — nothing else reaches this code path yet.
+            var lookup = adapter.FindApplication("nvngx_dlssg.dll");
+
+            Console.WriteLine($"应用查找（只读）: {(lookup.Found ? "找到" : "未找到")} —— {lookup.Message}");
+
+            if (lookup.Found) Console.WriteLine($"  匹配的 Profile  : {lookup.ProfileName}");
             Console.WriteLine();
 
             // The gate is open as of c27e154-era work: the earlier failure was the profile handle, not the layout.
