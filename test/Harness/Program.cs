@@ -7,6 +7,7 @@ using DLSSGManager.Update;
 using DLSSGManager.GameDetection;
 using DLSSGManager.Compatibility;
 using DLSSGManager.InstallPlanning;
+using DLSSGManager.NvidiaProfile;
 
 namespace DLSSGManager;
 
@@ -96,6 +97,7 @@ public static class Program
             TestProviderFramework(work);
             TestUpdateFramework(work);
             TestGameDetectionAndPlanning(work);
+            TestNvidiaProfileService(work);
         }
         catch (Exception ex)
         {
@@ -3268,5 +3270,219 @@ public static class Program
         Check("配方参与的计划记录代理策略",
             recipePlan.ProxyStrategy == ProxyStrategy.SafeSingle, recipePlan.ProxyStrategy.ToString());
         Check("配方计划带回滚步骤", recipePlan.RollbackRequirements.Count > 0);
+    }
+
+    /// <summary>Driver double: three-state storage plus injectable failures.</summary>
+    private sealed class FakeDrsAdapter : IDrsAdapter
+    {
+        private readonly Dictionary<uint, (ProfileSettingState State, uint Value)> _store = new();
+
+        public string Name => "fake-drs";
+
+        public bool IsAvailable { get; set; } = true;
+
+        public int FailOpenCode { get; set; }
+        public uint? FailWriteId { get; set; }
+        public uint? FailDeleteId { get; set; }
+        public bool FailSave { get; set; }
+        public bool FailRead { get; set; }
+
+        public int OpenCount { get; private set; }
+        public int WriteCount { get; private set; }
+        public int DeleteCount { get; private set; }
+        public int SaveCount { get; private set; }
+
+        public void Seed(uint id, ProfileSettingState state, uint value) => _store[id] = (state, value);
+
+        public bool Has(uint id) => _store.ContainsKey(id);
+
+        public uint ValueOf(uint id) => _store.TryGetValue(id, out var v) ? v.Value : 0;
+
+        public ProfileSettingState StateOf(uint id) =>
+            _store.TryGetValue(id, out var v) ? v.State : ProfileSettingState.Absent;
+
+        public DrsStatus Open(string? profileName)
+        {
+            OpenCount++;
+            return FailOpenCode != 0 ? DrsStatus.Fail(FailOpenCode, "fake open failure") : DrsStatus.Success;
+        }
+
+        public ProfileSettingSnapshot Read(uint id)
+        {
+            if (FailRead) return ProfileSettingSnapshot.Unreadable(id, "fake read failure");
+
+            return _store.TryGetValue(id, out var v)
+                ? new ProfileSettingSnapshot(id, v.State, v.Value, v.State == ProfileSettingState.InheritedDefault, "fake")
+                : new ProfileSettingSnapshot(id, ProfileSettingState.Absent, 0, false, "fake: 未设置");
+        }
+
+        public DrsStatus Write(uint id, uint value)
+        {
+            WriteCount++;
+            if (FailWriteId == id) return DrsStatus.Fail(-5, "fake write failure");
+
+            _store[id] = (ProfileSettingState.ExplicitValue, value);
+            return DrsStatus.Success;
+        }
+
+        public DrsStatus Delete(uint id)
+        {
+            DeleteCount++;
+            if (FailDeleteId == id) return DrsStatus.Fail(-6, "fake delete failure");
+
+            _store.Remove(id);
+            return DrsStatus.Success;
+        }
+
+        public DrsStatus Save()
+        {
+            SaveCount++;
+            return FailSave ? DrsStatus.Fail(-7, "fake save failure") : DrsStatus.Success;
+        }
+
+        public void Close() { }
+    }
+
+    /// <summary>
+    /// Stage 6: three-state restoration and rollback.
+    ///
+    /// Every case runs against <see cref="FakeDrsAdapter"/> — the driver is never touched, so these tests
+    /// cannot alter a real NVIDIA profile. The real adapter's own behaviour is asserted to be
+    /// fail-closed rather than exercised.
+    /// </summary>
+    private static void TestNvidiaProfileService(string work)
+    {
+        Section("NVIDIA Profile 三态与回滚（Stage 6）");
+
+        var idA = SmoothMotionSettings.FeatureEnabled;
+        var idB = SmoothMotionSettings.EnabledApis;
+
+        ProfileSetting Setting(uint id) => new(id, "test-setting", "test");
+
+        // ---- ABSENT → write → restore → ABSENT ----
+        var a = new FakeDrsAdapter();
+        var svcA = new NvidiaProfileService(a, () => false);
+        var rAbsent = svcA.Apply("TestProfile", new[] { (Setting(idA), 1u) });
+        Check("未设置的项可以写入", rAbsent.Ok && a.StateOf(idA) == ProfileSettingState.ExplicitValue);
+
+        var rbAbsent = svcA.Rollback(rAbsent.Journal);
+        Check("ABSENT 原状通过删除恢复", rbAbsent.Ok && !a.Has(idA), rbAbsent.Message);
+        Check("恢复后状态回到 ABSENT", a.StateOf(idA) == ProfileSettingState.Absent);
+        Check("ABSENT 恢复使用 Delete 而非写入 0", a.DeleteCount >= 1);
+
+        // ---- EXPLICIT 0 → restore → EXPLICIT 0 ----
+        var b = new FakeDrsAdapter();
+        b.Seed(idA, ProfileSettingState.ExplicitValue, 0);
+        var svcB = new NvidiaProfileService(b, () => false);
+        var rZero = svcB.Apply("P", new[] { (Setting(idA), 5u) });
+        Check("显式 0 可被写入覆盖", rZero.Ok && b.ValueOf(idA) == 5);
+
+        svcB.Rollback(rZero.Journal);
+        Check("显式 0 的原值被写回", b.ValueOf(idA) == 0 && b.StateOf(idA) == ProfileSettingState.ExplicitValue);
+        Check("显式 0 不被误判为 ABSENT（未用删除代替写回）", b.Has(idA));
+
+        // ---- EXPLICIT non-zero ----
+        var c = new FakeDrsAdapter();
+        c.Seed(idA, ProfileSettingState.ExplicitValue, 0xFFFFFFFF);
+        var svcC = new NvidiaProfileService(c, () => false);
+        svcC.Rollback(svcC.Apply("P", new[] { (Setting(idA), 3u) }).Journal);
+        Check("显式非零原值被完整恢复", c.ValueOf(idA) == 0xFFFFFFFF);
+
+        // ---- INHERITED / DEFAULT restores by deletion ----
+        var o = new FakeDrsAdapter();
+        o.Seed(idA, ProfileSettingState.InheritedDefault, 123);
+        var svcO = new NvidiaProfileService(o, () => false);
+        svcO.Rollback(svcO.Apply("P", new[] { (Setting(idA), 9u) }).Journal);
+        Check("继承值原状通过删除恢复（未写成显式值）", !o.Has(idA));
+
+        // ---- partial failure ----
+        var d = new FakeDrsAdapter { FailWriteId = idB };
+        var svcD = new NvidiaProfileService(d, () => false);
+        var rPartial = svcD.Apply("P", new[] { (Setting(idA), 1u), (Setting(idB), 2u) });
+        Check("部分写入失败时整体返回失败", !rPartial.Ok, rPartial.Message);
+        Check("部分失败已回滚先前写入项", !d.Has(idA));
+        Check("部分失败保留原因与回滚记录", rPartial.Notes.Count > 1);
+
+        // ---- save failure ----
+        var e = new FakeDrsAdapter { FailSave = true };
+        var svcE = new NvidiaProfileService(e, () => false);
+        var rSave = svcE.Apply("P", new[] { (Setting(idA), 1u) });
+        Check("保存失败时返回失败", !rSave.Ok);
+        Check("保存失败已回滚全部写入", !e.Has(idA));
+
+        // ---- session init failure / profile missing / binding missing ----
+        var f = new FakeDrsAdapter { FailOpenCode = -3 };
+        var rSession = new NvidiaProfileService(f, () => false).Apply("P", new[] { (Setting(idA), 1u) });
+        Check("会话初始化失败时不写入", !rSession.Ok && f.WriteCount == 0);
+        Check("会话失败原因被记录", rSession.Notes.Any(n => n.Contains("-3")));
+
+        var g = new FakeDrsAdapter { FailOpenCode = -160 };
+        Check("Profile 不存在时不写入",
+            !new NvidiaProfileService(g, () => false).Apply("P", new[] { (Setting(idA), 1u) }).Ok && g.WriteCount == 0);
+
+        var h = new FakeDrsAdapter { FailOpenCode = -161 };
+        Check("应用绑定不存在时不写入",
+            !new NvidiaProfileService(h, () => false).Apply("P", new[] { (Setting(idA), 1u) }).Ok && h.WriteCount == 0);
+
+        // ---- elevation probe (runtime, never hard-coded) ----
+        Check("非提权调用失败 → 判为需要提权",
+            new NvidiaProfileService(new FakeDrsAdapter { FailOpenCode = -9 }, () => false)
+                .ProbeElevation("P").Requirement == ElevationRequirement.Required);
+
+        Check("非提权调用成功 → 判为不需要提权",
+            new NvidiaProfileService(new FakeDrsAdapter(), () => false)
+                .ProbeElevation("P").Requirement == ElevationRequirement.NotRequired);
+
+        Check("已提权仍失败 → 不归因为权限",
+            new NvidiaProfileService(new FakeDrsAdapter { FailOpenCode = -9 }, () => true)
+                .ProbeElevation("P").Requirement == ElevationRequirement.Unknown);
+
+        Check("无驱动接口时判为 Unknown 而非 Required",
+            new NvidiaProfileService(new AbsentDrsAdapter(), () => false)
+                .ProbeElevation("P").Requirement == ElevationRequirement.Unknown);
+
+        // ---- rollback success and failure ----
+        var m = new FakeDrsAdapter();
+        var svcM = new NvidiaProfileService(m, () => false);
+        var rM = svcM.Apply("P", new[] { (Setting(idA), 7u) });
+        m.FailDeleteId = idA;
+        var rbFail = svcM.Rollback(rM.Journal);
+        Check("回滚失败被如实报告", !rbFail.Ok && rbFail.Notes.Any(n => n.Contains("失败")));
+        Check("回滚失败时保留真实现场", m.Has(idA) && m.ValueOf(idA) == 7);
+
+        // ---- unreadable original is never guessed ----
+        var n = new FakeDrsAdapter { FailRead = true };
+        var svcN = new NvidiaProfileService(n, () => false);
+        var rUnknown = svcN.Apply("P", new[] { (Setting(idA), 1u) });
+        Check("原值不可读时给出明确警告", rUnknown.Notes.Any(x => x.Contains("无法读取")));
+
+        var writesBeforeRollback = n.WriteCount;
+        svcN.Rollback(rUnknown.Journal);
+        Check("原值未知时不猜测也不覆盖", n.WriteCount == writesBeforeRollback);
+
+        // ---- empty set ----
+        Check("空写入集合不触碰驱动",
+            new NvidiaProfileService(new FakeDrsAdapter(), () => false)
+                .Apply("P", Array.Empty<(ProfileSetting, uint)>()).Ok);
+
+        // ---- the real adapter fails closed ----
+        var real = new NvApiDrsAdapter();
+        Check("真实适配器在头文件确认前报告不可用", !real.IsAvailable);
+        Check("缺少删除能力时同时拒绝写入（能删才能写）", !real.CanDelete && !real.CanWrite);
+        Check("真实适配器拒绝写入并说明原因", real.Write(idA, 1).Message.Contains("拒绝写入"));
+        Check("真实适配器未对驱动发起调用",
+            real.Read(idA).State == ProfileSettingState.Unknown);
+
+        // ---- setting provenance ----
+        Check("Smooth Motion 设置清单共 6 项", SmoothMotionSettings.All.Count == 6,
+            "实际: " + SmoothMotionSettings.All.Count);
+        Check("设置出处标注未公开 + 社区验证",
+            SmoothMotionSettings.All.All(s => s.Provenance.Contains("Undocumented") && s.Provenance.Contains("Community Verified")));
+        Check("设置出处不冒充 NVIDIA 官方",
+            SmoothMotionSettings.All.All(s => !s.Provenance.Contains("NVIDIA 官方")));
+        Check("关键 Setting ID 与调研一致",
+            SmoothMotionSettings.FeatureEnabled == 0xB0D384C0 &&
+            SmoothMotionSettings.EnabledApis == 0xB0CC0875 &&
+            SmoothMotionSettings.DebugBars == 0xB01B8B02);
     }
 }
