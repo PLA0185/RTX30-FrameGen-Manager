@@ -70,14 +70,14 @@ SHA256 (ZIP):                       0B10E87AE9901A21E53F788BF6735054D297EA6B6BB8
 - **真实 NVIDIA Profile 读写**：`NvApiDrsAdapter` 仍为 fail-closed（`DriverCallsProven = false`）。本轮未改其封送方式，**§2 未完成**。
 - **视觉 UI**：Provider 下拉、Plan Preview、七页导航、批量部署的三阶段流程 —— **均未人工运行验证**。`dotnet build` 只证明 `x:Name` 引用完整，`LocalizationAudit` 只证明本地化键齐全。
 - **实机游戏**：`Applied` / `Verified` 需在真实游戏上完成。
-- **真实 MFG Asset 端到端下载**：`--network-smoke` 只验证了 API 解析与 host 白名单，**未下载 payload**。
+- **真实 MFG Asset 端到端下载**：**已由 `--mfg-asset-smoke` 覆盖** —— 真实下载 mfg-smooth 2.8.2、312 个文件（二进制 8 / 配置 304）、exit 0，全程不写真实游戏目录、不改 Profile。
 
 ## 五、Known Risks
 
-1. **§2 未做 → P0-04 只有接口层**：`FindApplication` 的实现刻意停在「拒绝并说明」，因为结构体封送正是当前崩溃的根因；在它被证明安全之前接入第二个调用者等于新增第二个崩溃点。**顺序不可颠倒。**
-2. **P0-09 的确认框仍不描述计划**：用户看到的是防作弊风险，而不是各游戏的实际计划与被阻止的原因。
-3. **§13 是随附式而非清单式**：每个修复都带了断言，但没有按任务书逐项补齐清单。
-4. **UI 路径的测试覆盖有限**：批量部署、Provider 下拉、Plan Preview 的改动**不在 Harness 编译白名单内**，Build 0/0 与 Harness 全绿只说明没有破坏既有行为，不等于新路径被执行过。
+1. **P0-09 的确认框仍不描述计划**：用户看到的是防作弊风险，而不是各游戏的实际计划与被阻止的原因。
+2. **§13 是随附式加清单式核对，而非逐项补齐**：每个修复都带了断言（累计新增 54 项），未覆盖的七项记在 `ROUND2_TEST_COVERAGE.md`，其共同根因是 UI 文件不在 Harness 编译白名单内。
+3. **UI 路径的测试覆盖有限**：批量部署、Provider 下拉、Plan Preview 的改动**不在 Harness 编译白名单内**（`MainWindow.xaml.cs` / `MainWindow.Actions.cs`），Build 0/0 与 Harness 全绿只说明没有破坏既有行为，不等于新路径被执行过。
+4. **视觉结果未经确认**：深色主题的隐式样式已验证到「样式被正确加载、资源键可解析、窗口正常渲染」（启动日志无 `XamlParseException` / `Cannot find resource`），**实际字形颜色是视觉结果，需人在界面上确认**。
 
 ## 六、Final Integration Remediation: **PARTIAL**
 
