@@ -4049,6 +4049,21 @@ public static class Program
         var executed = InstallPlanExecutor.Execute(recording, execPlan, execGame, planSource);
         Check("计划可执行时安装成功", executed.Ok, executed.Message);
 
+        // §17 P1-2：Install 失败且**零写入**时，Executor 必须如实说「没写」，而不是假设写了。
+        //
+        // 旧代码在这里无条件 `FilesWereWritten = true`，于是调用方（`Finish`）会拿**上一次**的部署记录去
+        // 回滚，把用户原本正常的安装整个卸载掉，报告却写「已回滚」。而原注释的推理「多回滚一次比漏回滚
+        // 便宜」在这里恰好是错的：多回滚一次删掉的是**用户能用的东西**，不是我们自己的半成品。
+        //
+        // 这条此前抓不到，是因为夹具全是「空游戏目录 + 替身不写文件」—— 缺的是**数据**（一个零写入的
+        // 失败），不是断言。
+        var zeroWriteRunner = new RecordingProvider { FailInstallWithoutWriting = true };
+        var zeroWrite = InstallPlanExecutor.Execute(zeroWriteRunner, execPlan, execGame, planSource);
+
+        Check("零写入的安装失败不得声称写过文件（§17 P1-2）",
+            !zeroWrite.Ok && !zeroWrite.FilesWereWritten && !zeroWrite.RollbackRequired,
+            $"ok={zeroWrite.Ok} written={zeroWrite.FilesWereWritten} rollback={zeroWrite.RollbackRequired}");
+
         // §17 P0：校验代理时必须用项目规定的布局 —— 非 version.dll 的入口在 altnative/，
         // 而不是扁平拼接到 payload 根目录。
         //
@@ -4338,6 +4353,12 @@ public static class Program
         {
             InstallCount++;
 
+            // 失败且**零写入**。它必须早于部署记录 —— 真正的 Deploy 在这些情况下连一个文件都没碰，
+            // 自然也不会留下记录。`FailResult` 造出的 OpResult 的 `FilesWritten` 默认为 false，
+            // 与真实 `Deploy` 的零写入早期失败路径同形。
+            if (FailInstallWithoutWriting)
+                return FailResult("测试替身：安装失败，且没有写入任何文件。");
+
             if (RecordsDeployed is not null)
                 game.Deployment = new DeploymentInfo
                 {
@@ -4348,6 +4369,18 @@ public static class Program
 
             return OkResult("测试替身已安装。");
         }
+
+        /// <summary>
+        /// 让 Install 失败**且不写任何文件**，用于验证「零写入的失败不得声称写过盘」（§17 P1-2）。
+        ///
+        /// <para>这个开关必须能表达「零写入」，因为那正是缺陷的关键：`Deploy` 有 7 条零写入的早期失败路径
+        /// （游戏正在运行、目录不可写、内核反作弊未授权、源目录无效、代理名无效）。旧代码在 `Install` 返回
+        /// `Ok=false` 时**无条件**认为写过盘，于是调用方拿**上一次**的部署记录去回滚，把用户原本正常的安装
+        /// 整个卸载掉，报告却写「已回滚」。</para>
+        ///
+        /// <para>默认 false —— 既有测试全都依赖安装成功。</para>
+        /// </summary>
+        public bool FailInstallWithoutWriting { get; set; }
 
         /// <summary>
         /// 让 Restore 失败，用于验证「回滚没成功」这条路径被如实暴露（P0-10 的 RollbackIncomplete）。
