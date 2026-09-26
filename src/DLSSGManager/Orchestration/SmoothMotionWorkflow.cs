@@ -207,6 +207,15 @@ public sealed record WorkflowRequest(
     /// </summary>
     bool UserConfirmedUnverified = false,
 
+    /// <summary>
+    /// Build the plan and stop, without writing anything.
+    ///
+    /// <para>This exists so a caller can show what it is about to do <i>before</i> doing it — and so a batch can
+    /// ask the user once about all of its games rather than once per game. Everything up to and including the
+    /// confirmation decision still runs, because the confirmation reasons are part of what a preview shows.</para>
+    /// </summary>
+    bool PreviewOnly = false,
+
     bool ObservedDebugBars = false,
     bool ObservedPatchLog = false,
     bool ProxyLoadedInGame = false,
@@ -396,6 +405,21 @@ public sealed class SmoothMotionWorkflow
         }
 
         var needsConfirmation = plan.Status == PlanStatus.NeedsConfirmation || apiChoice.Conflicts;
+
+        // A preview stops here, on purpose. The plan and the confirmation reasons are exactly what a caller needs
+        // in order to show the decision before anything is written — and building them without executing is the
+        // only way a batch can ask about all of its games at once instead of one dialog per game.
+        if (request.PreviewOnly)
+        {
+            steps.Add(new WorkflowStep("预览计划", true,
+                plan.CanExecute
+                    ? "计划已就绪；本次为预览，未写入任何内容。"
+                    : "计划需要用户确认；本次为预览，未写入任何内容。"));
+
+            return Finish(needsConfirmation ? WorkflowOutcome.NeedsConfirmation : WorkflowOutcome.Succeeded,
+                SmoothMotionEvidence.None, steps, plan, request, errors,
+                filesWritten: false, profileWritten: false, journal: profileJournal);
+        }
 
         if (needsConfirmation && !request.UserConfirmedUnverified)
         {

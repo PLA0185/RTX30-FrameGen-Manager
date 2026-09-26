@@ -326,25 +326,27 @@ public partial class MainWindow
 
         try
         {
-            var ok = await Task.Run(() =>
+            var ok = 0;
+            var source = CurrentSource();
+            var provider = SelectedProvider();
+
+            foreach (var game in targets)
             {
-                var count = 0;
-                var source = CurrentSource();
+                // Routed through the configuration service rather than the provider's Install: that is what makes a
+                // batch obey the same plans, verification and confirmation rules as a single deploy. The direct call
+                // it replaced bypassed every one of them.
+                var outcome = await RunConfigurationAsync(game, provider, game.HasKernelAntiCheat, confirmed: true)
+                    .ConfigureAwait(true);
 
-                foreach (var game in targets)
-                {
-                    // The confirmation above covers the anti-cheat risk for every game in the list.
-                    var result = Providers.AppProviders.Patch.Install(game, source, game.HasKernelAntiCheat);
-                    var mark = result.Ok ? "✓" : "✗";
-                    var risk = game.HasKernelAntiCheat ? Loc.T("Batch.RiskMark") : "";
-                    _log.Write($"  {mark}{risk} {game.Name}：{result.Message}");
+                var succeeded = outcome?.Succeeded == true;
+                var mark = succeeded ? "✓" : "✗";
+                var risk = game.HasKernelAntiCheat ? Loc.T("Batch.RiskMark") : "";
 
-                    if (result.Ok) count++;
-                    progress.Report(Loc.T("Batch.Progress", count, targets.Count));
-                }
+                _log.Write($"  {mark}{risk} {game.Name}：{outcome?.Summary ?? Loc.T("Deploy.Failed")}");
 
-                return count;
-            });
+                if (succeeded) ok++;
+                progress.Report(Loc.T("Batch.Progress", ok, targets.Count));
+            }
 
             _log.Write(Loc.T("Batch.Result", Loc.T("Batch.Deploy"), ok, targets.Count));
             BatchStatusText.Text = Loc.T("Batch.LastDeploy", ok, targets.Count);

@@ -30,7 +30,12 @@ public sealed record ConfigurationRequest(
     /// not established is dropped rather than written as a guess. Without this the interface could complete a
     /// run that installed files and left the driver untouched.</para>
     /// </summary>
-    IReadOnlyList<NvidiaProfile.ProfileSetting>? ProfileSettings = null);
+    IReadOnlyList<NvidiaProfile.ProfileSetting>? ProfileSettings = null,
+
+    /// <summary>
+    /// Build the plan and stop, without writing anything. See <c>WorkflowRequest.PreviewOnly</c>.
+    /// </summary>
+    bool PreviewOnly = false);
 
 /// <summary>The outcome, in the shape a window can display without reinterpreting it.</summary>
 public sealed record ConfigurationOutcome(
@@ -63,6 +68,22 @@ public sealed class GameConfigurationService
     public GameConfigurationService(SmoothMotionWorkflow workflow) => _workflow = workflow;
 
     /// <summary>
+    /// Builds the plan for one game without installing anything.
+    ///
+    /// <para>This is what lets a batch show the user what it is about to do — all of it, at once — rather than
+    /// asking once per game, or proceeding on a confirmation that described none of the plans.</para>
+    /// </summary>
+    public Task<ConfigurationOutcome> PreviewAsync(
+        ConfigurationRequest request,
+        IProgress<string>? progress = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        return ConfigureAsync(request with { PreviewOnly = true }, progress, ct);
+    }
+
+    /// <summary>
     /// Assembles the workflow request and runs it.
     ///
     /// <paramref name="progress"/> receives the workflow's own narration; nothing here reformats or
@@ -88,6 +109,7 @@ public sealed class GameConfigurationService
             UserApi: request.UserApi,
             UserConfirmedUnverified: request.UserConfirmedUnverified,
             ProfileSettings: request.ProfileSettings,
+            PreviewOnly: request.PreviewOnly,
             GpuName: request.GpuName,
             DriverVersion: request.DriverVersion,
             Store: request.Store,
