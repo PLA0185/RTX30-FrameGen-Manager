@@ -9,7 +9,7 @@
 | P0-01 | 用户点「继续」后**依然无法安装**：确认让流程继续了，但计划状态仍是 `NeedsConfirmation`，而执行器只认 `Ready` | `640cc49` |
 | P0-02 | 界面**从未把驱动设置传下去**：装完文件，驱动没被碰 | `07c9fb9` |
 | P0-03 | 读回发生在**会话已关闭之后**：真实适配器下读的是空会话，且「必然失败」与「值不一致」不可区分 | `8ea9e37` |
-| P0-04 | 拿**游戏显示名**当 NVIDIA Profile 名 | `2bbe235`（接口层） |
+| P0-04 | 拿**游戏显示名**当 NVIDIA Profile 名 | `2bbe235`（接口层）→ **`b70b669` 完整接入**（按渲染器 EXE 定位，编排已改用） |
 | P0-05 | 对 `.ini` 要求 Authenticode 签名 → **provider 拒绝自己发布的 payload** | `4461cee` |
 | P0-06 | 版本**全程只做透传**，`CheckLatestAsync` 一次都没调用 → 兼容性与计划可能都在拿空版本比对 | `e82536c` |
 | P0-07 | 所有 provider、所有版本**共用同一个 payload 目录** → 「这是哪个版本的」无法回答 | `3ae61ef` |
@@ -30,7 +30,7 @@
 | §8 | `ProviderWritesNvidiaProfile` 与 `RequiresNvidiaProfileConfiguration` 拆分 | ✅ | `7f124b7` |
 | §9 | SafeZip 原子性：**播种式故障注入**证明 commit 前失败时 destination 完全不变 | ✅ | `128f00c` |
 | §11 | README 按现状重写（Provider 框架、实验性标记、边界说明、RC 状态） | ✅ | `f8db9b9` |
-| §2 | NVAPI AccessViolation 专项 | ❌ **未做** | — |
+| §2 | NVAPI AccessViolation 专项 | ✅ **已完成** —— 真实根因是 **profile 句柄**（`Open(null)` 用了 `NVAPI_DRS_GLOBAL_PROFILE` 哨兵 `-1`，而 `GetSetting` 需要 `GetBaseProfile` 的真实句柄），**不是封送**；gate 已开 | `b8f285e` |
 | §10 | `--mfg-asset-smoke` 真实下载 | ✅ **已完成**（真实下载 312 文件 / exit 0） | `882ab9b` |
 | — | **额外修掉**：`ModFetcher.AllowedHosts` 缺 `release-assets.githubusercontent.com` | ✅ 真实下载此前**不可能完成**（每一跳都做白名单检查） | `882ab9b` |
 | §12 | Updates/Downloads/Diagnostics 接真实状态 | ✅ **已完成**（三页改为报告真实状态，不再是描述自身的占位文本） | `239f806` |
@@ -41,16 +41,18 @@
 
 ```
 Build:                              0 warnings / 0 errors（dotnet build --no-incremental -c Release）
-Harness:                            854 passed / 0 failed / 10 skipped（原 801 项全保留，新增 53 项）
+Harness:                            855 passed / 0 failed / 10 skipped（原 801 项全保留，新增 54 项）
 Network smoke:                      PASS（Release 解析 + host 白名单）
 Real MFG Asset Smoke:               PASS（真实下载 mfg-smooth 2.8.2 → 312 个文件，二进制 8 / 配置 304，exit 0）
+NVAPI read loop:                    PASS（--nvapi-smoke --loop：200 次真实读取，驱动被触达 200/200，异常 0）
+NVAPI profile lookup:               PASS（--nvapi-smoke：FindApplicationByName 被真实调用并返回 -166，exit 0）
 dotnet test:                        exit 0
 RC Packaging:                       PASS（scripts/package-release.ps1 exit 0）
 UI Process Smoke:                   PASS（从最终 ZIP 解压到全新临时目录，进程稳定 20 秒，句柄非 0，日志无 Exception/Fatal/Unhandled，只终止本次 PID，未误杀其他进程）
-EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,061,628 B）
+EXE:                                artifacts/release-candidate/win-x64/DLSSGManager.exe（66,063,058 B）
 ZIP:                                artifacts/RTX30-FrameGen-Manager-win-x64-1.9.3.zip（57.7 MB）
-SHA256 (EXE):                       8DE1DA1A2A043A66C7C3FB11A49FD5D8235521CCDAB40465D355BE459A8F619B
-SHA256 (ZIP):                       2D21264050B5294399EE8B26C49F93A384980BC8F188FEB917AAE7AC03C4FAD3
+SHA256 (EXE):                       FE3115028323E1FF6933208B65E126778EE4F154854FFA3524F36067583124AA
+SHA256 (ZIP):                       68A1DA4E8F40A84CCC555A28188A8A1BEA2A9CD29F718856605615FBAB68B597
 发布目录内容:                        恰好 4 个文件（EXE + LICENSE + README.md + THIRD_PARTY_NOTICES.txt）
 ```
 
@@ -74,8 +76,8 @@ SHA256 (ZIP):                       2D21264050B5294399EE8B26C49F93A384980BC8F188
 
 ## 六、Final Integration Remediation: **PARTIAL**
 
-**达成**：§1 的九项 P0 中八项已修复（P0-04 为接口层），§3–§9、§11 完成，全量回归与 RC 打包通过，UI 进程级验证通过。
+**达成**：**九项 P0 全部完成**。§2 的 NVAPI AccessViolation 已解决 —— 真实根因是 **profile 句柄**（`Open(null)` 用了 `NVAPI_DRS_GLOBAL_PROFILE` 哨兵 `-1`，而 `GetSetting` 需要 `NvAPI_DRS_GetBaseProfile` 的真实句柄），**不是封送**；gate 已开，200 次真实读取 0 异常。P0-04 的 Profile 定位已按渲染器可执行文件接入编排。§3–§12 全部完成；§13 有清单式核对（`ROUND2_TEST_COVERAGE.md`）；§15/§17/§18/§21 交付闭环完成。
 
-**未达成**：**§2（NVAPI AccessViolation 专项）** 未做，因此 `NvApiDrsAdapter` 仍不可用，P0-04 的真实调用无法接入；§10、§12 未做；§13 为部分。
+**未达成**：**视觉 UI 与实机游戏验证需人工** —— Provider 下拉、计划预览、三页真实状态、批量确认框的汇总文案等 UI 行为，**没有被任何自动测试执行过**（`MainWindow.xaml.cs` 与 `MainWindow.Actions.cs` 不在 `Harness.csproj` 编译白名单内），只由 `dotnet build` 保证引用完整、由本地化审计保证键齐备；`Applied` / `Verified` 两级证据仍需要真实游戏。
 
-**不宣布 PASS 的理由**：真实驱动读写仍不可用，而它是本项目存在的理由之一。把它记为 PARTIAL 并写清剩余项与它们之间的依赖顺序，比宣布完成更接近事实。
+**不宣布 PASS 的理由**：原来两条理由中的第一条（真实 DRS 能力未达成）**已经消除**；剩下的是**只有人或真实游戏能提供的证据**，本项目不伪造它。把它记为 PARTIAL 并写清「缺的是哪一类证据」，比宣布完成更接近事实。

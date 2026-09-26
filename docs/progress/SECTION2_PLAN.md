@@ -1,6 +1,13 @@
 # §2 实施方案：绕开 marshaler 的 NVDRS_SETTING_V1 往返
 
-> 状态：**未实施**。本文件是可直接执行的方案，不是完成记录。
+> 状态：**已实施并解决**（`7d1166a` 手工内存改造 · `c27e154` 诊断入口 · `cae6410` 诊断循环 · **`b8f285e` 根因修复并开 gate**）。
+>
+> **本方案的主假设（`ByValArray` 封送是根因）已被实测证伪。** 真实根因是 **profile 句柄**：`Open(null)` 用了
+> `NVAPI_DRS_GLOBAL_PROFILE`（官方 `nvapi.h` L24393 定义的 `(NvDRSProfileHandle)-1` 哨兵），而
+> `NvAPI_DRS_GetSetting` 需要**基础 Profile 的真实句柄**，只能由 `NvAPI_DRS_GetBaseProfile`（`0xda8466a0`）取得。
+> 修复后 `--nvapi-smoke --loop` 跑 200 次真实读取：**驱动被触达 200/200、异常 0**。
+>
+> 本文件保留为**过程记录**——它记录了排查路径、每一步的验证方法与三条被否证的假设，这些比结论更难重建。
 > 目标文件：`src/DLSSGManager/NvidiaProfile/NvApiDrsAdapter.cs`
 
 ## 一、要解决的问题
