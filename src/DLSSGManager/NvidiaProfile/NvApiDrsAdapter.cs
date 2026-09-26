@@ -727,6 +727,28 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
             : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteProfileSetting 返回 {status}。");
     }
 
+    /// <summary>
+    /// Commits settings without consulting the capability gate.
+    ///
+    /// <para>Like <see cref="WriteTo"/> and <see cref="DeleteFrom"/>: the temporary-profile smoke is what earns
+    /// <c>SaveCallsProven</c>, so it cannot be gated behind it. Nothing on a production path calls this — the guarded
+    /// <see cref="Save"/> is what the rest of the program uses.</para>
+    /// </summary>
+    internal DrsStatus SaveUngated()
+    {
+        EnsureLoaded();
+
+        if (!_available) return DrsStatus.Fail(-1, _unavailableReason);
+        if (_session == IntPtr.Zero) return DrsStatus.Fail(-1, "没有已打开的 DRS 会话。");
+        if (_saveSettings is null) return DrsStatus.Fail(-1, "NvAPI_DRS_SaveSettings 未被解析。");
+
+        var status = _saveSettings(_session);
+
+        return status == NvApiOk
+            ? DrsStatus.Success
+            : DrsStatus.Fail(status, $"NvAPI_DRS_SaveSettings 返回 {status}。");
+    }
+
     public DrsStatus Save()
     {
         if (!CanSave) return DrsStatus.Fail(-1, UnprovenAbi);
