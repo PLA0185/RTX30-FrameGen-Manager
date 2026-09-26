@@ -2831,7 +2831,20 @@ public static class Program
         Check("记录的哈希格式正确", hashes.All(h => Regex.IsMatch(h, "^[0-9A-Fa-f]{64}$")));
 
         var community = Path.Combine(repoRoot, "extra-proxies", "d3d12.dll");
-        Check("仓库中保留参考副本", File.Exists(community), community);
+
+        // 这个参考副本**故意不入库**（`.gitignore` 的 `extra-proxies/*.dll`）—— 它是一个约 10 MB 的第三方
+        // 二进制，设计上由使用者自备。因此「文件存在」不是一条可以要求的断言：在**干净 clone** 里它必然
+        // 不存在，而那种失败还会连带让打包脚本失败（`package-release.ps1` 会先跑 Harness）。
+        //
+        // 教训：这两条断言在开发机上恒真（那里恰好有这个文件），**只有在干净环境才会暴露** ——
+        // 901 项全绿掩盖了它，是 §23 的 Clean-state 验证把它抓出来的。
+        if (!File.Exists(community))
+        {
+            Console.WriteLine($"       （未找到参考副本 {community} —— 它故意不入库，跳过哈希校验）");
+            return;
+        }
+
+        Check("仓库中保留参考副本", true, community);
 
         if (File.Exists(community))
         {
@@ -2889,8 +2902,16 @@ public static class Program
         var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
         var published = Path.Combine(repoRoot, "extra-proxies", "d3d12.dll");
 
-        Check("仓库里有可用的发布文件", File.Exists(published), published);
-        if (!File.Exists(published)) return;
+        // 同 TestCommunityBuildIdentification：这个参考副本故意不入库（`.gitignore` 的
+        // `extra-proxies/*.dll`），所以「它存在」不是一条可以要求的断言 —— 在干净 clone 里必然不存在，
+        // 而那种失败会连带让打包脚本失败（它会先跑 Harness）。
+        if (!File.Exists(published))
+        {
+            Console.WriteLine($"       （未找到 {published} —— 它故意不入库，跳过手工安装识别）");
+            return;
+        }
+
+        Check("仓库里有可用的发布文件", true, published);
 
         var dir = MakeGameDir(work, "GameHandInstalled");
         File.Copy(published, Path.Combine(dir, "d3d12.dll"));
