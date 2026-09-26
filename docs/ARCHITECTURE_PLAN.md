@@ -1452,3 +1452,56 @@ DSH 环境具备 RTX 30 GPU，因此**不得**再以「无硬件」为由跳过�
 | **观测量** | ①补丁日志是否出现 `runtime_redirect`；②进程模块枚举中代理是否被加载；③`0xB01B8B02` Debug Bars 可视化；④FG 菜单是否出现；⑤用户主观画面/FPS 确认 |
 | **判定** | 三种策略观测量**一致** ⇒ 等价性成立（可固定 A 为默认）；**不一致** ⇒ 记录差异场景（API / 启动方式 / 保护模块），写入兼容性矩阵 |
 | **前置** | 需先完成 Stage 2–7；实验属 **Stage 8 实机验证**范畴，**自动测试通过不能替代本实验** |
+
+---
+
+## 38. Stage 2 实现记录（2026-09-26）
+
+> 基线 `c3cc868`。本节只记录 Stage 2 **实际**做了什么、与原设计的差异、以及仍未验证的部分。
+
+### 38.1 先核查既有实现（避免按任务书关键词重写）
+
+| 项 | 核查结论 | 依据 |
+|---|---|---|
+| `DeploymentService` 的签名校验 | **已正确实现，不重写** | `DeploymentService.cs:146-213`：`WinVerifyTrust`；`CERT_E_UNTRUSTEDROOT` 视为完整（容纳自签名），`TRUST_E_BAD_DIGEST` 拒绝，未知码 fail-closed，正确执行 `STATEACTION_CLOSE` |
+| `Deploy` 的既有防护 | **已正确实现**：游戏运行检查、内核反作弊阻止、可写检查、入口占用拒绝、`*.dlssgtmp` + `Move` 原子替换、失败清理临时文件、外部 INI 备份、`LooksLikeProjectIni` 内容判定 | `DeploymentService.cs:373-591` |
+| 代理冲突（指令 §4.4） | **已满足**：`PickFreeProxy` 只挑空位，`proxyTaken` 拒绝覆盖，未知文件既不覆盖也不删除 | `:341-364`、`:428-434`；测试组「五个入口名全被占用」「保护其他 Mod 的文件」 |
+| 反作弊文案（指令 §4.5） | **合规**：仅陈述「未检测到反作弊组件」，无「安全」类表述，代码中不存在任何绕过/关闭/规避能力 | `Strings.zh.cs:252`、`AntiCheat.Summary` |
+
+**结论：Stage 2 的真实缺口只有两处** —— 下载路径的签名链、以及备份/事务。其余均为既有正确实现，未改动。
+
+### 38.2 实际改动
+
+| 缺口 | 修复 |
+|---|---|
+| **下载路径不校验签名完整性**：`ModFetcher.Verify` 只用 `X509Certificate.CreateFromSignedFile` 读证书（该方法**只提取证书、不校验签名是否仍覆盖文件**） | 新增 `DeploymentService.ProbeSignature(path)` → `SignatureStatus{Intact,NotSigned,BadDigest,Unknown}`；`Verify` 改为**先验完整性、再看证书**；`BadDigest`（篡改）**在任何来源上都被拒绝**并单独报告（不再与「无签名」混为一谈） |
+| `Restore` 不校验备份哈希 | 还原前重算 SHA-256 与记录比对；不符则**拒绝还原、保留现场、报告** `Restore.BackupHashMismatch`；记录缺哈希同样拒绝（fail-closed） |
+| `Restore` 无路径逃逸防护 | 新增 `IsSafeBackupTarget`：拒绝分隔符 / 盘符 / `..`，并确认解析后的完整路径确实位于渲染目录内 |
+| 部署非事务：proxy 写成功而 INI 失败时留下半成品 | 写入前对**将被覆盖的文件**做事务快照；失败时回滚（原本不存在 → 删除本次写入；原本存在 → 恢复快照），每条回滚结果都报告，回滚不了也明确报告而不是沉默 |
+
+### 38.3 与原设计的差异（有意偏离，非遗漏）
+
+- **未拆分程序集**。§35 曾提出「先抽取 Core 再拆程序集」。本轮改为**在现有程序集内抽取可测试的核心**：把 `private IsSignatureIntact` 泛化为公开的 `ProbeSignature`，使验证原语可被直接单测，而不做物理拆分。理由：程序集拆分不在 Stage 2 范围（指令 §3）内，且会引入与安全修复无关的回归面。
+- **发布摘要校验只做到「有值才校验」**。`Verify` 新增可选 `expectedSha256` 参数并接入 `MatchesPin`，但**当前没有来源提供该值**：主源 `sdli1995/dlssg_for_sm86` 走 git 树逐文件下载，其 7 个 Release **全部 `assets=0`**；GitHub 的 `digest` 字段只对 Release **Asset** 生效（已在 `_research/api/*.json` 核实：MFG / xikarioz / RHI 的 Release 均带 `digest: sha256:...`）。故对当前主源，**签名完整性是唯一可用的内容校验**。
+
+### 38.4 已验证 / 未验证
+
+**已验证**
+- `dotnet restore` 无错误；`dotnet build -c Release` → **0 警告 / 0 错误**
+- Harness 回归套件 → **362 通过 / 0 失败 / 10 跳过**（基线 `c3cc868` 为 343/0/10，新增 19 项检查）
+- 新增测试**先在旧代码上失败**（3 项红：篡改备份被还原、失败后代理残留、非 PE 判级），修复后转绿 —— 测试确实捕获了缺口，而非事后补写
+
+**未验证 / 不在本轮范围**
+- **真实下载流程未端到端跑通**（需联网与 ~180 MB payload）；`Verify` 的新分支由 `ProbeSignature` 单测间接覆盖
+- 10 项跳过测试仍需 Mod 文件（`Harness --fetch`）
+- 无实机游戏验证（属 Stage 8）
+- **`dotnet test` 在本仓库不适用**：解决方案内没有 VSTest 测试项目，实际测试载体是 `test/Harness` 控制台程序
+
+### 38.5 Remaining Risks
+
+| ID | 风险 | 说明 |
+|---|---|---|
+| **S2-01** | 主源不提供发布摘要，无法做内容级哈希校验 | 只能依赖 Authenticode 完整性 + 固定指纹；若上游更换证书，官方源仍会放行（**既有设计，本轮未改**） |
+| **S2-02** | 事务回滚**不覆盖** legacy schema 分支下删除的冗余代理 | 这些文件在 mod 源目录中仍存在，可重新部署恢复；已如实记录而非隐藏 |
+| **S2-03** | `Verify` 新逻辑缺少端到端下载验证 | 需联网抓取真实 payload 才能覆盖 |
+| **S2-04** | 快照会占用 restore 目录额外空间 | 仅对「本次将覆盖的文件」快照（通常 0–2 个小文件），成功或失败后都会清理 |

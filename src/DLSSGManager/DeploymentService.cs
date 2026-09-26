@@ -29,6 +29,24 @@ public sealed class OpResult
 }
 
 /// <summary>
+/// What the Authenticode check found, in enough detail to act on and to report.
+///
+/// A bool is not enough on the download path: "no signature at all" and "signed, then modified" mean
+/// very different things, and only the second one says a mirror served a substituted payload.
+/// </summary>
+public enum SignatureStatus
+{
+    /// <summary>Signature matches the bytes. A self-signed chain also counts: the bytes are as signed.</summary>
+    Intact,
+    /// <summary>No signature block, or not a PE file.</summary>
+    NotSigned,
+    /// <summary>The file changed after it was signed — the digest in the signature no longer matches.</summary>
+    BadDigest,
+    /// <summary>WinVerifyTrust reported something else; treated as not intact.</summary>
+    Unknown,
+}
+
+/// <summary>
 /// The only place that writes into game directories. Every write is preceded by a backup of anything
 /// that is not ours, and every removal is gated on the file being provably ours (project signature
 /// or a matching recorded hash), so a restore can never eat a ReShade dxgi.dll by accident.
@@ -143,8 +161,31 @@ public static class DeploymentService
     /// Verifies that the file's signature matches its contents. Fails closed: anything other than
     /// "verified" or "verified but self-signed" counts as not intact.
     /// </summary>
-    private static bool IsSignatureIntact(string path)
+    private static bool IsSignatureIntact(string path) => ProbeSignature(path) == SignatureStatus.Intact;
+
+    /// <summary>
+    /// The same check as <see cref="IsSignatureIntact"/>, but reporting what was found instead of a
+    /// single bool.
+    ///
+    /// The download path needs the difference: "not signed at all" and "signed, then modified" call
+    /// for different wording and different log lines, and collapsing them into false loses exactly the
+    /// signal that says a mirror served a substituted file.
+    /// </summary>
+    public static SignatureStatus ProbeSignature(string path)
     {
+        // A file that is not a PE image has no signature to speak of. Saying so up front keeps
+        // WinVerifyTrust's answer for that case from surfacing as an unexplained error code, which
+        // would otherwise read as "something went wrong" rather than "this is not a signed binary".
+        try
+        {
+            using var head = File.OpenRead(path);
+            if (head.ReadByte() != 'M' || head.ReadByte() != 'Z') return SignatureStatus.NotSigned;
+        }
+        catch
+        {
+            return SignatureStatus.NotSigned;
+        }
+
         IntPtr filePtr = IntPtr.Zero;
         IntPtr dataPtr = IntPtr.Zero;
 
@@ -182,28 +223,34 @@ public static class DeploymentService
             Marshal.StructureToPtr(data, dataPtr, false);
             WinVerifyTrust(IntPtr.Zero, WinTrustActionGenericVerifyV2, dataPtr);
 
-            if (result == S_OK) return true;
+            if (result == S_OK) return SignatureStatus.Intact;
 
             if (result == CERT_E_UNTRUSTEDROOT)
             {
                 // The bytes are as signed; only the chain is untrusted, which is inherent to a
                 // self-signed certificate. Callers confirm identity via the pinned thumbprint.
-                return true;
+                return SignatureStatus.Intact;
             }
 
-            if (result == TRUST_E_NOSIGNATURE || result == TRUST_E_BAD_DIGEST)
+            if (result == TRUST_E_BAD_DIGEST)
             {
-                AppPaths.Log($"签名校验未通过（{(result == TRUST_E_BAD_DIGEST ? "摘要不匹配，文件可能被篡改" : "无签名")}）：{path}");
-                return false;
+                AppPaths.Log($"签名校验未通过（摘要不匹配，文件可能被篡改）：{path}");
+                return SignatureStatus.BadDigest;
+            }
+
+            if (result == TRUST_E_NOSIGNATURE)
+            {
+                AppPaths.Log($"签名校验未通过（无签名）：{path}");
+                return SignatureStatus.NotSigned;
             }
 
             AppPaths.Log($"签名校验返回未知结果 0x{result:X8}，按未签名处理：{path}");
-            return false;
+            return SignatureStatus.Unknown;
         }
         catch (Exception ex)
         {
             AppPaths.Log("验证签名失败: " + ex.Message);
-            return false;
+            return SignatureStatus.Unknown;
         }
         finally
         {
@@ -440,6 +487,15 @@ public static class DeploymentService
         string? tmp = null;
         string? iniTmp = null;
 
+        // Transaction state: snapshots of the bytes this deployment is about to replace, so a failure
+        // in a later step can be undone. A false flag means the file was not there at all, and
+        // rollback should delete what we wrote instead of restoring anything.
+        var txFolder = Path.Combine(restoreFolder, "_pending");
+        var proxyExisted = File.Exists(proxyDest);
+        var iniExisted = File.Exists(iniDest);
+        string? rollbackProxy = null;
+        string? rollbackIni = null;
+
         // The mod requires exactly one proxy in the game folder: the game loads every entry name it
         // recognises, so two would run two inference pipelines at once. Rather than trusting the
         // deployment record (which can be absent, e.g. after the library is reset), scan the entry
@@ -484,6 +540,11 @@ public static class DeploymentService
             {
                 backups.Add(Backup(iniDest, restoreFolder, r));
             }
+
+            // Stage 2 transaction: snapshot what we are about to overwrite, so a failure in any later
+            // step can be undone rather than leaving a half-applied deployment in the game folder.
+            if (proxyExisted) rollbackProxy = Snapshot(proxyDest, txFolder, "proxy");
+            if (iniExisted) rollbackIni = Snapshot(iniDest, txFolder, "ini");
 
             tmp = proxyDest + ".dlssgtmp";
             File.Copy(source.DllPath(proxy), tmp, overwrite: true);
@@ -584,10 +645,76 @@ public static class DeploymentService
                 try { File.Delete(leftover); } catch { /* best effort */ }
             }
 
+            // Undo whatever the earlier steps already wrote. Without this the folder keeps a proxy
+            // whose INI never arrived, while the library records no deployment at all — the two then
+            // disagree about a game that is in fact half-modified.
+            var rollbackNotes = new List<string>();
+            Rollback(proxyDest, rollbackProxy, proxyExisted, rollbackNotes);
+            Rollback(iniDest, rollbackIni, iniExisted, rollbackNotes);
+
             r.Fail(Loc.T("Deploy.Failed", ex.Message));
+            foreach (var note in rollbackNotes) r.Note(note);
+
+            try { if (Directory.Exists(txFolder)) Directory.Delete(txFolder, recursive: true); }
+            catch { /* the snapshot folder is disposable */ }
         }
 
         return r;
+    }
+
+    /// <summary>
+    /// Copies a file into the transaction folder so a failed deployment can put it back.
+    ///
+    /// Returns the snapshot path, or null when the copy could not be made — the caller then reports
+    /// that this particular file could not be rolled back, rather than assuming it was.
+    /// </summary>
+    private static string? Snapshot(string path, string txFolder, string label)
+    {
+        try
+        {
+            Directory.CreateDirectory(txFolder);
+            var target = Path.Combine(txFolder, label + "_" + Path.GetFileName(path));
+            File.Copy(path, target, overwrite: true);
+            return target;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Undoes one file's part of a failed deployment: puts the snapshot back when there was one, or
+    /// deletes the file this run created.
+    ///
+    /// Never stays silent: a rollback that could not happen is reported, because the game folder is
+    /// then in a state the user has to inspect by hand.
+    /// </summary>
+    private static void Rollback(string dest, string? snapshot, bool existedBefore, List<string> notes)
+    {
+        try
+        {
+            if (existedBefore)
+            {
+                if (snapshot is null || !File.Exists(snapshot))
+                {
+                    notes.Add(Loc.T("Deploy.RollbackNoSnapshot", Path.GetFileName(dest)));
+                    return;
+                }
+
+                File.Copy(snapshot, dest, overwrite: true);
+                notes.Add(Loc.T("Deploy.RollbackRestored", Path.GetFileName(dest)));
+            }
+            else if (File.Exists(dest))
+            {
+                File.Delete(dest);
+                notes.Add(Loc.T("Deploy.RollbackRemoved", Path.GetFileName(dest)));
+            }
+        }
+        catch (Exception ex)
+        {
+            notes.Add(Loc.T("Deploy.RollbackFailed", Path.GetFileName(dest), ex.Message));
+        }
     }
 
     private static BackupItem Backup(string path, string restoreFolder, OpResult r)
@@ -701,7 +828,10 @@ public static class DeploymentService
                 }
             }
 
-            // 4) Put back whatever we displaced.
+            // 4) Put back whatever we displaced — but only after proving the stored copy is still the
+            //    bytes we took. The record keeps a SHA-256 for exactly this purpose: writing back a
+            //    backup that has since been altered or swapped would put a corrupt (or substituted)
+            //    file into the game folder, and the user's original is already gone by then.
             if (prev is not null && prev.Backups.Count > 0)
             {
                 foreach (var b in prev.Backups)
@@ -712,7 +842,26 @@ public static class DeploymentService
                         continue;
                     }
 
-                    var dest = Path.Combine(game.RenderDir, b.FileName);
+                    // The name comes from a library file, which the user or another tool can edit, so
+                    // it is not trusted to stay inside the render directory.
+                    if (!IsSafeBackupTarget(game.RenderDir, b.FileName, out var dest))
+                    {
+                        r.Note(Loc.T("Restore.BackupUnsafeName", b.FileName));
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(b.Sha256))
+                    {
+                        r.Note(Loc.T("Restore.BackupNoHash", b.FileName));
+                        continue;
+                    }
+
+                    if (!BackupMatchesRecord(b))
+                    {
+                        r.Note(Loc.T("Restore.BackupHashMismatch", b.FileName));
+                        continue;
+                    }
+
                     File.Copy(b.StoredPath, dest, overwrite: true);
                     removed++;
                     r.Note(Loc.T("Restore.BackupRestored", b.FileName));
@@ -739,6 +888,58 @@ public static class DeploymentService
         }
 
         return r;
+    }
+
+    /// <summary>
+    /// True when the stored copy still hashes to what the record captured when it was taken.
+    ///
+    /// Fails closed: a file that cannot be read counts as a mismatch, because the point of the check
+    /// is to guarantee the bytes, and an unreadable file cannot guarantee anything.
+    /// </summary>
+    private static bool BackupMatchesRecord(BackupItem b)
+    {
+        try
+        {
+            return string.Equals(Sha256(b.StoredPath), b.Sha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Resolves a backup's recorded file name against the render directory, refusing anything that
+    /// escapes it.
+    ///
+    /// The name is persisted in the library file, which the user — or any other tool that can write
+    /// to %APPDATA% — is free to edit, so a record reading <c>..\..\Windows\System32\evil.dll</c> must
+    /// not be able to steer a restore out of the game folder. Separators, drive letters and ".." are
+    /// rejected outright, and the resolved path is confirmed to sit under the directory itself.
+    /// </summary>
+    private static bool IsSafeBackupTarget(string renderDir, string fileName, out string dest)
+    {
+        dest = "";
+
+        if (string.IsNullOrWhiteSpace(fileName)) return false;
+        if (fileName.IndexOfAny(new[] { '\\', '/', ':' }) >= 0) return false;
+        if (!string.Equals(Path.GetFileName(fileName), fileName, StringComparison.Ordinal)) return false;
+
+        try
+        {
+            var root = Path.GetFullPath(renderDir);
+            var full = Path.GetFullPath(Path.Combine(root, fileName));
+            var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+
+            if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
+
+            dest = full;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

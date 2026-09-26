@@ -85,6 +85,9 @@ public static class Program
             TestSourceSelection();
             TestThemes();
             TestSignatureVerification(modRoot, work);
+            TestBackupIntegrity(work);
+            TestDeployTransaction(work);
+            TestSignatureIntegrity(work);
         }
         catch (Exception ex)
         {
@@ -2293,5 +2296,135 @@ public static class Program
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Stage 2: the download path must prove a signature still covers the file's bytes before trusting
+    /// the certificate that comes with it.
+    ///
+    /// Reading the certificate alone — which is all the download path used to do — accepts a file that
+    /// was modified after signing, so a mirror could hand over a substituted payload that still looked
+    /// "signed". The check below pins that distinction down: a tampered file keeps a readable
+    /// certificate, and only the digest check catches it.
+    ///
+    /// Uses a Windows system binary rather than the mod payload, so the check actually runs on a fresh
+    /// clone instead of being skipped for want of a 180 MB download.
+    /// </summary>
+    private static void TestSignatureIntegrity(string work)
+    {
+        Section("下载路径签名完整性（Stage 2）");
+
+        var signed = Path.Combine(Environment.SystemDirectory, "kernel32.dll");
+        if (!File.Exists(signed))
+        {
+            _skipped++;
+            Console.WriteLine("  [跳过] 没有可用于比对的系统已签名文件");
+            return;
+        }
+
+        var baseline = DeploymentService.ProbeSignature(signed);
+        Check("系统已签名文件判为完整", baseline == SignatureStatus.Intact, baseline.ToString());
+
+        // Flip bytes in the middle of the file. The certificate block at the end is untouched, so the
+        // certificate still reads out perfectly — only a digest check can tell the difference.
+        var tampered = Path.Combine(work, "tampered_sys.dll");
+        var bytes = File.ReadAllBytes(signed);
+        for (var i = 0; i < 8; i++) bytes[bytes.Length / 2 + i] ^= 0xFF;
+        File.WriteAllBytes(tampered, bytes);
+
+        var status = DeploymentService.ProbeSignature(tampered);
+        Check("被篡改的文件不再判为完整", status != SignatureStatus.Intact, status.ToString());
+        Check("篡改被识别为摘要不匹配", status == SignatureStatus.BadDigest, status.ToString());
+        Check("证书仍能读出（说明仅凭证书不足以判定）", CertificateThumbprint(tampered) is not null,
+            "证书读不出来，本用例失去意义");
+
+        // Anything that is not a PE, and a file that is not there, must fail closed rather than throw.
+        var notPe = Path.Combine(work, "notpe_sig.dll");
+        File.WriteAllBytes(notPe, RandomNumberGenerator.GetBytes(2048));
+        var notPeStatus = DeploymentService.ProbeSignature(notPe);
+        Check("非 PE 文件判为无签名", notPeStatus == SignatureStatus.NotSigned, notPeStatus.ToString());
+        Check("不存在的文件不判为完整",
+            DeploymentService.ProbeSignature(Path.Combine(work, "gone_sig.dll")) != SignatureStatus.Intact);
+    }
+
+    /// <summary>
+    /// Stage 2: a backup whose stored copy no longer matches the hash recorded when it was taken must
+    /// never be written back over the user's file.
+    ///
+    /// The record keeps a SHA-256 for exactly this purpose. Restoring on the strength of the file
+    /// merely existing would put a corrupted — or substituted — file into the game folder, and the
+    /// user's original would already have been deleted, so nothing could recover it.
+    /// </summary>
+    private static void TestBackupIntegrity(string work)
+    {
+        Section("备份完整性（Stage 2）");
+
+        var source = new ModSource(MakeSyntheticModSource(work));
+        var dir = MakeGameDir(work, "BackupGame");
+
+        // A foreign INI is what gets displaced, and therefore what gets backed up.
+        var foreignIni = Path.Combine(dir, ModSource.IniName);
+        File.WriteAllText(foreignIni, "[Other]\r\nKey=1\r\n");
+
+        var game = new GameEntry { Name = "BackupGame", RenderDir = dir, ExePath = Path.Combine(dir, "BackupGame.exe") };
+        var deploy = DeploymentService.Deploy(game, source);
+        Check("部署并备份外来 INI", deploy.Ok && game.Deployment?.Backups.Count == 1, deploy.Message);
+        if (!deploy.Ok || game.Deployment?.Backups.Count != 1) return;
+
+        var backup = game.Deployment!.Backups[0];
+        Check("备份记录了 SHA256", !string.IsNullOrWhiteSpace(backup.Sha256), "(空)");
+        Check("备份文件存在", File.Exists(backup.StoredPath), backup.StoredPath);
+
+        // Corrupt the stored copy while leaving the recorded hash describing the original bytes.
+        File.WriteAllText(backup.StoredPath, "[Tampered]\r\nKey=evil\r\n");
+        var tamperedHash = Sha(backup.StoredPath);
+
+        var restore = DeploymentService.Restore(game, removeLogs: false);
+
+        var writtenBack = File.Exists(foreignIni) && Sha(foreignIni) == tamperedHash;
+        Check("被篡改的备份没有被写回游戏目录", !writtenBack, "篡改内容已进入游戏目录");
+        Check("报告了备份哈希不符",
+            restore.Lines.Any(l => l.Contains("哈希") || l.Contains("hash", StringComparison.OrdinalIgnoreCase)),
+            string.Join(" | ", restore.Lines));
+        Check("保留了现场（备份文件未被删除）", File.Exists(backup.StoredPath), backup.StoredPath);
+    }
+
+    /// <summary>
+    /// Stage 2: deployment must behave as a transaction. When a later step fails, anything an earlier
+    /// step already put on disk has to be undone, and no deployment record may be created — otherwise
+    /// the library claims an installation that the game folder does not actually have.
+    /// </summary>
+    private static void TestDeployTransaction(string work)
+    {
+        Section("部署事务与回滚（Stage 2）");
+
+        var source = new ModSource(MakeSyntheticModSource(work));
+        var dir = MakeGameDir(work, "TxGame");
+
+        var game = new GameEntry { Name = "TxGame", RenderDir = dir, ExePath = Path.Combine(dir, "TxGame.exe") };
+
+        // Block the INI step: a directory occupying the INI's name makes the final move fail *after*
+        // the proxy has already been written. That half-finished state is what rollback must undo.
+        var iniSlot = Path.Combine(dir, ModSource.IniName);
+        Directory.CreateDirectory(iniSlot);
+
+        var result = DeploymentService.Deploy(game, source);
+        Check("INI 写入受阻时部署失败", !result.Ok, result.Message);
+        Check("失败后不留下新代理 DLL", !File.Exists(Path.Combine(dir, "version.dll")));
+        Check("失败后不留下临时文件", Directory.GetFiles(dir, "*.dlssgtmp").Length == 0,
+            string.Join("、", Directory.GetFiles(dir, "*.dlssgtmp")));
+        Check("失败后不建立部署记录", game.Deployment is null);
+        Check("保留了现场（占位目录仍在）", Directory.Exists(iniSlot));
+
+        // With the obstruction gone the same deployment must succeed, and the record must describe
+        // the files that are actually on disk.
+        Directory.Delete(iniSlot);
+        var ok = DeploymentService.Deploy(game, source);
+        Check("解除阻塞后部署成功", ok.Ok, ok.Message);
+        Check("记录与磁盘一致",
+            game.Deployment is not null
+            && File.Exists(Path.Combine(dir, game.Deployment.ProxyName))
+            && Sha(Path.Combine(dir, game.Deployment.ProxyName)) == game.Deployment.ProxySha256,
+            game.Deployment?.ProxyName ?? "(无记录)");
     }
 }

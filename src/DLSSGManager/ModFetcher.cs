@@ -811,10 +811,17 @@ public static class ModFetcher
     }
 
     /// <summary>
-    /// Checks a staged payload. Required files must exist; every DLL must be signed by the project,
-    /// and on a non-official source the signer must match the pinned certificate.
+    /// Checks a staged payload. Required files must exist; every DLL must carry an <b>intact</b>
+    /// Authenticode signature made by the project, and on a non-official source the signer must match
+    /// the pinned certificate.
+    ///
+    /// <paramref name="expectedSha256"/> is optional because the sources this manager uses publish no
+    /// digest: the payload is fetched file-by-file out of a git tree, and GitHub only reports a
+    /// <c>digest</c> for release <i>assets</i> — which this project's upstream releases do not have
+    /// (all seven carry <c>assets=0</c>). The parameter exists so that a source which does publish one
+    /// is checked against it, rather than being taken on signature alone.
     /// </summary>
-    private static (bool Accepted, string Message) Verify(string staging, bool officialSource)
+    private static (bool Accepted, string Message) Verify(string staging, bool officialSource, string? expectedSha256 = null)
     {
         var missing = Payload.Where(a => a.Required && !File.Exists(Path.Combine(staging, a.SourcePath)))
                              .Select(a => a.SourcePath)
@@ -824,10 +831,20 @@ public static class ModFetcher
 
         var pinMismatch = new List<string>();
         var unsigned = new List<string>();
+        var tampered = new List<string>();
+        var digestMismatch = new List<string>();
 
         foreach (var artifact in Payload.Where(a => a.NeedsSignature))
         {
             var path = Path.Combine(staging, artifact.SourcePath);
+            var fileName = Path.GetFileName(artifact.SourcePath);
+
+            // The signature has to match the bytes before the certificate means anything.
+            // X509Certificate.CreateFromSignedFile only *extracts* the certificate — it does not check
+            // that the signature still covers the file — so a modified DLL would otherwise sail
+            // through while still looking "signed". This is the rule the deployment path already
+            // applies; the download path is where it was missing.
+            var status = DeploymentService.ProbeSignature(path);
 
             // X509Certificate2 is needed for Thumbprint; the static loader returns the base type.
             X509Certificate2? cert;
@@ -837,22 +854,51 @@ public static class ModFetcher
             }
             catch
             {
-                unsigned.Add(Path.GetFileName(artifact.SourcePath));
+                cert = null;
+            }
+
+            if (cert is null)
+            {
+                // Nothing to inspect: no signature block, or not a PE file at all.
+                if (status == SignatureStatus.BadDigest) tampered.Add(fileName);
+                else unsigned.Add(fileName);
                 continue;
             }
 
             using (cert)
             {
+                if (status != SignatureStatus.Intact)
+                {
+                    // Kept apart from "unsigned": a broken digest is evidence the bytes were altered
+                    // after signing, and collapsing the two would hide exactly that signal.
+                    if (status == SignatureStatus.BadDigest) tampered.Add(fileName);
+                    else unsigned.Add(fileName);
+                    continue;
+                }
+
                 var subject = cert.Subject ?? "";
                 if (!subject.Contains(ExpectedSignerSubject, StringComparison.OrdinalIgnoreCase))
-                    unsigned.Add(Path.GetFileName(artifact.SourcePath));
+                    unsigned.Add(fileName);
                 else if (!string.Equals(cert.Thumbprint, PinnedCertThumbprint, StringComparison.OrdinalIgnoreCase))
-                    pinMismatch.Add(Path.GetFileName(artifact.SourcePath));
+                    pinMismatch.Add(fileName);
             }
+
+            // A published digest is checked last: it is the only check that can catch a payload
+            // replaced before it was ever signed, so it is worth honouring where one exists.
+            if (!string.IsNullOrWhiteSpace(expectedSha256) && !MatchesPin(path, expectedSha256))
+                digestMismatch.Add(fileName);
         }
+
+        // Tampering is refused on every source. "GitHub is trusted" says nothing about whether the
+        // bytes arrived intact, which is the whole reason the digest lives in the signature.
+        if (tampered.Count > 0)
+            return (false, Loc.T("Fetch.Tampered", Loc.Join(tampered)));
 
         if (unsigned.Count > 0)
             return (false, Loc.T("Fetch.Unsigned", Loc.Join(unsigned)));
+
+        if (digestMismatch.Count > 0)
+            return (false, Loc.T("Fetch.DigestMismatch", Loc.Join(digestMismatch)));
 
         if (pinMismatch.Count > 0)
         {
