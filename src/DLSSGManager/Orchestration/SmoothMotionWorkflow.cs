@@ -249,11 +249,22 @@ public sealed class SmoothMotionWorkflow
     private readonly NvidiaProfileService _profile;
     private readonly CompatibilityMatrixStore _matrix;
 
-    public SmoothMotionWorkflow(IWorkflowDetector detector, NvidiaProfileService profile, CompatibilityMatrixStore matrix)
+    /// <summary>
+    /// Optional recipe memory. Null is a legal state and not the same as "nothing to remember yet": a caller
+    /// that has not supplied a store simply is not keeping one.
+    /// </summary>
+    private readonly RecipeMemoryStore? _recipes;
+
+    public SmoothMotionWorkflow(
+        IWorkflowDetector detector,
+        NvidiaProfileService profile,
+        CompatibilityMatrixStore matrix,
+        RecipeMemoryStore? recipes = null)
     {
         _detector = detector;
         _profile = profile;
         _matrix = matrix;
+        _recipes = recipes;
     }
 
     /// <summary>Runs the sequence and reports what actually happened.</summary>
@@ -571,6 +582,51 @@ public sealed class SmoothMotionWorkflow
             false);
     }
 
+    /// <summary>
+    /// Records what this run learned, so a later attempt can prefer what worked and avoid what did not.
+    ///
+    /// <para><b>The claimed level is deliberately not <c>ProjectVerified</c>.</b> That level requires first-hand
+    /// evidence carrying a verification date (see <see cref="ValidationGuard.CanClaimProjectVerified"/>), and a
+    /// workflow run cannot supply it — only the person watching the game can say frames appeared. What a run can
+    /// honestly contribute is an observation, so that is what gets stored, and the guard is free to downgrade it
+    /// further.</para>
+    ///
+    /// <para>Everything here is best-effort. Failing to remember must never fail a run that already worked.</para>
+    /// </summary>
+    private void RecordOutcome(WorkflowRequest request, VerificationReport verification, bool succeeded)
+    {
+        if (_recipes is null) return;
+
+        try
+        {
+            var when = DateTimeOffset.Now;
+
+            _recipes.Record(
+                recipeId: request.Recipe?.Id ?? $"{request.Provider.Id}@{request.Game.Name}",
+                game: request.Game.Name,
+                providerId: request.Provider.Id,
+                succeeded: succeeded,
+                evidence: verification.Level,
+                when: when,
+                evidenceRef: new EvidenceRef(
+                    Source: EvidenceSource.LocalUserTest,
+                    Type: EvidenceType.TestResult,
+                    Reference: verification.Reason,
+                    ObservedAt: when),
+                claimed: ValidationLevel.PendingUserValidation,
+                note: verification.Reason,
+                providerVersion: request.ProviderVersion ?? "",
+                api: request.UserApi,
+                store: request.Store,
+                proxyAsi: request.Game.PreferredProxy,
+                mode: request.InstallMode);
+        }
+        catch
+        {
+            // Remembering is a convenience; failing to remember must not fail a run that worked.
+        }
+    }
+
     private WorkflowResult Finish(
         WorkflowOutcome outcome,
         SmoothMotionEvidence evidence,
@@ -584,6 +640,10 @@ public sealed class SmoothMotionWorkflow
         ProfileJournal? journal = null)
     {
         var report = verification ?? VerificationReport.FromSignals(Array.Empty<VerificationSignal>());
+
+        // Recorded here rather than on the success path alone, so a failed attempt is remembered too: knowing
+        // that a combination did not work is exactly what stops the next attempt from repeating it.
+        RecordOutcome(request, report, succeeded: outcome == WorkflowOutcome.Succeeded);
 
         if (outcome != WorkflowOutcome.Failed)
             return new WorkflowResult(outcome, evidence, steps, plan, report, errors,

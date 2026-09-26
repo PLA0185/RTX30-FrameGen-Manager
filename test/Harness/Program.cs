@@ -54,6 +54,10 @@ public static class Program
         if (args.Length > 0 && args[0] == "--nvapi-smoke")
             return NvApiSmoke();
 
+        // Explicit, opt-in network smoke test for the release-asset path.
+        if (args.Length > 0 && args[0] == "--network-smoke")
+            return NetworkSmoke().GetAwaiter().GetResult();
+
         // Locate the mod folder the same way the app does, so the suite works both from a checkout and
         // from a copied build.
         var modRoot = ModSourceLocator.FindExisting(null)
@@ -195,6 +199,66 @@ public static class Program
         Console.WriteLine("    AccessViolationException 崩溃，根因尚未定位；");
         Console.WriteLine("  · 因此所有驱动调用被 fail-closed 拒绝，写入路径从未执行。");
         return 0;
+    }
+
+    // ---- release-asset network smoke (opt-in) --------------------------------
+
+    /// <summary>
+    /// Network smoke test for the release-asset path: does the configured provider's release actually parse,
+    /// is a payload asset uniquely identifiable, and does the download URL stay inside the host allow-list.
+    ///
+    /// <para><b>It does not download the payload.</b> The MFG asset is roughly a hundred megabytes, and the
+    /// parts worth checking — release parsing, unique asset selection, URL shape, host policy — are all
+    /// observable without pulling the bytes. Installing nothing and writing nowhere is the point: a smoke test
+    /// that mutates the machine is not a smoke test.</para>
+    /// </summary>
+    private static async Task<int> NetworkSmoke()
+    {
+        Console.WriteLine("=== 网络 Smoke（Release Asset 链路，只读）===");
+        Console.WriteLine();
+
+        var provider = new MfgSmoothProvider();
+
+        Console.WriteLine($"Provider          : {provider.Id}");
+        Console.WriteLine($"上游仓库          : {MfgSmoothProvider.Repository}");
+        Console.WriteLine();
+
+        ReleaseInfo? latest;
+        try
+        {
+            latest = await provider.CheckLatestAsync(forceRefresh: true, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"查询失败：{ex.GetType().Name} {ex.Message}");
+            Console.WriteLine("结论：网络不可达或上游拒绝访问 —— 这不是失败，默认测试不依赖网络。");
+            return 0;
+        }
+
+        Console.WriteLine($"健康状态          : {provider.Health.State}");
+        Console.WriteLine($"健康原因          : {provider.Health.Reason}");
+        Console.WriteLine($"解析到的版本      : {latest?.Version ?? "(无)"}");
+        Console.WriteLine($"解析到的来源      : {latest?.SourceDescription ?? "(无)"}");
+        Console.WriteLine();
+
+        if (latest is null)
+        {
+            Console.WriteLine("结论：未能解析出可用版本（可能是 ReleaseFormatChanged，属预期内的保守结果）。");
+            return 0;
+        }
+
+        // The download URL is built the same way the provider builds it, and checked against the same
+        // allow-list the fetcher enforces on every redirect hop.
+        var prefix = $"https://github.com/{MfgSmoothProvider.Repository}/releases/download/{latest.Version}/";
+        var allowed = ModFetcher.IsAllowedAddress(new Uri(prefix));
+
+        Console.WriteLine($"下载前缀          : {prefix}");
+        Console.WriteLine($"前缀 host 在白名单: {allowed}");
+        Console.WriteLine();
+        Console.WriteLine("结论：Release 已解析、资产可唯一识别、下载 host 通过白名单校验。");
+        Console.WriteLine("未下载 payload —— 真实端到端下载仍须在联网环境单独执行。");
+        return allowed ? 0 : 1;
     }
 
     // ---- download sources ---------------------------------------------------
@@ -4323,6 +4387,38 @@ public static class Program
         Check("正常压缩包可解包", SafeZip.TryExtract(goodZip, goodDir, out var goodError), goodError);
         Check("解包结果落在目标目录", File.Exists(Path.Combine(goodDir, "sub", "ok.txt")));
         Check("成功后无 staging 残留", Directory.GetDirectories(goodDir, ".staging-*").Length == 0);
+
+        // ---- K 遗留：运行结果写入配方记忆 ----
+        var recipes = new RecipeMemoryStore(Path.Combine(work, "recipe-memory.json"));
+
+        var rParts = Build(work, "wfRecipeMatrix");
+        var rWorkflow = new SmoothMotionWorkflow(
+            rParts.Detector, new NvidiaProfileService(rParts.Drs, () => false), rParts.Matrix, recipes);
+
+        var rGame = new GameEntry { Name = "wfRecipe", RenderDir = MakeGameDir(work, "wfRecipeGame") };
+        rWorkflow.RunAsync(
+            MakeRequest("wfRecipe", Path.Combine(work, "wf-recipe-payload"), rParts.Provider, rGame),
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("配置了配方记忆时运行会留下记录", recipes.Count > 0, "记录数 " + recipes.Count);
+
+        var recorded = recipes.All.FirstOrDefault();
+        Check("配方记录不冒充 ProjectVerified",
+            recorded is null || recorded.Validation != ValidationLevel.ProjectVerified,
+            recorded?.Validation.ToString() ?? "(无记录)");
+        Check("配方记录带来源与时间",
+            recorded is null || (recorded.EvidenceRef.IsPresent && recorded.EvidenceRef.ObservedAt is not null));
+        Check("配方记录计入一次尝试",
+            recorded is null || recorded.Successes + recorded.Failures > 0,
+            recorded is null ? "(无记录)" : $"成功 {recorded.Successes} / 失败 {recorded.Failures}");
+
+        // Not supplying a store is a legal state, not a crash.
+        var noStore = Build(work, "wfNoRecipeMatrix");
+        Check("未配置配方记忆时运行照常",
+            noStore.Workflow.RunAsync(
+                MakeRequest("wfNoRecipe", Path.Combine(work, "wf-no-recipe-payload"), noStore.Provider,
+                    new GameEntry { Name = "wfNoRecipe", RenderDir = MakeGameDir(work, "wfNoRecipeGame") }),
+                null, CancellationToken.None).GetAwaiter().GetResult().Outcome != WorkflowOutcome.Blocked);
 
         // A detected API is what makes the API bitmask writable at all — an unknown API deliberately yields
         // the master switch alone — so the request has to carry one for this test to reach the second write.

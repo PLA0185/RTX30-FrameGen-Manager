@@ -33,7 +33,8 @@ public partial class MainWindow
         new SmoothMotionWorkflow(
             new AppWorkflowDetector(),
             new NvidiaProfileService(new NvApiDrsAdapter()),
-            new CompatibilityMatrixStore(Path.Combine(AppPaths.Root, "compatibility.json"))));
+            new CompatibilityMatrixStore(Path.Combine(AppPaths.Root, "compatibility.json")),
+            new RecipeMemoryStore(Path.Combine(AppPaths.Root, "recipe-memory.json"))));
 
     /// <summary>
     /// Runs the workflow for one game and reports what happened, or null when the run could not start.
