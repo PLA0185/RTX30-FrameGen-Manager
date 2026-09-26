@@ -3720,8 +3720,18 @@ public static class Program
 
         public int InstallCount { get; private set; }
 
-        public Task<ReleaseInfo?> CheckLatestAsync(bool forceRefresh, CancellationToken ct) =>
-            Task.FromResult<ReleaseInfo?>(null);
+        /// <summary>
+        /// How many times the workflow asked this provider for a version. Recorded because "a step named
+        /// 解析 Provider 版本 exists" and "the provider was actually asked" are different facts: that step is
+        /// written whether the call succeeded, failed, or was skipped in favour of a version already on the request.
+        /// </summary>
+        public int CheckLatestCalls { get; private set; }
+
+        public Task<ReleaseInfo?> CheckLatestAsync(bool forceRefresh, CancellationToken ct)
+        {
+            CheckLatestCalls++;
+            return Task.FromResult<ReleaseInfo?>(null);
+        }
 
         public string? GetInstalledVersion(GameEntry game) => null;
 
@@ -4693,6 +4703,11 @@ public static class Program
         Check("版本解析排在兼容性查询之前",
             versionIdx >= 0 && compatIdx >= 0 && versionIdx < compatIdx,
             $"版本 {versionIdx} / 兼容性 {compatIdx}");
+
+        // 这里**无法**断言「Provider 真的被问过」：`Build(work, name)` 提供的是真实的 MfgSmoothProvider，
+        // 而 RecordingProvider 只出现在计划执行器的测试里（`Build` 是 `TestSmoothMotionWorkflow` 的局部函数，
+        // 其它测试方法看不到它，见 `ROUND2_TEST_COVERAGE.md` 的 Profile Wiring 行）。
+        // `RecordingProvider.CheckLatestCalls` 已经就位，等 `Build` 被提取成可复用方法后即可接上。
 
         Check("计划携带了解析出的 Provider 版本字段",
             vResult.Plan is null || vResult.Plan.ProviderVersion is not null ||
