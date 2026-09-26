@@ -72,13 +72,24 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The provider to configure with.
+    /// The provider to configure with: the user's choice when they made one, otherwise the built-in one.
     ///
-    /// Defaults to the built-in one, which is what this build has always shipped. The MFG community build is
-    /// registered but not chosen automatically — it installs a different payload, and picking it for the user
-    /// would be a decision they never made.
+    /// <para>An unknown or now-missing id falls back to the built-in provider rather than failing. A stored
+    /// choice can outlive the provider it named, and refusing to configure anything because a build dropped a
+    /// provider would be a worse outcome than using the one that is certainly present.</para>
     /// </summary>
-    private Providers.IPatchProvider SelectedProvider() => Providers.AppProviders.Patch;
+    private Providers.IPatchProvider SelectedProvider()
+    {
+        var chosen = _data.PreferredProviderId;
+
+        if (!string.IsNullOrWhiteSpace(chosen))
+        {
+            var provider = Providers.AppProviders.Registry.Get(chosen);
+            if (provider is not null) return provider;
+        }
+
+        return Providers.AppProviders.Patch;
+    }
 
     // ---- single-game deployment --------------------------------------------
 
@@ -154,6 +165,16 @@ public partial class MainWindow
             }
 
             _log.Details(outcome.Details);
+
+            // The plan is shown even when the run did not succeed: it is what the user was told would happen,
+            // and seeing it next to the outcome is how a mismatch becomes visible instead of silent.
+            if (outcome.Plan is { } plan)
+            {
+                _log.Write($"计划：{plan.Mode} · 入口 {plan.ProxyChoice ?? "(未指定)"} · " +
+                           $"待部署 {plan.FilesToDeploy.Count} 个文件 · 状态 {plan.Status}" +
+                           (plan.Blockers.Count > 0 ? $" · 阻止原因 {plan.Blockers.Count} 条" : ""));
+            }
+
             _log.Result(outcome.Succeeded, outcome.Summary);
 
             LibraryStore.Save(_data);

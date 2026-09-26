@@ -303,4 +303,13 @@ public sealed class AppData
     public string GpuName { get; set; } = "";
     public string GpuDriver { get; set; } = "";
     public string RecommendedRouter { get; set; } = "SM86";
+
+    /// <summary>
+    /// Which provider the user chose to configure games with.
+    ///
+    /// <para>Empty means "not chosen", which is not the same as the built-in provider's id: the default is
+    /// applied at the point of use, so a future build that ships a different default does not have to migrate
+    /// a stored choice that was never made.</para>
+    /// </summary>
+    public string PreferredProviderId { get; set; } = "";
 }

@@ -450,6 +450,14 @@
                             Padding="10,5" FontSize="12" Margin="0,0,6,6" Click="AdminButton_Click" />
                     <Button Content="{loc:Tr Toolbar.OpenDataDir}" Style="{StaticResource ToolButton}"
                             Padding="10,5" FontSize="12" Margin="0,0,6,6" Click="OpenDataDir_Click" />
+
+                    <!-- Provider 选择：条目在代码里按注册表构建，因为可用集合取决于本机构建而非文案。 -->
+                    <TextBlock Text="{loc:Tr Toolbar.Provider}" VerticalAlignment="Center"
+                               Foreground="{DynamicResource TextMuted}" FontSize="12" Margin="4,0,6,6" />
+                    <ComboBox x:Name="ProviderCombo" MinWidth="160" Margin="0,0,0,6"
+                              VerticalAlignment="Center" SelectedValuePath="Tag"
+                              SelectionChanged="ProviderCombo_SelectionChanged"
+                              ToolTip="{loc:Tr Toolbar.ProviderTip}" />
                 </WrapPanel>
             </StackPanel>
         </Border>

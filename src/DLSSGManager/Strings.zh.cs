@@ -444,6 +444,10 @@ public static partial class Strings
         ["Deploy.ConfirmBody"] = "「{0}」的配置需要你确认后才能继续。\n\n{1}\n\n确认继续吗？（这只表示你知情，不代表该组合已被验证。）",
         ["Deploy.ConfirmDeclined"] = "已取消「{0}」的配置，未写入任何内容。",
         ["Path.NotFile"] = "不是文件",
+
+        // ── Provider 选择 ────────────────────────────────────────────
+        ["Toolbar.Provider"] = "配置方式",
+        ["Toolbar.ProviderTip"] = "选择用哪个 Provider 配置游戏。内置 dlssg-sm86 是默认值；切换后对之后的操作生效。",
         ["Path.NotExecutable"] = "不是可执行文件",
 
         // ── 错误与异常 ───────────────────────────────────────────────

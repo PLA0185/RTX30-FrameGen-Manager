@@ -444,6 +444,10 @@ public static partial class Strings
         ["Deploy.ConfirmBody"] = "Configuring \u201c{0}\u201d needs your confirmation before it can continue.\n\n{1}\n\nContinue? (This records that you were informed \u2014 it does not mean the combination has been verified.)",
         ["Deploy.ConfirmDeclined"] = "Cancelled the configuration of \u201c{0}\u201d; nothing was written.",
         ["Path.NotFile"] = "not a file",
+
+        // ── Provider selection ──────────────────────────────────────
+        ["Toolbar.Provider"] = "Provider",
+        ["Toolbar.ProviderTip"] = "Which provider configures games. The built-in dlssg-sm86 is the default; a change applies to later runs.",
         ["Path.NotExecutable"] = "not an executable",
 
         // ── Errors ───────────────────────────────────────────────────

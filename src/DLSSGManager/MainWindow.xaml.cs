@@ -281,6 +281,7 @@ public partial class MainWindow : Window
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         AdminButton.IsEnabled = !Native.IsElevated();
+        BuildProviderCombo();
         RefreshCodeText();
 
         RefreshModSource();
@@ -455,6 +456,70 @@ public partial class MainWindow : Window
     /// </summary>
     private string SourcePath =>
         ModSourceLocator.FindExisting(_data.ModSourcePath) ?? _data.ModSourcePath;
+
+    // ═══════════ Provider 选择 ═══════════
+
+    /// <summary>Prevents the change handler from firing while the list is being rebuilt.</summary>
+    private bool _suppressProviderChange;
+
+    /// <summary>
+    /// Builds the provider list from the registry.
+    ///
+    /// <para>Driven by what this build actually registers rather than by a hard-coded list, so a provider that
+    /// is not present simply is not offered — instead of being offered and then failing when chosen.</para>
+    /// </summary>
+    private void BuildProviderCombo()
+    {
+        _suppressProviderChange = true;
+
+        try
+        {
+            ProviderCombo.Items.Clear();
+
+            foreach (var provider in Providers.AppProviders.Registry.All)
+            {
+                ProviderCombo.Items.Add(new ComboBoxItem
+                {
+                    Content = $"{provider.Metadata.DisplayName}（{provider.Id}）",
+                    Tag = provider.Id,
+                });
+            }
+
+            var wanted = string.IsNullOrWhiteSpace(_data.PreferredProviderId)
+                ? Providers.DlssgSm86Provider.ProviderId
+                : _data.PreferredProviderId;
+
+            foreach (ComboBoxItem item in ProviderCombo.Items)
+            {
+                if (item.Tag is string id && id == wanted)
+                {
+                    ProviderCombo.SelectedItem = item;
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            _suppressProviderChange = false;
+        }
+    }
+
+    /// <summary>
+    /// Remembers the chosen provider.
+    ///
+    /// <para>The choice is stored, not applied retroactively: changing it does not alter an installation that is
+    /// already on disk, and the message says so rather than implying the previous one was undone.</para>
+    /// </summary>
+    private void ProviderCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_suppressProviderChange) return;
+        if (ProviderCombo.SelectedItem is not ComboBoxItem item) return;
+        if (item.Tag is not string id) return;
+
+        _data.PreferredProviderId = id;
+        LibraryStore.Save(_data);
+        _log.Write($"配置方式已切换为「{item.Content}」，对之后的操作生效。");
+    }
 
     // ═══════════ 页面导航 ═══════════
 
