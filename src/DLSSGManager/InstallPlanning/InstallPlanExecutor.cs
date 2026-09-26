@@ -190,6 +190,12 @@ public static class InstallPlanExecutor
         var install = provider.Install(game, source, allowProtected);
         steps.Add(install.Message);
 
+        // **逐条并入 `install.Lines`。** 那些行里装着用户必须看到的东西 ——
+        // 尤其是回滚失败时 `Deploy` 写下的「回滚失败：xxx 没有可用快照，请手工检查该文件」。
+        // 丢掉它们，UI 就只剩一句「部署失败：Access to the path is denied.」，
+        // **而游戏目录里躺着一个没人知道的半成品。**
+        foreach (var line in install.Lines) steps.Add(line);
+
         if (!install.Ok)
             // Install() 失败 ≠ 什么都没写 —— 但**也不等于写了**。
             //

@@ -693,19 +693,19 @@ public static class DeploymentService
             // whose INI never arrived, while the library records no deployment at all — the two then
             // disagree about a game that is in fact half-modified.
             var rollbackNotes = new List<string>();
-            Rollback(proxyDest, rollbackProxy, proxyExisted, rollbackNotes);
-            Rollback(iniDest, rollbackIni, iniExisted, rollbackNotes);
+            var proxyUndone = Rollback(proxyDest, rollbackProxy, proxyExisted, rollbackNotes);
+            var iniUndone = Rollback(iniDest, rollbackIni, iniExisted, rollbackNotes);
 
-            // **回收「需要调用方回滚」这个结论。**
+            // **只有两边都真的撤销了，才能收回「需要调用方回滚」这个结论。**
             //
-            // 上面两次 Rollback 已经把本步骤写下的东西恢复原状了，所以调用方**不再需要**回滚 ——
-            // 而它若仍然照做，用的会是**上一次**的部署记录（`game.Deployment` 只在成功路径被替换），
-            // 于是删掉的是用户上一次装好的、正在用的安装，报告还写「已回滚」。
+            // 曾经这里无条件 `FilesWritten = false`，于是回滚**失败**时（快照建不出来、还原副本被 AV 占用）
+            // 写进去的半成品留在游戏目录，而外层因为看到「没写过」就跳过了 `Provider.Restore` ——
+            // **残留无人清理，用户没有任何途径知道要手工删**。更糟的是工具自己的残留会被自己的扫描判成
+            // `UnknownConflict`，planner 于是改选下一个空闲名，**可能同时存在两个代理**。
             //
-            // 曾经这里只留 `FilesWritten = true`（在 try 第一行设置），于是「写了又自己恢复」被当成
-            // 「写了、需要你再来一次」。**两个字段合起来才够：一个说要不要你回滚，一个说我们已经收过尾。**
-            r.FilesWritten = false;
-            r.RollbackHandled = true;
+            // 「尝试过回滚」与「回滚成功」是两件事 —— 只有后者才配得上「已收尾」。
+            r.FilesWritten = !(proxyUndone && iniUndone);
+            r.RollbackHandled = !r.FilesWritten;
 
             r.Fail(Loc.T("Deploy.Failed", ex.Message));
             foreach (var note in rollbackNotes) r.Note(note);
@@ -744,8 +744,13 @@ public static class DeploymentService
     ///
     /// Never stays silent: a rollback that could not happen is reported, because the game folder is
     /// then in a state the user has to inspect by hand.
+    ///
+    /// <para><b>返回「这次回滚是否真的完成了」。</b>调用方必须看它才能决定要不要把「需要回滚」这个结论
+    /// 交出去 —— 曾经这里返回 `void`，而调用方**无条件**宣布「已收尾」，于是回滚失败时（快照建不出来、
+    /// 还原副本被占用）写进去的半成品留在游戏目录，外层却因为 `FilesWritten = false` 而不再回滚它。
+    /// **「尝试过回滚」与「回滚成功」是两件事，只有后者才能收回那个结论。**</para>
     /// </summary>
-    private static void Rollback(string dest, string? snapshot, bool existedBefore, List<string> notes)
+    private static bool Rollback(string dest, string? snapshot, bool existedBefore, List<string> notes)
     {
         try
         {
@@ -754,7 +759,7 @@ public static class DeploymentService
                 if (snapshot is null || !File.Exists(snapshot))
                 {
                     notes.Add(Loc.T("Deploy.RollbackNoSnapshot", Path.GetFileName(dest)));
-                    return;
+                    return false;
                 }
 
                 File.Copy(snapshot, dest, overwrite: true);
@@ -765,10 +770,14 @@ public static class DeploymentService
                 File.Delete(dest);
                 notes.Add(Loc.T("Deploy.RollbackRemoved", Path.GetFileName(dest)));
             }
+
+            // 没有需要撤销的东西也算完成 —— 目标状态已经达成。
+            return true;
         }
         catch (Exception ex)
         {
             notes.Add(Loc.T("Deploy.RollbackFailed", Path.GetFileName(dest), ex.Message));
+            return false;
         }
     }
 
