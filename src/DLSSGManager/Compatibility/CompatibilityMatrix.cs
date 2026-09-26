@@ -65,7 +65,9 @@ public sealed record CompatibilityRecord(
     string ProxyAsi = "",
     string LaunchMode = "",
     ValidationState Validation = ValidationState.Unknown,
-    string Note = "")
+    string Note = "",
+    EvidenceRef? Evidence = null,
+    ValidationLevel EvidenceValidation = ValidationLevel.Unverified)
 {
     /// <summary>Which dimensions this record actually pins down.</summary>
     public IReadOnlyList<CompatibilityDimension> SpecifiedDimensions()
@@ -149,6 +151,12 @@ public sealed class CompatibilityMatrixStore
     public static string DefaultPath => Path.Combine(AppPaths.Root, "compatibility.json");
 
     public int Count { get { lock (_gate) return _records.Count; } }
+
+    /// <summary>A snapshot of every record. The store keeps ownership of its own list.</summary>
+    public IReadOnlyList<CompatibilityRecord> All
+    {
+        get { lock (_gate) return _records.ToList(); }
+    }
 
     public void Add(CompatibilityRecord record)
     {
@@ -309,6 +317,11 @@ public sealed class CompatibilityMatrixStore
                     launchMode = r.LaunchMode,
                     validation = r.Validation.ToString(),
                     note = r.Note,
+                    evidenceSource = r.Evidence?.Source.ToString() ?? "Unknown",
+                    evidenceType = r.Evidence?.Type.ToString() ?? "Unknown",
+                    evidenceReference = r.Evidence?.Reference ?? "",
+                    evidenceObservedAt = r.Evidence?.ObservedAt?.ToString("O"),
+                    evidenceValidation = r.EvidenceValidation.ToString(),
                 }),
             };
 
@@ -349,7 +362,13 @@ public sealed class CompatibilityMatrixStore
                     Enum.TryParse<InstallMode>(Text(item, "installMode"), out var mode) ? mode : InstallMode.Unknown,
                     Text(item, "proxyAsi"), Text(item, "launchMode"),
                     Enum.TryParse<ValidationState>(Text(item, "validation"), out var validation) ? validation : ValidationState.Unknown,
-                    Text(item, "note")));
+                    Text(item, "note"),
+                    new EvidenceRef(
+                        Enum.TryParse<EvidenceSource>(Text(item, "evidenceSource"), out var src) ? src : EvidenceSource.Unknown,
+                        Enum.TryParse<EvidenceType>(Text(item, "evidenceType"), out var typ) ? typ : EvidenceType.Unknown,
+                        Text(item, "evidenceReference"),
+                        DateTimeOffset.TryParse(Text(item, "evidenceObservedAt"), out var seen) ? seen : null),
+                    Enum.TryParse<ValidationLevel>(Text(item, "evidenceValidation"), out var level) ? level : ValidationLevel.Unverified));
             }
 
             lock (_gate)

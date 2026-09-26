@@ -46,6 +46,7 @@
     <Compile Include="..\..\src\DLSSGManager\Update\SelfUpdateService.cs" />
     <Compile Include="..\..\src\DLSSGManager\GameDetection\GameDetectionModels.cs" />
     <Compile Include="..\..\src\DLSSGManager\Compatibility\CompatibilityMatrix.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Compatibility\CompatibilityEvidence.cs" />
     <Compile Include="..\..\src\DLSSGManager\InstallPlanning\InstallPlanner.cs" />
     <Compile Include="..\..\src\DLSSGManager\NvidiaProfile\NvidiaProfileService.cs" />
     <Compile Include="..\..\src\DLSSGManager\NvidiaProfile\NvApiDrsAdapter.cs" />

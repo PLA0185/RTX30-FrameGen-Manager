@@ -101,6 +101,7 @@ public static class Program
             TestNvidiaProfileService(work);
             TestSmoothProvider(work);
             TestSmoothMotionWorkflow(work);
+            TestCompatibilityEvidence(work);
         }
         catch (Exception ex)
         {
@@ -3864,5 +3865,138 @@ public static class Program
         catch (OperationCanceledException) { cancelled = true; }
 
         Check("取消以取消结束而非静默成功", cancelled);
+    }
+
+    /// <summary>
+    /// Stage 9: the compatibility evidence model and recipe memory.
+    ///
+    /// The load-bearing assertion is the negative one: a claim of "verified" that is backed only by
+    /// upstream documentation must be refused, not stored. Everything else here supports that.
+    /// </summary>
+    private static void TestCompatibilityEvidence(string work)
+    {
+        Section("兼容数据库与证据（Stage 9）");
+
+        Check("证据来源覆盖七类以上",
+            Enum.GetValues<EvidenceSource>().Length >= 8, "实际: " + Enum.GetValues<EvidenceSource>().Length);
+        Check("证据类型可表达", Enum.GetValues<EvidenceType>().Length >= 6);
+        Check("验证等级共五级", Enum.GetValues<ValidationLevel>().Length == 5);
+
+        var readme = new EvidenceRef(EvidenceSource.OfficialProviderReadme, EvidenceType.Documentation, "README");
+        var community = new EvidenceRef(EvidenceSource.CommunityReproduction, EvidenceType.Reproduction, "issue #1");
+        var localUndated = new EvidenceRef(EvidenceSource.LocalUserTest, EvidenceType.TestResult, "this machine");
+        var localDated = new EvidenceRef(EvidenceSource.LocalUserTest, EvidenceType.TestResult, "this machine", DateTimeOffset.Now);
+        var maintainer = new EvidenceRef(EvidenceSource.ProjectMaintainerTest, EvidenceType.TestResult, "ci", DateTimeOffset.Now);
+
+        // ---- first-hand vs not ----
+        Check("上游文档证据不是第一手", !readme.IsFirstHand);
+        Check("社区复现不是第一手", !community.IsFirstHand);
+        Check("本地用户测试是第一手", localDated.IsFirstHand);
+
+        // ---- the rule: no real-machine evidence means no Project Verified ----
+        Check("文档证据不能标 Project Verified", !ValidationGuard.CanClaimProjectVerified(readme, DateTimeOffset.Now));
+        Check("社区复现不能标 Project Verified", !ValidationGuard.CanClaimProjectVerified(community, DateTimeOffset.Now));
+        Check("无日期的本地测试不能标 Project Verified", !ValidationGuard.CanClaimProjectVerified(localUndated, null));
+        Check("有日期的本地测试可以标 Project Verified", ValidationGuard.CanClaimProjectVerified(localDated, DateTimeOffset.Now));
+
+        var downgraded = ValidationGuard.Normalize(readme, DateTimeOffset.Now, ValidationLevel.ProjectVerified);
+        Check("越级声明被降级而非接受",
+            downgraded.Level == ValidationLevel.PendingUserValidation, downgraded.Level.ToString());
+        Check("降级附带原因", downgraded.Note.Contains("Project Verified"));
+
+        var undated = ValidationGuard.Normalize(localUndated, null, ValidationLevel.ProjectVerified);
+        Check("缺日期的第一手声明同样被降级",
+            undated.Level == ValidationLevel.PendingUserValidation && undated.Note.Contains("日期"));
+
+        var kept = ValidationGuard.Normalize(maintainer, DateTimeOffset.Now, ValidationLevel.ProjectVerified);
+        Check("有据声明被原样保留", kept.Level == ValidationLevel.ProjectVerified && kept.Note.Length == 0);
+        Check("非 ProjectVerified 的声明不被改动",
+            ValidationGuard.Normalize(readme, null, ValidationLevel.Documented).Level == ValidationLevel.Documented);
+
+        // ---- recipe memory ----
+        var memoryPath = Path.Combine(work, "recipe-memory.json");
+        var memory = new RecipeMemoryStore(memoryPath);
+        var now = DateTimeOffset.Parse("2026-09-26T12:00:00Z");
+
+        memory.Record("mfg-sm86/proxy", "TestGame", "mfg-smooth", succeeded: true,
+            SmoothMotionEvidence.Installed, now, readme, ValidationLevel.Documented);
+
+        var afterFiles = memory.Find("mfg-sm86/proxy", "TestGame");
+        Check("记录一次安装尝试", afterFiles is not null && afterFiles.Successes == 1);
+        Check("仅文件部署不足以判为 known-good", !afterFiles!.IsKnownGood);
+        Check("证据不足时不越级", afterFiles.Validation == ValidationLevel.Documented);
+
+        memory.Record("mfg-sm86/proxy", "TestGame", "mfg-smooth", succeeded: true,
+            SmoothMotionEvidence.Verified, now, localDated, ValidationLevel.ProjectVerified);
+
+        var verified = memory.Find("mfg-sm86/proxy", "TestGame")!;
+        Check("同一配方同一游戏的多次尝试被合并", verified.Successes == 2);
+        Check("真正验证后判为 known-good", verified.IsKnownGood, verified.Validation.ToString());
+        Check("第一手证据被采纳为已验证", verified.Validation == ValidationLevel.ProjectVerified);
+        Check("最高证据级别被保留", verified.HighestEvidence == SmoothMotionEvidence.Verified);
+
+        memory.Record("readme-only/proxy", "TestGame", "mfg-smooth", succeeded: true,
+            SmoothMotionEvidence.Verified, now, readme, ValidationLevel.ProjectVerified);
+
+        var readmeOnly = memory.Find("readme-only/proxy", "TestGame")!;
+        Check("仅凭文档的越级声明被降级入库",
+            readmeOnly.Validation == ValidationLevel.PendingUserValidation, readmeOnly.Validation.ToString());
+        Check("降级原因写进条目", readmeOnly.Note.Contains("Pending User Validation"));
+
+        memory.Record("bad/proxy", "TestGame", "mfg-smooth", succeeded: false,
+            SmoothMotionEvidence.None, now, localDated, ValidationLevel.Unverified, note: "部署失败");
+
+        var bad = memory.Find("bad/proxy", "TestGame")!;
+        Check("失败被计数", bad.Failures == 1 && bad.Successes == 0);
+        Check("有失败记录时不判为 known-good", !bad.IsKnownGood);
+
+        var ranked = memory.RankFor("TestGame");
+        Check("排序把 known-good 排在首位", ranked.Count >= 3 && ranked[0].IsKnownGood, ranked[0].RecipeId);
+        Check("只返回该游戏的条目", ranked.All(r => r.Game == "TestGame"));
+
+        // ---- persistence ----
+        memory.Persist();
+        var reloaded = new RecipeMemoryStore(memoryPath);
+        reloaded.Load();
+
+        Check("配方记忆可持久化并重载", reloaded.Count == memory.Count, $"{reloaded.Count} / {memory.Count}");
+
+        var roundTrip = reloaded.Find("mfg-sm86/proxy", "TestGame");
+        Check("重载保留成功计数", roundTrip is not null && roundTrip.Successes == 2);
+        Check("重载保留证据来源",
+            roundTrip!.EvidenceRef.Source == EvidenceSource.LocalUserTest, roundTrip.EvidenceRef.Source.ToString());
+        Check("重载保留验证等级", roundTrip.Validation == ValidationLevel.ProjectVerified, roundTrip.Validation.ToString());
+        Check("重载保留最高证据级别", roundTrip.HighestEvidence == SmoothMotionEvidence.Verified);
+
+        var corruptPath = Path.Combine(work, "recipe-corrupt.json");
+        File.WriteAllText(corruptPath, "{ not json");
+        var corrupt = new RecipeMemoryStore(corruptPath);
+        var threw = false;
+        try { corrupt.Load(); } catch { threw = true; }
+        Check("损坏的配方记忆不影响启动", !threw);
+
+        // ---- the matrix carries evidence too ----
+        var matrixPath = Path.Combine(work, "evidence-matrix.json");
+        var matrix = new CompatibilityMatrixStore(matrixPath);
+        matrix.Add(new CompatibilityRecord(
+            Gpu: "RTX 3070 Ti", Provider: "mfg-smooth", ProviderVersion: "2.9.0",
+            Validation: ValidationState.ReportedWorking,
+            Evidence: localDated, EvidenceValidation: ValidationLevel.ProjectVerified));
+
+        matrix.Persist();
+        var matrixReloaded = new CompatibilityMatrixStore(matrixPath);
+        matrixReloaded.Load();
+
+        var loadedRecord = matrixReloaded.All.FirstOrDefault();
+        Check("矩阵记录保留证据来源",
+            loadedRecord?.Evidence?.Source == EvidenceSource.LocalUserTest,
+            loadedRecord?.Evidence?.Source.ToString() ?? "(null)");
+        Check("矩阵记录保留验证等级",
+            loadedRecord?.EvidenceValidation == ValidationLevel.ProjectVerified,
+            loadedRecord?.EvidenceValidation.ToString() ?? "(null)");
+        Check("矩阵记录保留证据引用", loadedRecord?.Evidence?.Reference == "this machine");
+        Check("矩阵记录仍可查询（新字段未破坏匹配）",
+            matrixReloaded.Query(new CompatibilityQuery(Gpu: "RTX 3070 Ti", Provider: "mfg-smooth",
+                ProviderVersion: "2.9.0")).Kind != CompatibilityMatchKind.None);
     }
 }
