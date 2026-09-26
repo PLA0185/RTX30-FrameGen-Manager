@@ -234,10 +234,8 @@ public static class Program
                 : "  判定            : 未通过（有异常，或驱动未被触达）—— gate 必须保持关闭");
             Console.WriteLine();
 
-            // The guard refuses every driver call, so this loop is reporting the guard's answer rather than
-            // querying the driver: during the original smoke test the second read crashed this process with
-            // an access violation.
-            Console.WriteLine("设置读取结果（受 fail-closed 保护，未调用驱动）:");
+            // The gate is open as of c27e154-era work: the earlier failure was the profile handle, not the layout.
+            Console.WriteLine("设置读取结果（经真实驱动读取）:");
             foreach (var setting in SmoothMotionSettings.All)
             {
                 var snapshot = adapter.Read(setting.Id);

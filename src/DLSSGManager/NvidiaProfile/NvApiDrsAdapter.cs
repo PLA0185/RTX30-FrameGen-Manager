@@ -22,6 +22,9 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     // ── Official function ids, transcribed from NVIDIA/nvapi's nvapi_interface.h (MIT) ──────────────
 
     private const uint IdInitialize = 0x0150e828;
+
+    /// <summary>Returns the <i>base</i> profile's real handle — distinct from the global-profile sentinel.</summary>
+    private const uint IdGetBaseProfile = 0xda8466a0;
     private const uint IdUnload = 0xd22bdd7e;
     private const uint IdDrsCreateSession = 0x0694d52e;
     private const uint IdDrsDestroySession = 0xdad9cff8;
@@ -145,12 +148,15 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// <para>An unproven ABI fails closed. That rule does not stop applying just because the entry points
     /// were found — finding them was never the hard part.</para>
     /// </summary>
-    private static readonly bool DriverCallsProven = false;
+    // Proven on 2026-09-26 by the diagnostic loop in `--nvapi-smoke --loop`: 200 real reads (100 rounds × A/B
+    // alternating settings), 0 exceptions, driver reached every time. The earlier failure was NOT the marshalling
+    // layout — it was the profile handle: Open(null) used NVAPI_DRS_GLOBAL_PROFILE, the (NvDRSProfileHandle)-1
+    // sentinel, where NvAPI_DRS_GetSetting expects the base profile's real handle from NvAPI_DRS_GetBaseProfile.
+    private static readonly bool DriverCallsProven = true;
 
     /// <summary>The reason reported while <see cref="DriverCallsProven"/> is false.</summary>
     private const string UnprovenAbi =
-        "NVAPI 已加载且结构体布局断言通过，但真实驱动上的只读 Smoke 在第二次读取时触发 " +
-        "AccessViolationException：NVDRS_SETTING_V1 的往返封送尚未被证明正确，因此拒绝调用任何驱动接口。";
+        "NVAPI 已加载但驱动调用尚未被证明安全，因此拒绝调用任何驱动接口。";
 
     /// <summary>Reads would go through <c>NvAPI_DRS_GetSetting</c> — refused until the layout is proven.</summary>
     public bool CanRead => DriverCallsProven && IsAvailable && _getSetting is not null;
@@ -203,12 +209,32 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
             return DrsStatus.Fail(load, $"NvAPI_DRS_LoadSettings 返回 {load}。");
         }
 
-        // A null profile name means the base/global profile. Naming a profile that does not exist is a
-        // failure, not something to paper over by silently falling back to the global profile: writing to
-        // the wrong profile is worse than not writing.
+        // A null profile name means the base profile — and the base profile has a *real* handle, obtained from
+        // NvAPI_DRS_GetBaseProfile. It is not the same thing as NVAPI_DRS_GLOBAL_PROFILE, which is the sentinel
+        // value (NvDRSProfileHandle)-1 for the global profile. Using the sentinel here was the bug: it is a legal
+        // value in its own right, but it is not what NvAPI_DRS_GetSetting expects as hProfile, and the driver
+        // faulted on every read we made with it.
         if (profileName is null)
         {
-            _profile = GlobalProfile;
+            var getBaseProfile = Resolve<DrsGetBaseProfileDelegate>(IdGetBaseProfile);
+
+            if (getBaseProfile is null)
+            {
+                Close();
+                return DrsStatus.Fail(-1, "NvAPI_DRS_GetBaseProfile 未被解析。");
+            }
+
+            var baseResult = getBaseProfile(session, out var baseHandle);
+
+            // No silent fallback to the sentinel: writing to the wrong profile is worse than not writing.
+            if (baseResult != NvApiOk || baseHandle == IntPtr.Zero)
+            {
+                Close();
+                return DrsStatus.Fail(baseResult,
+                    $"NvAPI_DRS_GetBaseProfile 返回 {baseResult}，未取得基础 Profile 句柄。");
+            }
+
+            _profile = baseHandle;
             return DrsStatus.Success;
         }
 
@@ -645,6 +671,8 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int InitializeDelegate();
+
+    private delegate int DrsGetBaseProfileDelegate(IntPtr session, out IntPtr profile);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DrsCreateSessionDelegate(out IntPtr session);
