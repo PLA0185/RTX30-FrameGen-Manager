@@ -51,7 +51,10 @@ public partial class MainWindow
                 Game: game,
                 Provider: provider,
                 ProviderVersion: provider.GetInstalledVersion(game) ?? game.Deployment?.ModVersion ?? "",
-                PayloadDirectory: SourcePath,
+                // P0-07：null 让工作流按 provider id + 解析出的版本去 PayloadPaths.For(...) 取目录 —— 那才是
+                // 真正的 Provider/版本隔离。此前这里传的是界面上那个 mod 源路径，于是所有 provider、所有版本
+                // 共用同一个目录，「隔离」只存在于代码里而没有生效。只有测试与高级诊断才显式指定目录。
+                PayloadDirectory: null,
                 GpuName: _data.GpuName,
                 DriverVersion: _data.GpuDriver,
                 Store: game.Store,
@@ -351,7 +354,9 @@ public partial class MainWindow
                     new ConfigurationRequest(
                         Game: game, Provider: provider,
                         ProviderVersion: provider.GetInstalledVersion(game) ?? game.Deployment?.ModVersion ?? "",
-                        PayloadDirectory: SourcePath,
+                        // P0-07：与单游戏路径一致 —— 预览也必须按 provider/版本隔离取目录，否则预览看到的文件
+                        // 和真正执行时用的文件来自两个不同的地方，而用户是同意的「后者」。
+                        PayloadDirectory: null,
                         GpuName: _data.GpuName, DriverVersion: _data.GpuDriver, Store: game.Store,
                         HasKernelAntiCheat: game.HasKernelAntiCheat,
                         UserConfirmedUnverified: true,
