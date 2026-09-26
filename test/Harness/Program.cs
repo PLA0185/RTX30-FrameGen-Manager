@@ -186,7 +186,11 @@ public static class Program
         }
 
         var profileName = "RTX30FGM-SMOKE-" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
-        const string smokeExe = "RTX30FGM-SMOKE.exe";
+
+        // EXE 名必须每次唯一。固定名字会撞上 NVAPI_EXECUTABLE_ALREADY_IN_USE（-167，官方定义：
+        // "Application already exists in the other profile"）—— 上一次留下的绑定还在别的 Profile 里，
+        // 于是**第一次运行成功、之后永远失败**。而这个自检的全部价值就在于可重复运行。
+        var smokeExe = "RTX30FGM-SMOKE-" + Guid.NewGuid().ToString("N")[..8].ToUpperInvariant() + ".exe";
 
         Console.WriteLine($"临时 Profile 名    : {profileName}");
         Console.WriteLine($"临时绑定 EXE       : {smokeExe}");
@@ -319,6 +323,18 @@ public static class Program
                 Report("删除临时 Profile", adapter.DeleteProfile(profile));
 
             Report("最后一次保存", adapter.SaveUngated());
+
+            // §8：删完之后**再查一次真实绑定**，而不是删完就断言「没有残留」。
+            //
+            // 只在当前 Profile 上删、然后据此宣布干净，是一个**无法证伪**的结论 —— 绑定完全可能在别的
+            // Profile 里（那正是 `-167` 说的情形）。这里用 FindApplicationByName 反查，让结论可证伪。
+            // 它自己开会话，所以不受上面 Close 的影响。
+            var leftoverBinding = adapter.FindApplicationProfile(smokeExe);
+
+            Console.WriteLine(leftoverBinding.Found
+                ? $"  × 残留检查        : {smokeExe} 仍绑定在 Profile「{leftoverBinding.ProfileName}」上"
+                : $"  ✓ 残留检查        : 驱动上已找不到 {smokeExe} 的绑定");
+
             adapter.Close();
         }
 
