@@ -375,7 +375,19 @@ public partial class MainWindow
                         // 和真正执行时用的文件来自两个不同的地方，而用户是同意的「后者」。
                         PayloadDirectory: null,
                         GpuName: _data.GpuName, DriverVersion: _data.GpuDriver, Store: game.Store,
+                        // §17 P1-4：**预览与执行必须逐字段一致。**
+                        //
+                        // 这里曾经漏传 `AllowProtected`，于是预览拿到默认的 `false` → 内核反作弊的游戏被判
+                        // Blocked、列进确认对话框；而执行侧（同一文件 L452）传 `game.HasKernelAntiCheat`
+                        // → **根本不 Blocked**，用户点完确定之后游戏照装。**同一次运行给出相反的结论。**
+                        //
+                        // 两处的反作弊判据其实是同一个值：`game.HasKernelAntiCheat` 就是
+                        // `Protection?.HasKernelAntiCheat == true`（`Models.cs:237` 的计算属性），与执行侧要求的
+                        // `?? false` 对 `bool?` 完全等价。所以这里直接用 `game.HasKernelAntiCheat` 就是同源，
+                        // 不必绕道 `Protection`。
+                        AllowProtected: game.HasKernelAntiCheat,
                         HasKernelAntiCheat: game.HasKernelAntiCheat,
+
                         UserConfirmedUnverified: true,
                         // §9/§10：与单游戏路径一致 —— 预览也必须按 Provider 决定要写哪些设置，
                         // 否则预览里显示的 Profile 需求与真正执行时的不是同一件事。
