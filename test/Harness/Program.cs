@@ -3781,8 +3781,12 @@ public static class Program
             if (string.IsNullOrWhiteSpace(executableName))
                 return DrsApplicationLookup.NotFound(executableName ?? "", "未提供可执行文件名。");
 
+            // Defaults to a match so the ordinary path — a game whose executable the driver knows — is what tests
+            // exercise unless they say otherwise. The "not assigned to any profile" branch is worth testing, so a
+            // test that wants it sets ApplicationLookup to NotFound explicitly; making that the default would have
+            // silently turned every orchestration test into a test of the refusal path.
             return ApplicationLookup
-                ?? DrsApplicationLookup.NotFound(executableName, "测试适配器未配置应用查找结果。");
+                ?? DrsApplicationLookup.Matched(executableName, executableName, "测试适配器默认匹配。");
         }
 
         public bool IsAvailable { get; set; } = true;
@@ -4643,8 +4647,17 @@ public static class Program
 
         var lookupDrs = new FakeDrsAdapter();
 
-        Check("未配置时定位明确返回「未找到」，而不是伪造一个 Profile",
+        // The "not assigned to any profile" branch is worth pinning down, so it is configured explicitly rather
+        // than being the default — the default has to serve the ordinary path, or every orchestration test would
+        // silently become a test of the refusal.
+        lookupDrs.ApplicationLookup =
+            NvidiaProfile.DrsApplicationLookup.NotFound("Game.exe", "测试：未分配到任何 Profile。");
+
+        Check("明确未找到时不伪造 Profile，而是如实报告",
             !lookupDrs.FindApplication("Game.exe").Found);
+
+        Check("测试适配器默认匹配（让编排测试走正常路径而非拒绝路径）",
+            new FakeDrsAdapter().FindApplication("Game.exe").Found);
 
         lookupDrs.ApplicationLookup =
             NvidiaProfile.DrsApplicationLookup.Matched("Game.exe", "Ground Branch", "测试用");

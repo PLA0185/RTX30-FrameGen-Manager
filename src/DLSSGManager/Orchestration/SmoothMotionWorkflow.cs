@@ -530,10 +530,32 @@ public sealed class SmoothMotionWorkflow
                     .Where(w => request.ProfileSettings.Any(s => s.Id == w.Setting.Id))
                     .ToList();
 
+                // P0-04: the profile is located by the renderer executable, which is what the driver keys on. The
+                // game's display name is not a profile name and never was — looking it up by that would write to
+                // whatever unrelated profile happened to share the name, or to nothing at all; and the failure
+                // would surface as "the profile is not configured", hiding the real cause.
+                var rendererExe = plan.TargetRendererExe is { Length: > 0 } rendererPath
+                    ? System.IO.Path.GetFileName(rendererPath)
+                    : "";
+
+                var lookup = rendererExe.Length > 0
+                    ? _profile.FindApplication(rendererExe)
+                    : DrsApplicationLookup.NotFound("", "计划未记录渲染器可执行文件，无法定位驱动 Profile。");
+
+                if (!lookup.Found)
+                {
+                    // No fallback to the display name: that is the guess this change removes.
+                    steps.Add(new WorkflowStep("定位 NVIDIA Profile", false, lookup.Message));
+                    errors.Add(lookup.Message);
+
+                    return Finish(WorkflowOutcome.Failed, SmoothMotionEvidence.None, steps, plan, request, errors,
+                        filesWritten, profileWritten, journal: profileJournal);
+                }
+
                 var apply = writes.Count > 0
-                    ? _profile.Apply(request.Game.Name, writes)
+                    ? _profile.Apply(lookup.ProfileName, writes)
                     : new ProfileApplyResult(true, "计划中的设置都没有可安全写入的值，已跳过。",
-                        new ProfileJournal(request.Game.Name), Array.Empty<string>());
+                        new ProfileJournal(lookup.ProfileName), Array.Empty<string>());
 
                 profileJournal = apply.Journal;
 

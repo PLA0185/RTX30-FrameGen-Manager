@@ -346,6 +346,15 @@ public sealed class NvidiaProfileService
     /// with zero writes, and an unreadable optional setting is dropped from the set. Only then does the
     /// first write happen — so there is no window in which something is changed that cannot be undone.</para>
     /// </summary>
+    /// <summary>
+    /// Locates a profile by the executable the driver knows it by — the renderer EXE, not the game's display name.
+    ///
+    /// <para>Passed through to the adapter rather than reimplemented: the adapter owns the driver interaction, and
+    /// there is exactly one correct way to ask.</para>
+    /// </summary>
+    public DrsApplicationLookup FindApplication(string executableName) =>
+        _adapter.FindApplication(executableName);
+
     public ProfileApplyResult Apply(string? profileName, IReadOnlyList<ProfileSettingWrite> writes)
     {
         var notes = new List<string>();
