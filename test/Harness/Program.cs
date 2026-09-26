@@ -6426,8 +6426,15 @@ public static class Program
             holdProxyExists && File.Exists(holdProxy) && File.Exists(holdIni),
             $"proxy={File.Exists(holdProxy)} ini={File.Exists(holdIni)}");
 
-        Check("自回滚的失败不得清掉上一次的部署记录（§17 P1-1）",
-            holdRecordAfterFirst is not null && holdGame.Deployment is not null);
+        // **比较身份，而不是判空。** 这条断言原来只写 `is not null` —— 而**记录被换成「本次（已回滚）」
+        // 的新记录也照样通过**，那恰恰是它名字里说「不得清掉」却没在检查的事。
+        //
+        // `Deploy` 在 try 内就会换掉记录（`game.Deployment = new DeploymentInfo {...}`）；**在那之后才失败**
+        // 的运行会留下一个指向不存在字节的记录（界面显示 Modified/Missing）。这条断言要守的正是那种情况：
+        // 记录不能停在「本次」这个新值上。
+        Check("自回滚的失败不得把部署记录换成新的（§17 P1-1 · 比较身份）",
+            ReferenceEquals(holdGame.Deployment, holdRecordAfterFirst),
+            holdRecordAfterFirst is null ? "(前置未建立记录)" : "记录被替换了");
 
         // **这条是 P1-2 的核心断言**：用户第一次装好的文件必须还在。
         Check("零写入的失败不得删掉既有安装（§17 P1-2）",
