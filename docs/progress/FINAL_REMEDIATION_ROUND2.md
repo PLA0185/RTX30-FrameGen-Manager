@@ -75,7 +75,7 @@ SHA256 (ZIP):                       52BC0214F00C30CED113F089AC9A81AC64DC8627C42D
 ## 五、Known Risks
 
 1. **P0-09 的确认框仍不描述计划**：用户看到的是防作弊风险，而不是各游戏的实际计划与被阻止的原因。
-2. **§13 是随附式加清单式核对，而非逐项补齐**：每个修复都带了断言（累计新增 65 项）。**三项缺口已补** —— SafeZip 的**单文件上限**与**总大小上限**（`78f89d2`，把两个上限改成**带默认值的参数**，默认值即原常量、生产调用点一行未改，于是几百字节即可覆盖全部分支）；以及 **payload 旧版本清理**（`1db5bea`，`PayloadPaths.OtherVersions` 早有完整实现却**全仓库无调用点**，新增的 `RemoveUnreferenced(providerId, keepVersion, referenced)` **只删调用方明确声明未使用的版本** —— 一个 provider 的 payload 可能支撑多个游戏的部署，替调用方判断哪些算没用会破坏那些部署，所以策略必须留在调用方）。**未覆盖的剩余四项**记在 `ROUND2_TEST_COVERAGE.md`，其共同根因是 UI 文件不在 Harness 编译白名单内。
+2. **§13 是随附式加清单式核对，而非逐项补齐**：每个修复都带了断言（累计新增 65 项）。**三项缺口已补** —— SafeZip 的**单文件上限**与**总大小上限**（`78f89d2`，把两个上限改成**带默认值的参数**，默认值即原常量、生产调用点一行未改，于是几百字节即可覆盖全部分支）；以及 **payload 旧版本清理**（`1db5bea`，`PayloadPaths.OtherVersions` 早有完整实现却**全仓库无调用点**，新增的 `RemoveUnreferenced(providerId, keepVersion, referenced)` **只删调用方明确声明未使用的版本** —— 一个 provider 的 payload 可能支撑多个游戏的部署，替调用方判断哪些算没用会破坏那些部署，所以策略必须留在调用方）。**未覆盖的剩余三项**记在 `ROUND2_TEST_COVERAGE.md`（Profile Wiring 端到端 · Read-back 值不一致 · 部署结果与计划不一致），其共同根因是 UI 文件不在 Harness 编译白名单内。清单里的「**ProviderVersion**」一项经复核**已被覆盖**：`test/Harness/Program.cs` **L4691 / L4693 / L4697** 早已断言「步骤存在」「**版本解析排在兼容性查询之前**」（`versionIdx < compatIdx`）「计划携带解析出的 Provider 版本」。**缺口清单本身也会像报告一样过期 —— 用之前要逐条核对是否仍然成立。**
 3. **UI 路径的测试覆盖有限**：批量部署、Provider 下拉、Plan Preview 的改动**不在 Harness 编译白名单内**（`MainWindow.xaml.cs` / `MainWindow.Actions.cs`），Build 0/0 与 Harness 全绿只说明没有破坏既有行为，不等于新路径被执行过。
 4. **视觉结果未经确认**：深色主题的隐式样式已验证到「样式被正确加载、资源键可解析、窗口正常渲染」（启动日志无 `XamlParseException` / `Cannot find resource`），**实际字形颜色是视觉结果，需人在界面上确认**。
 
