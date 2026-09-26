@@ -3812,6 +3812,16 @@ public static class Program
         Check("部署了计划外的文件时按失败处理", !extra.Ok, extra.Message);
         Check("失败原因点名计划外的文件", extra.Message.Contains("not-planned.dll"), extra.Message);
 
+        // §18.5 / P0-08：失败不等于没写文件。这一区分是回滚能否发生的唯一依据 —— 此前 filesWritten 只在成功
+        // 之后才置位，于是「装了但判定失败」时工作流以为盘上什么都没写，回滚被整个跳过，游戏目录留下残留。
+        Check("部署不一致时仍如实报告「文件已写入」", extra.FilesWereWritten, $"written={extra.FilesWereWritten}");
+        Check("部署不一致时要求回滚", extra.RollbackRequired, $"rollback={extra.RollbackRequired}");
+
+        // 反向的一半：成功时不得要求回滚 —— 否则「永远要求回滚」也能满足上面那条。
+        Check("一致的成功安装不要求回滚",
+            executed.FilesWereWritten && !executed.RollbackRequired,
+            $"written={executed.FilesWereWritten} rollback={executed.RollbackRequired}");
+
         // 反向的一半：没有部署记录时，执行器必须如实报「无从核对」，而不是报「一致」。
         // 这正是项目里那条既有判据的现场验证 —— 没有可比对的数据时报「无法核对」，不报「一致」。
         var noneGame = new GameEntry { Name = "NoRecord", RenderDir = MakeGameDir(work, "norecord") };
