@@ -2,6 +2,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using DLSSGManager.Providers;
 
 namespace DLSSGManager;
 
@@ -88,6 +89,7 @@ public static class Program
             TestBackupIntegrity(work);
             TestDeployTransaction(work);
             TestSignatureIntegrity(work);
+            TestProviderFramework(work);
         }
         catch (Exception ex)
         {
@@ -2426,5 +2428,185 @@ public static class Program
             && File.Exists(Path.Combine(dir, game.Deployment.ProxyName))
             && Sha(Path.Combine(dir, game.Deployment.ProxyName)) == game.Deployment.ProxySha256,
             game.Deployment?.ProxyName ?? "(无记录)");
+    }
+
+    /// <summary>
+    /// Stage 3: the provider framework.
+    ///
+    /// Exercises the contract's observable rules — stable ids, refusal of duplicates, no fallback for
+    /// an unknown id, a health model that tells rate limiting apart from a plain network outage, and
+    /// isolation so one failing provider cannot take the others down — plus the migration guarantee:
+    /// installing through a provider still runs the shared signature, transaction and restore paths.
+    /// </summary>
+    private static void TestProviderFramework(string work)
+    {
+        Section("Provider 框架（Stage 3）");
+
+        var registry = new ProviderRegistry();
+        var provider = new DlssgSm86Provider(new FakeDownloader());
+
+        // --- Registry ---
+        Check("注册 DlssgSm86Provider 成功", registry.TryRegister(provider, out var regError), regError);
+        Check("Provider ID 稳定且非空", provider.Id == DlssgSm86Provider.ProviderId, provider.Id);
+        Check("重复 ID 被明确拒绝",
+            !registry.TryRegister(new DlssgSm86Provider(new FakeDownloader()), out var dupError) && dupError.Length > 0,
+            dupError);
+        Check("重复注册未覆盖原实例", ReferenceEquals(registry.Get(DlssgSm86Provider.ProviderId), provider));
+        Check("空 ID 被拒绝", !registry.TryRegister(new FakeProvider(""), out _));
+        Check("null Provider 被拒绝", !registry.TryRegister(null, out _));
+        Check("按 ID 取回实例", ReferenceEquals(registry.Get(DlssgSm86Provider.ProviderId), provider));
+        Check("ID 查找不区分大小写", ReferenceEquals(registry.Get("DLSSG-SM86"), provider));
+        Check("未知 ID 返回 null，不回退到其他 Provider", registry.Get("mfg-smooth") is null);
+        Check("空 ID 查询返回 null", registry.Get("") is null && registry.Get(null) is null);
+
+        var defaults = ProviderRegistry.CreateDefault();
+        Check("默认注册表含 DlssgSm86Provider", defaults.Get(DlssgSm86Provider.ProviderId) is not null);
+        Check("默认注册表构造不触发网络", defaults.Count == 1, "实际: " + defaults.Count);
+
+        // The entry point the window uses must resolve to the same provider.
+        Check("应用级入口指向 dlssg-sm86", AppProviders.Patch.Id == DlssgSm86Provider.ProviderId, AppProviders.Patch.Id);
+        Check("应用级注册表非空", AppProviders.Registry.Count >= 1, "实际: " + AppProviders.Registry.Count);
+
+        // --- Metadata ---
+        var meta = provider.Metadata;
+        Check("Metadata ID 与 Provider 一致", meta.Id == provider.Id);
+        Check("Metadata 含显示名", !string.IsNullOrWhiteSpace(meta.DisplayName));
+        Check("Metadata 记录上游仓库", meta.UpstreamRepository == "sdli1995/dlssg_for_sm86", meta.UpstreamRepository);
+        Check("分发模型为 GitTree", meta.Distribution == DistributionModel.GitTree, meta.Distribution.ToString());
+        Check("ReleaseAsset 同样可表达", Enum.IsDefined(DistributionModel.ReleaseAsset));
+        Check("许可证按已查证事实标为「无 LICENSE 声明」",
+            meta.License == LicenseClass.NoLicenseDeclared, meta.License.ToString());
+        Check("许可证说明同时含「无 LICENSE」与「README 自称」",
+            meta.LicenseNote.Contains("LICENSE") && meta.LicenseNote.Contains("README"), meta.LicenseNote);
+        Check("许可证不是 OpenSource 布尔（类别数 ≥ 6）", Enum.GetValues<LicenseClass>().Length >= 6);
+        Check("风险字段：不写 NVIDIA Profile", !meta.WritesNvidiaProfile);
+        Check("风险字段：触碰游戏进程", meta.TouchesGameProcess);
+        Check("风险字段：标记为实验性", meta.Experimental);
+        Check("管理员需求为三态 Conditional",
+            meta.RequiresAdministrator == TriState.Conditional, meta.RequiresAdministrator.ToString());
+
+        // --- Health 模型 ---
+        Check("健康状态模型覆盖七态", Enum.GetValues<ProviderHealthState>().Length == 7);
+        Check("RateLimited 与 Unavailable 是两个不同状态",
+            ProviderHealth.RateLimited("x").State != ProviderHealth.Unavailable("x").State);
+        Check("状态可携带原因", ProviderHealth.Broken("磁盘损坏").Reason == "磁盘损坏");
+        Check("仅 Available 视为可用",
+            ProviderHealth.Available().IsUsable && !ProviderHealth.Deprecated("旧").IsUsable);
+
+        // --- 故障隔离 ---
+        var isolated = new ProviderRegistry();
+        isolated.Register(new FakeProvider("failing", throwsOnHealth: true));
+        isolated.Register(new FakeProvider("healthy", ProviderHealth.Available("ok")));
+        Check("抛异常的 Provider 被隔离为 Broken",
+            isolated.GetHealth("failing").State == ProviderHealthState.Broken,
+            isolated.GetHealth("failing").Reason);
+        Check("其他 Provider 健康读取不受影响", isolated.GetHealth("healthy").IsUsable);
+        Check("未注册 ID 的健康查询返回 Unavailable 且不抛",
+            isolated.GetHealth("ghost").State == ProviderHealthState.Unavailable);
+        Check("逐个查询全部健康状态", isolated.AllHealth().Count == 2);
+
+        // --- 迁移后的行为一致性（不触网）---
+        var source = new ModSource(MakeSyntheticModSource(work));
+        var dir = MakeGameDir(work, "ProviderGame");
+        var game = new GameEntry { Name = "ProviderGame", RenderDir = dir, ExePath = Path.Combine(dir, "ProviderGame.exe") };
+
+        var install = provider.Install(game, source);
+        Check("Provider 安装成功", install.Ok, install.Message);
+        Check("安装写入代理与 INI",
+            File.Exists(Path.Combine(dir, "version.dll")) && File.Exists(Path.Combine(dir, ModSource.IniName)));
+        Check("安装建立部署记录", game.Deployment is not null);
+        Check("Provider 报告已安装版本", provider.GetInstalledVersion(game) == source.Version,
+            provider.GetInstalledVersion(game) ?? "(null)");
+
+        var restore = provider.Restore(game, removeLogs: false);
+        Check("Provider 恢复成功", restore.Ok, restore.Message);
+        Check("恢复清除代理与 INI",
+            !File.Exists(Path.Combine(dir, "version.dll")) && !File.Exists(Path.Combine(dir, ModSource.IniName)));
+
+        // The transaction must not be bypassed by going through a provider: the same failure scenario
+        // that the direct call rolls back has to roll back here too.
+        var txDir = MakeGameDir(work, "ProviderTx");
+        var txGame = new GameEntry { Name = "ProviderTx", RenderDir = txDir, ExePath = Path.Combine(txDir, "ProviderTx.exe") };
+        Directory.CreateDirectory(Path.Combine(txDir, ModSource.IniName));
+        var txResult = provider.Install(txGame, source);
+        Check("Provider 路径同样执行事务回滚",
+            !txResult.Ok && !File.Exists(Path.Combine(txDir, "version.dll")) && txGame.Deployment is null,
+            txResult.Message);
+
+        // Nor may it bypass the signature primitive.
+        var signed = Path.Combine(Environment.SystemDirectory, "kernel32.dll");
+        if (File.Exists(signed))
+        {
+            Check("VerifyPackage 接受完整签名", provider.VerifyPackage(signed).Accepted);
+
+            var tampered = Path.Combine(work, "provider_tampered.dll");
+            var bytes = File.ReadAllBytes(signed);
+            for (var i = 0; i < 8; i++) bytes[bytes.Length / 2 + i] ^= 0xFF;
+            File.WriteAllBytes(tampered, bytes);
+
+            var verdict = provider.VerifyPackage(tampered);
+            Check("VerifyPackage 拒绝篡改文件并区分 BadDigest",
+                !verdict.Accepted && verdict.Signature == SignatureStatus.BadDigest, verdict.Signature.ToString());
+        }
+
+        // The download seam makes the delegation itself checkable offline.
+        var download = provider.DownloadAsync(Path.Combine(work, "provider_dl"), null, CancellationToken.None)
+            .GetAwaiter().GetResult();
+        Check("DownloadAsync 委托给共享下载 seam", download.Ok, download.Message);
+
+        var latest = provider.CheckLatestAsync(forceRefresh: false, CancellationToken.None).GetAwaiter().GetResult();
+        Check("CheckLatestAsync 返回来源版本", latest?.Version == "0.3.5", latest?.Version ?? "(null)");
+        Check("探测成功后状态为 Available", provider.Health.IsUsable, provider.Health.Reason);
+    }
+
+    /// <summary>A provider whose only interesting behaviour is its health, for registry tests.</summary>
+    private sealed class FakeProvider : IPatchProvider
+    {
+        private readonly ProviderHealth _health;
+        private readonly bool _throwsOnHealth;
+
+        public FakeProvider(string id, ProviderHealth? health = null, bool throwsOnHealth = false)
+        {
+            Id = id;
+            _health = health ?? ProviderHealth.Available("fake");
+            _throwsOnHealth = throwsOnHealth;
+        }
+
+        public string Id { get; }
+
+        public ProviderMetadata Metadata => new(
+            Id, "Fake", "example/fake", DistributionModel.ReleaseAsset, LicenseClass.Unknown,
+            "test double", false, TriState.No, false, false);
+
+        public ProviderHealth Health =>
+            _throwsOnHealth ? throw new InvalidOperationException("健康状态读取失败") : _health;
+
+        public Task<ReleaseInfo?> CheckLatestAsync(bool forceRefresh, CancellationToken ct) =>
+            Task.FromResult<ReleaseInfo?>(null);
+
+        public string? GetInstalledVersion(GameEntry game) => null;
+
+        public Task<OpResult> DownloadAsync(string destination, IProgress<string>? progress, CancellationToken ct) =>
+            Task.FromResult(new OpResult());
+
+        public PackageVerification VerifyPackage(string path) =>
+            new(false, SignatureStatus.NotSigned, "fake");
+
+        public OpResult Install(GameEntry game, ModSource source, bool allowProtected = false) => new();
+
+        public OpResult Restore(GameEntry game, bool removeLogs) => new();
+    }
+
+    /// <summary>Stands in for the network, so provider behaviour is testable offline.</summary>
+    private sealed class FakeDownloader : IPatchDownloader
+    {
+        public Task<OpResult> DownloadAsync(string destination, IProgress<string>? progress, CancellationToken ct)
+        {
+            var r = new OpResult();
+            r.Note("fake download");
+            return Task.FromResult(r);
+        }
+
+        public Task<string?> DetectLatestVersionAsync(CancellationToken ct) => Task.FromResult<string?>("0.3.5");
     }
 }

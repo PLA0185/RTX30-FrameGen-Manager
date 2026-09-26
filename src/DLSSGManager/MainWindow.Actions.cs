@@ -64,8 +64,11 @@ public partial class MainWindow
             }
 
             var source = CurrentSource();
-            var result = await Task.Run(() => DeploymentService.Deploy(game, source,
-                allowProtected: protection.HasKernelAntiCheat));
+
+            // Reached through the provider registry rather than the service directly: the flow belongs
+            // to a provider, and a future one must be selectable from here without editing the window.
+            var result = await Task.Run(() => Providers.AppProviders.Patch.Install(game, source,
+                protection.HasKernelAntiCheat));
 
             _log.Details(result.Lines);
             _log.Result(result.Ok, result.Message);
@@ -125,7 +128,7 @@ public partial class MainWindow
         try
         {
             var removeLogs = RemoveLogsCheck.IsChecked == true;
-            var result = await Task.Run(() => DeploymentService.Restore(game, removeLogs));
+            var result = await Task.Run(() => Providers.AppProviders.Patch.Restore(game, removeLogs));
 
             _log.Details(result.Lines);
             _log.Result(result.Ok, result.Message);
@@ -222,7 +225,7 @@ public partial class MainWindow
                 foreach (var game in targets)
                 {
                     // The confirmation above covers the anti-cheat risk for every game in the list.
-                    var result = DeploymentService.Deploy(game, source, allowProtected: game.HasKernelAntiCheat);
+                    var result = Providers.AppProviders.Patch.Install(game, source, game.HasKernelAntiCheat);
                     var mark = result.Ok ? "✓" : "✗";
                     var risk = game.HasKernelAntiCheat ? Loc.T("Batch.RiskMark") : "";
                     _log.Write($"  {mark}{risk} {game.Name}：{result.Message}");
@@ -279,7 +282,7 @@ public partial class MainWindow
 
                 foreach (var game in targets)
                 {
-                    var result = DeploymentService.Restore(game, removeLogs);
+                    var result = Providers.AppProviders.Patch.Restore(game, removeLogs);
                     var mark = result.Ok ? "✓" : "✗";
                     _log.Write($"  {mark} {game.Name}：{result.Message}");
                     if (result.Ok) count++;

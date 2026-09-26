@@ -1505,3 +1505,107 @@ DSH 环境具备 RTX 30 GPU，因此**不得**再以「无硬件」为由跳过�
 | **S2-02** | 事务回滚**不覆盖** legacy schema 分支下删除的冗余代理 | 这些文件在 mod 源目录中仍存在，可重新部署恢复；已如实记录而非隐藏 |
 | **S2-03** | `Verify` 新逻辑缺少端到端下载验证 | 需联网抓取真实 payload 才能覆盖 |
 | **S2-04** | 快照会占用 restore 目录额外空间 | 仅对「本次将覆盖的文件」快照（通常 0–2 个小文件），成功或失败后都会清理 |
+
+---
+
+## 39. Stage 3 实现记录：Provider Framework（2026-09-26）
+
+> 基线 `c553af3`。本节只记录实际做了什么、与设计的偏差、以及仍未验证的部分。
+
+### 39.1 先画调用链，再抽象
+
+审查后确认的真实职责归属（避免先造空接口再倒推）：
+
+| 阶段 | 现有负责者 | 位置 |
+|---|---|---|
+| 上游来源 | `ModFetcher.Sources`（raw / ghproxy / jsdelivr / ghfast / codeload / zipball 六源 + 自动顺序） | `ModFetcher.cs:214-250` |
+| 版本识别 | `ModFetcher.DetectLatestVersionAsync`（读上游 README）+ `ModSource.ReadVersion`（payload 自带横幅）+ 版本标记文件 | `ModFetcher.cs:152`、`ModSource.cs:96-113` |
+| 下载 | `ModFetcher.DownloadIntoAsync`（公开入口；内部 staging → Verify → Publish） | `ModFetcher.cs:571` |
+| 校验 | `ModFetcher.Verify`（Stage 2 加固的完整链）+ `DeploymentService.ProbeSignature` | `ModFetcher.cs:817+` |
+| 安装计划 | **没有独立计划层**：`PickFreeProxy` + `IniTemplate.Render` 直接进入 `Deploy` | `DeploymentService.cs:341`、`:437` |
+| 部署 / 恢复 | `DeploymentService.Deploy` / `.Restore` | `:373`、`:609` |
+| UI 入口 | `MainWindow.Actions.cs`（部署/恢复/批量）、`MainWindow.xaml.cs`（下载） | — |
+| 状态保存 | `GameEntry.Deployment` 经 `LibraryStore` 序列化 | `Models.cs:138-158` |
+
+**结论：现有类型已能表达 Provider 语义，因此没有制造第二套数据模型。**
+
+### 39.2 Provider Contract（职责等价，非照抄）
+
+`src/DLSSGManager/Providers/ProviderContracts.cs`：
+
+- `IPatchProvider`：`Id` / `Metadata` / `Health` / `CheckLatestAsync` / `GetInstalledVersion` / `DownloadAsync` / `VerifyPackage` / `Install` / `Restore`
+- 结果**复用现有 `OpResult`**，游戏**复用 `GameEntry`**，载荷**复用 `ModSource`** —— 未新增 `InstallResult` / `GameInfo` 一类平行模型
+- `IPatchDownloader`：把静态 `ModFetcher` 置于接口之后，使「迁移未绕过安全路径」可以离线测试
+
+**与 §5 目标接口的差异（有意）**：目标接口中的 `BuildInstallPlan(...)` 未落成独立类型——现有架构里根本没有计划层，`Deploy` 一步完成「选入口 + 渲染 INI + 写文件」。另造一个平行计划模型会产生两套真相。`Install(game, source, allowProtected)` 承担同等职责。
+
+### 39.3 Distribution Models
+
+`DistributionModel { GitTree, ReleaseAsset }`。
+
+当前 Provider 为 **`GitTree`**（7 个 Release 全部 `assets=0`，二进制在 git 树内）。框架层面两种模型都能表达，Stage 7 的 MFG 类 Provider 可直接以 `ReleaseAsset` 接入，无需推翻本层。
+
+### 39.4 Provider Metadata
+
+`ProviderMetadata`：Id / DisplayName / UpstreamRepository / Distribution / License / LicenseNote / WritesNvidiaProfile / RequiresAdministrator / TouchesGameProcess / Experimental。
+
+`LicenseClass` 六类（`Mit` / `Gpl3` / `ProprietaryEula` / `NoLicenseDeclared` / `ReferenceOnly` / `Unknown`）——**不是 `OpenSource` 布尔**；`RequiresAdministrator` 使用三态 `TriState`。
+
+`DlssgSm86Provider` 的取值**全部来自已查证事实**：
+
+| 字段 | 值 | 依据 |
+|---|---|---|
+| UpstreamRepository | `sdli1995/dlssg_for_sm86` | Phase 0 §1 |
+| Distribution | `GitTree` | 7 个 Release 全 `assets=0` |
+| License | `NoLicenseDeclared` | 仓库**无 LICENSE 文件**；README 自称 GPLv3。README 声明不是许可授予，故不归为 `Gpl3`；`LicenseNote` 同时保留两侧事实 |
+| WritesNvidiaProfile | `false` | 现有安装流程只写代理 DLL 与 INI |
+| RequiresAdministrator | `Conditional` | 写游戏目录通常不需要；DRS 权限官方未声明（属社区经验），须运行时探测 |
+| TouchesGameProcess | `true` | 代理 DLL 由游戏加载 |
+| Experimental | `true` | 任务书 §10.5 / §10.7 |
+
+### 39.5 Provider Health 与 Registry
+
+`ProviderHealthState` 七态：`Available` / `Unavailable` / `RateLimited` / `ReleaseFormatChanged` / `LicenseRestricted` / `Deprecated` / `Broken`；`ProviderHealth` 携带 `Reason`（不是裸枚举）。
+
+**隔离边界**：`ProviderRegistry.GetHealth` 对每个 Provider 单独 try/catch，抛异常者报 `Broken` 且不影响其他；`CreateDefault()` 注册过程**不做任何 I/O**，因此单个不可用 Provider 不会阻止其他 Provider 构造。
+
+`RateLimited` 与 `Unavailable` 是**不同状态**；当前分类依赖异常文本启发式（见 S3-02）。
+
+**Registry 规则**：重复 ID **明确拒绝**（`TryRegister` 返回 false + 原因，`Register` 抛异常）；未知 ID 返回 **null 而不回退**到其他 Provider；不引入插件加载器、动态代码执行或远程程序集加载。
+
+### 39.6 DlssgSm86Provider 迁移方式
+
+采用指令 §11 的**方案 A**（`ModFetcher` 保留为底层共享服务，Provider 组合它）：
+
+```
+DlssgSm86Provider
+    ├─ IPatchDownloader → ModFetcher（下载 + 完整验证链，Stage 2 已加固）
+    └─ DeploymentService（事务部署 / 恢复 / 签名原语）
+```
+
+**Provider 内没有一行安全逻辑副本**：`Install` → `Deploy`，`Restore` → `Restore`，`VerifyPackage` → `ProbeSignature`。
+
+**UI 最小接入**：`MainWindow.Actions.cs` 的 4 个调用点（单游戏部署/恢复、批量部署/恢复）由直接调用 `DeploymentService` 改为经由 `Providers.AppProviders.Patch.Install / Restore`。**行为完全等价**（同一委托链），未改动任何布局或导航；下载 UI 仍直接调用共享下载服务（属后续 Stage）。
+
+### 39.7 已验证 / 未验证
+
+**已验证**
+- `dotnet build -c Release` → **0 警告 / 0 错误**
+- Harness → **408 通过 / 0 失败 / 10 跳过**（基线 362/0/10，新增 46 项；**原有测试未删除、未减少**）
+- 新增覆盖：Registry 12 项 · Metadata 12 项 · Health 4 项 · 故障隔离 4 项 · 迁移行为一致性 12 项 · 应用级入口 2 项
+- **回归**：Stage 2 全部检查继续通过（签名完整性、备份哈希、事务回滚）
+- `dotnet test` → exit 0、无输出（仓库无 VSTest 项目，如实记录，未伪造测试数量）
+
+**未验证 / 不在本阶段范围**
+- 未对真实网络运行 `CheckLatestAsync`；`DownloadAsync` 的委托关系由 fake seam 验证
+- 未做实机游戏验证（属 Stage 8）
+- 未实现 Stage 4 的更新系统（Latest Available/Compatible、Version Pin、Release Cache、请求去重）
+
+### 39.8 Remaining Risks
+
+| ID | 风险 | 说明 |
+|---|---|---|
+| **S3-01** | Provider Metadata 目前是编译期常量 | 远程元数据更新属后续设计；**远程 JSON 不执行代码**这一红线不变 |
+| **S3-02** | `RateLimited` 与 `Unavailable` 的区分依赖异常文本启发式 | 精确区分需下载层暴露 HTTP 状态码；已在代码注释与本节标注为启发式，未写成可靠判定 |
+| **S3-03** | UI 仅 4 个调用点接入 Provider | 下载路径与状态检查仍直接调用共享服务，属有意的分阶段接入 |
+| **S3-04** | `Install` 未使用独立 InstallPlan | 与现有架构一致的有意选择；若将来引入计划层，需连同 `Deploy` 一起重构 |

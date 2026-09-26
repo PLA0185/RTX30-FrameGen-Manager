@@ -34,6 +34,10 @@
     <Compile Include="..\..\src\DLSSGManager\AntiCheat.cs" />
     <Compile Include="..\..\src\DLSSGManager\Detection.cs" />
     <Compile Include="..\..\src\DLSSGManager\Gpu.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Providers\ProviderContracts.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Providers\ProviderRegistry.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Providers\DlssgSm86Provider.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Providers\AppProviders.cs" />
   </ItemGroup>
 
 </Project>
