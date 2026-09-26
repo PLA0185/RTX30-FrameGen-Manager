@@ -208,7 +208,17 @@ public partial class MainWindow
             // and seeing it next to the outcome is how a mismatch becomes visible instead of silent.
             if (outcome.Plan is { } plan)
             {
-                _log.Write($"计划：{plan.Mode} · 入口 {plan.ProxyChoice ?? "(未指定)"} · " +
+                // `plan.Mode` 在生产路径上恒为 `Unknown`：`ConfigurationRequest` 虽然有一个 `InstallMode`
+                // 参数，但两个界面构造点都不传它，所以这里打印出来的永远是枚举名 `Unknown`。
+                //
+                // 对用户来说「Unknown」读起来像「检测不出来 / 出问题了」，而事实是**本版本还没有让用户选择
+                // 安装模式的入口**。同一行的 `ProxyChoice ?? "(未指定)"` 已经做了这个区分 —— Mode 也应当如此，
+                // 否则用户会在一条本来正常的计划上看到一个像是故障的词。
+                var modeText = plan.Mode == Compatibility.InstallMode.Unknown
+                    ? "(未指定)"
+                    : plan.Mode.ToString();
+
+                _log.Write($"计划：{modeText} · 入口 {plan.ProxyChoice ?? "(未指定)"} · " +
                            $"待部署 {plan.FilesToDeploy.Count} 个文件 · 状态 {plan.Status}" +
                            (plan.Blockers.Count > 0 ? $" · 阻止原因 {plan.Blockers.Count} 条" : ""));
             }
