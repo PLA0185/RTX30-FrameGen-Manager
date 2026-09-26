@@ -390,11 +390,6 @@ public sealed record InstallPlanInput(
     /// </summary>
     IReadOnlyList<NvidiaProfile.ProfileSetting>? ProfileSettings = null);
 
-/// <summary>
-/// The plan itself: what would be done, what would be changed, and what must be true beforehand.
-///
-/// Holds no file handles and performs no writes — it is a value the caller can inspect, show and refuse.
-/// </summary>
 /// <summary>计划里的一个文件是从哪来的 —— 它决定了安装前该不该要求它在 payload 里存在。</summary>
 public enum DeploymentFileSource
 {
@@ -432,6 +427,11 @@ public sealed record PlannedFile(
     /// <summary>这个文件扮演什么角色（代理入口 / 配置 / 载荷），用于报告与校验分组。</summary>
     string? Role = null);
 
+/// <summary>
+/// The plan itself: what would be done, what would be changed, and what must be true beforehand.
+///
+/// Holds no file handles and performs no writes — it is a value the caller can inspect, show and refuse.
+/// </summary>
 public sealed record InstallPlan(
     PlanStatus Status,
     string? TargetRendererExe,
