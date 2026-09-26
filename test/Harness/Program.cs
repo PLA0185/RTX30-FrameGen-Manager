@@ -4170,6 +4170,11 @@ public static class Program
             // exercise unless they say otherwise. The "not assigned to any profile" branch is worth testing, so a
             // test that wants it sets ApplicationLookup to NotFound explicitly; making that the default would have
             // silently turned every orchestration test into a test of the refusal path.
+            // 真实适配器的低层入口要求调用方先开会话；替身必须同样要求，否则「两个入口前置条件不同」
+            // 这件事在测试里根本不可见 —— 而那正是 P0-01 修的缺陷。
+            if (!IsSessionOpen)
+                return DrsApplicationLookup.NotFound(executableName, "没有已打开的 DRS 会话。");
+
             return ApplicationLookup
                 ?? DrsApplicationLookup.Matched(executableName, executableName, "测试适配器默认匹配。");
         }
@@ -4203,10 +4208,21 @@ public static class Program
         public ProfileSettingState StateOf(uint id) =>
             _store.TryGetValue(id, out var v) ? v.State : ProfileSettingState.Absent;
 
+        /// <summary>
+        /// 会话是否已打开。真实适配器要求低层入口必须在会话内调用 —— 替身以前没有这个概念，于是
+        /// 「调用方必须自己先 Open」在测试里完全不可见，而那正是 P0-01 修掉的缺陷。
+        /// </summary>
+        public bool IsSessionOpen { get; private set; }
+
         public DrsStatus Open(string? profileName)
         {
             OpenCount++;
-            return FailOpenCode != 0 ? DrsStatus.Fail(FailOpenCode, "fake open failure") : DrsStatus.Success;
+
+            if (FailOpenCode != 0) return DrsStatus.Fail(FailOpenCode, "fake open failure");
+
+            IsSessionOpen = true;
+
+            return DrsStatus.Success;
         }
 
         /// <summary>
@@ -5232,22 +5248,53 @@ public static class Program
         lookupDrs.ApplicationLookup =
             NvidiaProfile.DrsApplicationLookup.NotFound("Game.exe", "测试：未分配到任何 Profile。");
 
+        // 这里改用高层入口。低层 FindApplication 要求调用方先 Open，而这些用例都没有会话 ——
+        // 以前替身不检查会话，它们才「通过」；现在替身如实建模了，用高层入口才是这里真正想测的东西。
         Check("明确未找到时不伪造 Profile，而是如实报告",
-            !lookupDrs.FindApplication("Game.exe").Found);
+            !lookupDrs.FindApplicationProfile("Game.exe").Found);
 
         Check("测试适配器默认匹配（让编排测试走正常路径而非拒绝路径）",
-            new FakeDrsAdapter().FindApplication("Game.exe").Found);
+            new FakeDrsAdapter().FindApplicationProfile("Game.exe").Found);
 
         lookupDrs.ApplicationLookup =
             NvidiaProfile.DrsApplicationLookup.Matched("Game.exe", "Ground Branch", "测试用");
 
-        var matched = lookupDrs.FindApplication("Game.exe");
+        // ---- §18.1：查找 Profile 自己拥有会话，调用前不需要先 Open ----
+        //
+        // P0-01 修的就是这个：真实的 FindApplication 要求 _session 非零，而 UI 路径从不开会话，于是每次
+        // 都以「没有已打开的 DRS 会话」失败 —— 而当时的替身也不检查会话，所以整套测试全绿。
+        var sessionAdapter = new FakeDrsAdapter();
+
+        sessionAdapter.ApplicationLookup =
+            NvidiaProfile.DrsApplicationLookup.Matched("Game.exe", "Ground Branch", "测试用");
+
+        var sessionService = new NvidiaProfileService(sessionAdapter, () => false);
+        var opensBeforeLookup = sessionAdapter.OpenCount;
+        var sessionLookup = sessionService.FindApplicationProfile("Game.exe");
+
+        Check("调用前没有会话时也能定位到 Profile", sessionLookup.Found, sessionLookup.Message);
+        Check("定位 Profile 自己开了会话（调用方不必先 Open）",
+            sessionAdapter.OpenCount > opensBeforeLookup,
+            $"{opensBeforeLookup} → {sessionAdapter.OpenCount}");
+
+        // 反向：低层入口**仍然**要求调用方先开会话 —— 这正是两个入口的区别，也是 P0-01 之所以必要的原因
+        // （旧代码只有低层入口，UI 路径必然失败）。没有这一条，「两个入口其实一样」也能满足上面两条。
+        var lowLevelAdapter = new FakeDrsAdapter();
+
+        lowLevelAdapter.ApplicationLookup =
+            NvidiaProfile.DrsApplicationLookup.Matched("Game.exe", "Ground Branch", "测试用");
+
+        Check("低层 FindApplication 仍要求调用方先开会话（两个入口前置条件确实不同）",
+            !lowLevelAdapter.FindApplication("Game.exe").Found);
+
+        // 同样改用高层入口：这里要测的是「返回驱动给出的 Profile 名」，而不是「谁负责开会话」。
+        var matched = lookupDrs.FindApplicationProfile("Game.exe");
 
         Check("定位成功时返回驱动给出的 Profile 名",
             matched.Found && matched.ProfileName == "Ground Branch", matched.ProfileName);
 
         Check("空的可执行文件名被拒绝",
-            !lookupDrs.FindApplication("   ").Found);
+            !lookupDrs.FindApplicationProfile("   ").Found);
 
         Check("无驱动的适配器明确拒绝定位（不返回空匹配）",
             !new NvidiaProfile.AbsentDrsAdapter().FindApplication("Game.exe").Found);
