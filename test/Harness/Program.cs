@@ -723,6 +723,26 @@ public static class Program
                 fromPayload > 0 && generated.Contains(ModSource.IniName),
                 $"payload={fromPayload} generated=[{string.Join("、", generated)}]");
 
+            // §16：计划选定的代理必须是**可部署名**。
+            //
+            // 判据若退回 IsKnownProxyName（扫描名，还含 winhttp.dll），计划会收进一个 Deploy 找不到的名字 ——
+            // 而 Deploy 找不到就返回 null 并**拒绝部署**，表现为「一次本可成功的安装被拒」，无任何错误提示。
+            var plannedProxies = planOnly.PlannedFiles
+                .Where(f => f.Role == "proxy")
+                .Select(f => f.TargetRelativePath)
+                .ToList();
+
+            Check("计划选定的代理都在可部署名集合里（§16）",
+                plannedProxies.All(n => ModSource.ProxyCandidates.Contains(n, StringComparer.OrdinalIgnoreCase)),
+                $"[{string.Join("、", plannedProxies)}]");
+
+            // 反向配对：断言**两个集合确实不同**。
+            // 不能靠「真实 payload 里恰好没有 winhttp.dll」来验证 —— 那在今天就恒真，明天 payload 变了才会响。
+            Check("可部署名与扫描名确实是两个集合（§16 判据不能混用）",
+                !ModSource.ProxyCandidates.Contains("winhttp.dll", StringComparer.OrdinalIgnoreCase)
+                    && ModSource.KnownProxyNames.Contains("winhttp.dll", StringComparer.OrdinalIgnoreCase),
+                $"ProxyCandidates={ModSource.ProxyCandidates.Length} · KnownProxyNames={ModSource.KnownProxyNames.Length}");
+
             Check("FilesToDeploy 与 PlannedFiles 完全一致（§15 同源派生）",
                 planOnly.FilesToDeploy.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
                     .SequenceEqual(planOnly.PlannedFiles.Select(f => f.TargetRelativePath)
