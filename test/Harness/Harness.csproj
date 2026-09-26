@@ -39,6 +39,7 @@
     <Compile Include="..\..\src\DLSSGManager\Providers\DlssgSm86Provider.cs" />
     <Compile Include="..\..\src\DLSSGManager\Providers\AppProviders.cs" />
     <Compile Include="..\..\src\DLSSGManager\Providers\ReleaseAssetFetcher.cs" />
+    <Compile Include="..\..\src\DLSSGManager\Providers\PayloadManifest.cs" />
     <Compile Include="..\..\src\DLSSGManager\Providers\MfgSmoothProvider.cs" />
     <Compile Include="..\..\src\DLSSGManager\Update\UpdateContracts.cs" />
     <Compile Include="..\..\src\DLSSGManager\Update\UpdateInfrastructure.cs" />

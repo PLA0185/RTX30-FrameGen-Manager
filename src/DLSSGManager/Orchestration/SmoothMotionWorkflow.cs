@@ -240,9 +240,18 @@ public sealed class SmoothMotionWorkflow
             $"{compatibility.Kind} / {compatibility.Validation}"));
 
         // ---- 3. plan ----
-        var payloadFiles = request.PayloadDirectory is null
-            ? new List<string>()
-            : new List<string> { ModSource.IniName };
+        // Prefer the payload's real contents when the provider has already scanned them. The hard-coded name is
+        // only a fallback for the first run, where the download has not happened yet — and the executor checks
+        // the plan against the payload afterwards precisely because a fallback is a guess.
+        var manifest = request.PayloadDirectory is null
+            ? null
+            : request.Provider.ManifestOf(request.PayloadDirectory);
+
+        var payloadFiles = manifest is not null
+            ? manifest.FileNames
+            : request.PayloadDirectory is null
+                ? new List<string>()
+                : new List<string> { ModSource.IniName };
 
         InstallPlanInput MakeInput(CompatibilityDecision d) => new(
             Game: request.Game,
@@ -314,6 +323,28 @@ public sealed class SmoothMotionWorkflow
                 errors.Add(download.Message);
                 return Finish(WorkflowOutcome.Failed, SmoothMotionEvidence.None, steps, plan, request, errors,
                     filesWritten, profileWritten, journal: profileJournal);
+            }
+
+            // The plan was built before the payload existed, so its file list may have come from the fallback.
+            // Now that the bytes are on disk, compare the two: a plan that names files the payload does not
+            // contain describes an installation that cannot happen.
+            var downloaded = request.Provider.ManifestOf(request.PayloadDirectory!);
+            if (downloaded is not null)
+            {
+                var absent = plan.FilesToDeploy
+                    .Where(f => !string.IsNullOrWhiteSpace(f) && !downloaded.Contains(f))
+                    .ToList();
+
+                steps.Add(new WorkflowStep("核对 payload 清单", absent.Count == 0,
+                    $"payload 实际含 {downloaded.Files.Count} 个文件。" +
+                    (absent.Count == 0 ? "" : "缺少：" + string.Join("、", absent))));
+
+                if (absent.Count > 0)
+                {
+                    errors.Add($"payload 中缺少计划要求的文件：{string.Join("、", absent)}");
+                    return Finish(WorkflowOutcome.Failed, SmoothMotionEvidence.None, steps, plan, request, errors,
+                        filesWritten, profileWritten, journal: profileJournal);
+                }
             }
 
             // ---- 5. install the patch (files before driver) ----

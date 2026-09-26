@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.RegularExpressions;
 using DLSSGManager.Update;
 
@@ -32,6 +33,9 @@ public sealed class MfgSmoothProvider : IPatchProvider, IReleaseVersionResolver
 
     private readonly IGitHubReleaseClient _client;
     private readonly IReleaseAssetFetcher _fetcher;
+
+    /// <summary>Payload manifests by the folder they were scanned from. See <see cref="ManifestOf"/>.</summary>
+    private readonly Dictionary<string, PayloadManifest> _manifests = new(StringComparer.OrdinalIgnoreCase);
 
     private ProviderHealth _health = ProviderHealth.Available("就绪（尚未探测）");
     private ReleaseEntry? _resolved;
@@ -212,17 +216,70 @@ public sealed class MfgSmoothProvider : IPatchProvider, IReleaseVersionResolver
         if (fetched.Digest?.State == DigestState.Unavailable)
             result.Note("上游未提供该资产的发布摘要，按未验证处理（不视为已通过）。");
 
+        // Scan what actually landed on disk. A plan's file list should come from here rather than from a
+        // caller's expectations, so an archive that unpacked into something else is caught now.
+        var manifest = PayloadScanner.Scan(destination);
+        if (manifest.Files.Count == 0)
+        {
+            result.Fail("解包后 payload 目录为空，无法确定要安装什么。");
+            return result;
+        }
+
+        try { _manifests[Path.GetFullPath(destination)] = manifest; } catch { /* Keying is best effort. */ }
+
+        result.Note($"payload 清单：{manifest.Files.Count} 个文件，共 {manifest.TotalSize} 字节。");
+
         return result;
     }
 
-    /// <summary>Delegates to the shared signature primitive rather than repeating it.</summary>
+    /// <summary>
+    /// The manifest of the payload most recently unpacked into a folder.
+    ///
+    /// <para>Keyed by the folder that was scanned: a manifest belongs to a payload, not to the provider, and
+    /// handing one folder's contents to a plan built for another is how a file list turns into fiction.</para>
+    ///
+    /// <para>Returns null when nothing has been scanned — which is not the same as an empty payload, and must
+    /// not be read as one.</para>
+    /// </summary>
+    public PayloadManifest? ManifestOf(string payloadDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(payloadDirectory)) return null;
+
+        try
+        {
+            return _manifests.TryGetValue(Path.GetFullPath(payloadDirectory), out var manifest) ? manifest : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Applies this provider's verification rules to one file.
+    ///
+    /// <para><b>Three outcomes, not two.</b> An <c>Intact</c> signature is accepted. An <c>Absent</c> one is
+    /// also accepted, because an unsigned payload is normal for this ecosystem and refusing it would reject
+    /// the very builds this project exists to deploy — but the message says so, and the caller must not
+    /// report it as verified. A <c>BadDigest</c> one is refused outright: a signature that exists and does not
+    /// match means the file was modified after signing, which is a different thing from never being signed.</para>
+    /// </summary>
     public PackageVerification VerifyPackage(string path)
     {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return new PackageVerification(false, SignatureStatus.Unknown, "文件不存在，无法校验。");
+
         var status = DeploymentService.ProbeSignature(path);
 
-        return status == SignatureStatus.Intact
-            ? new PackageVerification(true, status, "签名完整。")
-            : new PackageVerification(false, status, $"签名校验未通过（{status}）。");
+        return status switch
+        {
+            SignatureStatus.Intact => new PackageVerification(true, status, "签名完整。"),
+            SignatureStatus.NotSigned => new PackageVerification(true, status,
+                "文件未签名。未签名是这类补丁的常见状态，因此允许安装，但不视为已验证。"),
+            SignatureStatus.BadDigest => new PackageVerification(false, status,
+                "签名存在但与文件内容不符（文件在签名后被修改过），已拒绝。"),
+            _ => new PackageVerification(false, status, $"无法确认签名状态（{status}），已拒绝。"),
+        };
     }
 
     public string? GetInstalledVersion(GameEntry game)

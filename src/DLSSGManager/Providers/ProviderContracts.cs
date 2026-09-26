@@ -192,4 +192,14 @@ public interface IPatchProvider
     /// installed, which is not a decision a provider may make on the user's behalf.
     /// </summary>
     bool SupportsAsiStrategy => false;
+
+    /// <summary>
+    /// What the payload in <paramref name="payloadDirectory"/> actually contains, or <b>null</b> when this
+    /// provider cannot say.
+    ///
+    /// <para>Null is the honest default, and it is not the same as "empty": a provider that has not scanned
+    /// the folder has no manifest, and a plan must not be built from a guess. A caller that falls back to its
+    /// own expectations is then doing so knowingly rather than silently.</para>
+    /// </summary>
+    PayloadManifest? ManifestOf(string payloadDirectory) => null;
 }

@@ -3376,6 +3376,41 @@ public static class Program
         Check("非 Ready 计划不执行",
             !InstallPlanExecutor.Execute(blockedRunner, plan with { Status = PlanStatus.Blocked },
                 execGame, planSource).Ok && blockedRunner.InstallCount == 0);
+
+        // ---- payload manifest: the plan's file list comes from what is actually there (整改 F) ----
+        var manifestDir = Path.Combine(work, "payload-manifest");
+        Directory.CreateDirectory(Path.Combine(manifestDir, "sub"));
+        File.WriteAllText(Path.Combine(manifestDir, "a.dll"), "A");
+        File.WriteAllText(Path.Combine(manifestDir, "sub", "b.ini"), "BB");
+
+        var scanned = PayloadScanner.Scan(manifestDir);
+        Check("payload 清单覆盖子目录", scanned.Files.Count == 2, "实际 " + scanned.Files.Count);
+        Check("payload 清单使用相对路径", scanned.Contains("a.dll") && scanned.Contains(Path.Combine("sub", "b.ini")));
+        Check("payload 清单记录每个文件的哈希", scanned.Files.All(f => f.Sha256.Length == 64));
+        Check("payload 清单记录总大小", scanned.TotalSize == 3, scanned.TotalSize.ToString());
+        Check("payload 清单查找不区分大小写", scanned.Contains("A.DLL"));
+        Check("不存在的目录给出空清单而非崩溃", PayloadScanner.Scan(Path.Combine(work, "no-such")).Files.Count == 0);
+
+        // ---- verification in the install chain ----
+        var strict = new RecordingProvider
+        {
+            Verification = _ => new PackageVerification(false, SignatureStatus.BadDigest, "签名与内容不符。"),
+        };
+        var strictGame = new GameEntry { Name = "Strict", RenderDir = MakeGameDir(work, "strict") };
+        var strictResult = InstallPlanExecutor.Execute(strict, execPlan, strictGame, planSource);
+        Check("payload 文件未通过校验时拒绝且未安装",
+            !strictResult.Ok && strict.InstallCount == 0, strictResult.Message);
+        Check("拒绝原因来自校验步骤", strictResult.Steps.Any(s => s.Contains("校验")));
+
+        // Unsigned must be accepted: refusing it would reject the very builds this project deploys.
+        var unsigned = new RecordingProvider
+        {
+            Verification = _ => new PackageVerification(true, SignatureStatus.NotSigned, "未签名。"),
+        };
+        var unsignedGame = new GameEntry { Name = "Unsigned", RenderDir = MakeGameDir(work, "unsigned") };
+        var unsignedResult = InstallPlanExecutor.Execute(unsigned, execPlan, unsignedGame, planSource);
+        Check("未签名的 payload 被接受（未签名不等于损坏）", unsignedResult.Ok, unsignedResult.Message);
+        Check("未签名仍被如实标注", unsignedResult.Steps.Any(s => s.Contains("NotSigned")));
         Check("计划避开被占用的入口",
             plan.ProxyChoice is not null && plan.ProxyChoice != "version.dll", plan.ProxyChoice ?? "(null)");
 
@@ -3467,8 +3502,14 @@ public static class Program
         public Task<OpResult> DownloadAsync(string destination, IProgress<string>? progress, CancellationToken ct) =>
             Task.FromResult(FailResult("测试替身不下载。"));
 
-        public PackageVerification VerifyPackage(string path) =>
-            new(true, SignatureStatus.Intact, "测试替身不校验。");
+        /// <summary>
+        /// What verification answers. Defaults to accepting an unsigned file — the same shape the real MFG
+        /// provider uses — so a test can flip it to model a file that must be refused.
+        /// </summary>
+        public Func<string, PackageVerification> Verification { get; set; } =
+            _ => new PackageVerification(true, SignatureStatus.NotSigned, "未签名（测试替身默认接受）。");
+
+        public PackageVerification VerifyPackage(string path) => Verification(path);
 
         public OpResult Install(GameEntry game, ModSource source, bool allowProtected = false)
         {

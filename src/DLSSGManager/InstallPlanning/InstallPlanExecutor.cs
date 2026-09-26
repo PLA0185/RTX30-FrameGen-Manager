@@ -105,7 +105,35 @@ public static class InstallPlanExecutor
             steps.Add($"按计划使用 ASI 策略「{plan.AsiChoice}」。");
         }
 
-        // ── 4. Install, using the values the plan supplied.
+        // ── 4. Every payload file must pass the provider's own verification, before anything is written.
+        //       An Intact or unsigned file is acceptable — unsigned payloads are normal in this ecosystem —
+        //       but a file whose signature no longer matches its contents is not, and neither is one the
+        //       provider cannot classify. The distinction lives in the provider; this just refuses to skip it.
+        foreach (var file in plan.FilesToDeploy)
+        {
+            if (string.IsNullOrWhiteSpace(file)) continue;
+
+            PackageVerification verification;
+            try
+            {
+                verification = provider.VerifyPackage(Path.Combine(source.Root, file));
+            }
+            catch (Exception ex)
+            {
+                steps.Add($"校验「{file}」时出错：{ex.Message}");
+                return PlanExecutionResult.Refused($"无法校验「{file}」，已拒绝安装。", steps);
+            }
+
+            if (!verification.Accepted)
+            {
+                steps.Add($"「{file}」未通过校验：{verification.Message}");
+                return PlanExecutionResult.Refused($"payload 中的「{file}」未通过校验，已拒绝安装。", steps);
+            }
+
+            steps.Add($"「{file}」校验通过（{verification.Signature}）。");
+        }
+
+        // ── 5. Install, using the values the plan supplied.
         var install = provider.Install(game, source, allowProtected);
         steps.Add(install.Message);
 
