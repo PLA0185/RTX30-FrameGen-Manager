@@ -79,8 +79,26 @@ public static class InstallPlanExecutor
         static bool IsProxyName(string name) =>
             ModSource.KnownProxyNames.Contains(Path.GetFileName(name), StringComparer.OrdinalIgnoreCase);
 
-        foreach (var required in plan.FilesToDeploy)
+        // **只检查来自 payload 的文件。** `dlssg_sm86.ini` 由管理器生成（`SourceKind == Generated`），
+        // payload 里**没有它** —— 拿它去要求「存在于 payload」，就是把**我们自己写出来的文件**当成
+        // **上游应该提供的东西**。今天被两处**偶然**掩盖（MFG 会把模板 INI 写进 canonical；dlssg-sm86 的
+        // 上游根目录本来就有 INI），**上游布局一变就会每次都报「payload 缺少 dlssg_sm86.ini」**。
+        //
+        // 判据必须与工作流里同一处检查（`SmoothMotionWorkflow` 的 payload 核对）一致 —— 那里已经按
+        // `SourceKind` 过滤，这里曾经没有。**同一个判据、两个地方，必须同一个集合**（本项目在这个形状上
+        // 已经犯过多次）。
+        if (plan.PlannedFiles.Count == 0)
         {
+            // 计划没有提供文件来源（例如测试手工构造的 plan）。**不猜** —— 如实说明跳过了这项检查，
+            // 而不是退回用 `FilesToDeploy`（那会重新引入「拿生成的文件要求它存在」这个错误）。
+            steps.Add("（计划没有提供文件来源，跳过 payload 存在性检查。）");
+        }
+
+        foreach (var payloadFile in plan.PlannedFiles)
+        {
+            if (payloadFile.SourceKind != DeploymentFileSource.Payload) continue;
+
+            var required = payloadFile.SourcePath ?? payloadFile.TargetRelativePath;
             if (string.IsNullOrWhiteSpace(required)) continue;
             if (IsProxyName(required)) continue;
 

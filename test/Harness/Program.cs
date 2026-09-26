@@ -4145,7 +4145,20 @@ public static class Program
 
         // A payload missing a file the plan requires blocks execution before anything is written.
         var missingGame = new GameEntry { Name = "Missing", RenderDir = MakeGameDir(work, "missing") };
-        var missingPlan = execPlan with { FilesToDeploy = new[] { "not-there.dll" } };
+
+        // **必须同时改 `PlannedFiles`**：执行器的存在性检查读的是它（而不是 `FilesToDeploy`）——
+        // 因为它需要知道「这个文件从哪来」，而 `dlssg_sm86.ini` 是**生成**的、payload 里没有它。
+        // 只改 `FilesToDeploy` 的话，新代码看不到这个文件，检查会被跳过 —— 那正是这条断言之前失败的原因。
+        // **测试的 plan 必须带上来源信息，否则它测的不是生产会走的路径。**
+        var missingPlan = execPlan with
+        {
+            FilesToDeploy = new[] { "not-there.dll" },
+            PlannedFiles = new[]
+            {
+                new PlannedFile("not-there.dll", DeploymentFileSource.Payload, "not-there.dll", "proxy"),
+            },
+        };
+
         var missingRunner = new RecordingProvider();
         var missing = InstallPlanExecutor.Execute(missingRunner, missingPlan, missingGame, planSource);
         Check("payload 缺少计划要求的文件时拒绝",
