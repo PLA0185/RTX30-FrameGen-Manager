@@ -755,19 +755,51 @@ public sealed class SmoothMotionWorkflow
     }
 
     /// <summary>
-    /// 回滚后重新看一眼：计划要求部署的那些文件，是不是真的不在了。
+    /// 回滚后重新看一眼：**这次部署写下去的东西**是不是真的不在了。
     ///
     /// <para>任务书 §10 要求「执行 Restore <b>并重新扫描确认</b>」。只看 <c>Restore</c> 的返回值不够 —— 它回答的
-    /// 是「这次调用有没有报错」，而这里问的是「目录有没有回到原样」。两者在还原部分失败时会分叉，而分叉的
-    /// 后果是「已回滚」这句话变成假话。</para>
+    /// 是「这次调用有没有报错」，而这里问的是「目录有没有回到原样」。</para>
+    ///
+    /// <para><b>判据必须是「这个文件是不是我们写的」，而不是「计划里列过的文件是否存在」。</b>
+    /// 用后者会双向出错（两种都实测过）：</para>
+    /// <list type="bullet">
+    /// <item><b>误报</b>：用户目录里原有的外来 <c>dlssg_sm86.ini</c> 被备份，<c>Restore</c> 又**正确地把它
+    /// 还原**回去 —— 文件存在，于是被判成「仍留有残留」、<c>RollbackIncomplete</c> 为真，
+    /// <b>而目录其实已经完全复原</b>：用户被告知要手工检查一个已经好了的目录。</item>
+    /// <item><b>漏报</b>：它只扫计划列出的文件，而**计划外的残留**（0.3.3+ 的待机代理就是一类）扫不到，
+    /// 于是「已回滚」这句话在**不成立时**也说出口。</item>
+    /// </list>
+    ///
+    /// <para>现在按「计划列出的 ∪ 部署记录里写过的」收集候选，再用 <see cref="DeploymentService.IsOurs"/>
+    /// 按**内容哈希**判断它是不是我们写的。**只按名字判断会让用户的文件背锅；只按存在判断会让漏掉的残留
+    /// 被说成已清理。**</para>
     /// </summary>
     private static List<string> ScanForLeftovers(InstallPlan plan, GameEntry game)
     {
-        var leftovers = new List<string>();
+        var candidates = new List<string>();
 
         foreach (var relative in plan.FilesToDeploy)
+            if (!string.IsNullOrWhiteSpace(relative)) candidates.Add(relative);
+
+        // 部署记录里写过的文件 —— 覆盖「计划外」那一类（待机代理等）。
+        foreach (var deployed in game.Deployment?.Files ?? new List<DeployedFile>())
+            if (!string.IsNullOrWhiteSpace(deployed.FileName)) candidates.Add(deployed.FileName);
+
+        var leftovers = new List<string>();
+
+        foreach (var relative in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            if (File.Exists(Path.Combine(game.RenderDir, relative))) leftovers.Add(relative);
+            var leaf = Path.GetFileName(relative);
+            var path = Path.Combine(game.RenderDir, leaf);
+
+            if (!File.Exists(path)) continue;
+
+            // **存在 ≠ 是我们的。** 用部署记录里的哈希判断这是不是我们写下去的那个文件。
+            var recorded = game.Deployment?.Files.FirstOrDefault(f =>
+                string.Equals(Path.GetFileName(f.FileName), leaf, StringComparison.OrdinalIgnoreCase));
+
+            if (DeploymentService.IsOurs(path, recorded?.Sha256))
+                leftovers.Add(relative);
         }
 
         return leftovers;
