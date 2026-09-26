@@ -28,6 +28,9 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
     /// <summary>Locates the profile that owns an executable — the renderer EXE, not the game's display name.</summary>
     private const uint IdFindApplicationByName = 0xeee566b2;
+
+    /// <summary>Reads <c>NVDRS_PROFILE</c> for a handle — the only honest source of a profile's name.</summary>
+    private const uint IdGetProfileInfo = 0x61cd6fd6;
     private const uint IdUnload = 0xd22bdd7e;
     private const uint IdDrsCreateSession = 0x0694d52e;
     private const uint IdDrsDestroySession = 0xdad9cff8;
@@ -57,6 +60,33 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// fixed would add a second way to fault, so this reports that it cannot answer. The order matters: prove
     /// the marshalling first, then wire this.</para>
     /// </summary>
+    /// <summary>
+    /// Locates a profile by the executable the driver knows it by, owning the whole session lifetime.
+    ///
+    /// <para>Callers must not have to hold a session open for this to work. When session lifetime belonged to the
+    /// caller, the UI path — which never opened one — failed every time with "没有已打开的 DRS 会话"; no test caught
+    /// it because the double never modelled that requirement. Lifetime belongs to the operation, not to its caller.</para>
+    /// </summary>
+    public DrsApplicationLookup FindApplicationProfile(string executableName)
+    {
+        if (string.IsNullOrWhiteSpace(executableName))
+            return DrsApplicationLookup.NotFound(executableName ?? "", "未提供可执行文件名。");
+
+        var opened = Open(null);
+
+        if (!opened.Ok)
+            return DrsApplicationLookup.NotFound(executableName, opened.Message);
+
+        try
+        {
+            return FindApplication(executableName);
+        }
+        finally
+        {
+            Close();
+        }
+    }
+
     public DrsApplicationLookup FindApplication(string executableName)
     {
         if (string.IsNullOrWhiteSpace(executableName))
@@ -80,34 +110,65 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         // appName 8 | userFriendlyName 4104 | launcher 8200 | fileInFolder 12296 | bitfield 16392 |
         // commandLine 16396, each UnicodeString being 4096 bytes — 20492 in total. Built by hand, like
         // NVDRS_SETTING, and for the same reason.
-        const int size = 20492;
-        const int userFriendlyNameOffset = 4104;
+        //
+        // NVDRS_PROFILE is typedef'd to V1 (nvapi.h L24592): version 0 | profileName 4 | gpuSupport 4100 |
+        // isPredefined 4104 | numOfApps 4108 | numOfSettings 4112 — 4116 in total.
+        const int applicationSize = 20492;
+        const int profileSize = 4116;
+        const int profileNameOffset = 4;
 
-        var application = Marshal.AllocHGlobal(size);
+        var getInfo = Resolve<DrsGetProfileInfoDelegate>(IdGetProfileInfo);
+
+        if (getInfo is null)
+            return DrsApplicationLookup.NotFound(executableName, "NvAPI_DRS_GetProfileInfo 未被解析。");
+
+        var application = Marshal.AllocHGlobal(applicationSize);
+        var info = Marshal.AllocHGlobal(profileSize);
 
         try
         {
-            Marshal.Copy(new byte[size], 0, application, size);
-            Marshal.WriteInt32(application, 0, unchecked((int)((uint)size | (4u << 16))));
+            Marshal.Copy(new byte[applicationSize], 0, application, applicationSize);
+            Marshal.WriteInt32(application, 0, unchecked((int)((uint)applicationSize | (4u << 16))));
 
             var status = find(_session, ToUnicodeString(executableName), out var profile, application);
 
             if (status != NvApiOk || profile == IntPtr.Zero)
             {
+                // The ABI call worked; the driver simply knows no such application. Those are two different facts,
+                // and only the first one is a success — the caller sees Found = false either way.
                 return DrsApplicationLookup.NotFound(executableName,
-                    $"NvAPI_DRS_FindApplicationByName 返回 {status}：该可执行文件尚未被分配到任何驱动 Profile。");
+                    $"NvAPI_DRS_FindApplicationByName 返回 {status}（-166 即 NVAPI_EXECUTABLE_NOT_FOUND）：" +
+                    "该可执行文件尚未被分配到任何驱动 Profile。");
             }
 
-            // The name is read back only so the caller can show what matched — the handle is what identifies it.
-            var profileName = Marshal.PtrToStringUni(application + userFriendlyNameOffset) ?? "";
+            Marshal.Copy(new byte[profileSize], 0, info, profileSize);
+            Marshal.WriteInt32(info, 0, unchecked((int)((uint)profileSize | (1u << 16))));
 
-            return DrsApplicationLookup.Matched(executableName,
-                string.IsNullOrEmpty(profileName) ? executableName : profileName,
+            var infoStatus = getInfo(_session, profile, info);
+
+            if (infoStatus != NvApiOk)
+            {
+                return DrsApplicationLookup.NotFound(executableName,
+                    $"找到了应用，但 NvAPI_DRS_GetProfileInfo 返回 {infoStatus}，无法取得 Profile 名。");
+            }
+
+            // From NVDRS_PROFILE.profileName. The application's own userFriendlyName is a different string — it
+            // names the application, not the profile the driver files settings under.
+            var profileName = Marshal.PtrToStringUni(info + profileNameOffset) ?? "";
+
+            if (string.IsNullOrEmpty(profileName))
+            {
+                return DrsApplicationLookup.NotFound(executableName,
+                    "驱动返回了 Profile 句柄，但 NVDRS_PROFILE.profileName 为空。");
+            }
+
+            return DrsApplicationLookup.Matched(executableName, profileName,
                 $"已通过可执行文件定位到 Profile「{profileName}」。");
         }
         finally
         {
             Marshal.FreeHGlobal(application);
+            Marshal.FreeHGlobal(info);
         }
     }
 
@@ -722,6 +783,9 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// </summary>
     private delegate int DrsFindApplicationByNameDelegate(
         IntPtr session, ushort[] appName, out IntPtr profile, IntPtr application);
+
+    /// <summary><c>NvAPI_DRS_GetProfileInfo</c> — fills an <c>NVDRS_PROFILE</c> from a profile handle.</summary>
+    private delegate int DrsGetProfileInfoDelegate(IntPtr session, IntPtr profile, IntPtr profileInfo);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate int DrsCreateSessionDelegate(out IntPtr session);
