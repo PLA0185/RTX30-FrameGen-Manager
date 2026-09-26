@@ -4041,6 +4041,23 @@ public static class Program
             typeof(ProfileSettingRequirement).GetProperty("Required") is not null &&
             typeof(ProfileSettingRequirement).GetProperty("ApplicableApi") is not null &&
             typeof(ProfileSettingRequirement).GetProperty("Reason") is not null);
+
+        // ---- 第二轮 §13 缺口补齐：Store 与 Batch ----
+        // §6: the store is now carried rather than assumed. Unknown is the honest default — a hand-added entry has
+        // no store, and claiming Steam for it is how a store-specific result gets applied to something it never
+        // covered.
+        Check("游戏条目携带可读写的商店来源，默认 Unknown（不假定 Steam）",
+            typeof(GameEntry).GetProperty("Store") is { CanRead: true, CanWrite: true } &&
+            new GameEntry().Store == StoreKind.Unknown);
+
+        // P0-09: the batch confirmation summarises plans, which it can only do if previewing is possible without
+        // writing. This asserts the capability exists; the batch wiring itself is UI-side and not covered here.
+        Check("配置服务具备「只预览不写入」的入口（批量确认框据此汇总计划）",
+            typeof(GameConfigurationService).GetMethod("PreviewAsync") is not null);
+
+        Check("预览模式是工作流的一等参数，而不是调用方另算一遍",
+            typeof(WorkflowRequest).GetProperty("PreviewOnly") is not null &&
+            typeof(ConfigurationRequest).GetProperty("PreviewOnly") is not null);
         Check("MFG 标记为实验性", provider.Metadata.Experimental);
 
         // ---- registry ----
