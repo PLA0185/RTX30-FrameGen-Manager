@@ -599,7 +599,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
         if (!CanDelete)
             return DrsStatus.Fail(-1, "当前不具备删除能力，拒绝写入：写入后无法撤回。");
 
-        return WriteCore(settingId, value);
+        return WriteCore(_profile, settingId, value);
     }
 
     /// <summary>
@@ -641,7 +641,19 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     /// <summary>What a diagnostic read saw. <see cref="Called"/> says whether the driver was reached at all.</summary>
     internal readonly record struct DrsDiagnosticRead(bool Called, int Status, string Detail);
 
-    private DrsStatus WriteCore(uint settingId, uint value)
+    /// <summary>
+    /// Writes one setting to a specific profile handle rather than the one this adapter is opened on.
+    ///
+    /// <para>Exists for the temporary-profile write smoke: proving that a write works must not require writing to a
+    /// profile that belongs to the user.</para>
+    ///
+    /// <para>Deliberately bypasses the <see cref="CanWrite"/> gate — that gate is the very thing the smoke exists to
+    /// earn, so it cannot also be a precondition for running it. Nothing on a production path calls this.</para>
+    /// </summary>
+    internal DrsStatus WriteTo(IntPtr profile, uint settingId, uint value) =>
+        WriteCore(profile, settingId, value);
+
+    private DrsStatus WriteCore(IntPtr profile, uint settingId, uint value)
     {
         if (_setSetting is null) return DrsStatus.Fail(-1, "NvAPI_DRS_SetSetting 未被解析。");
 
@@ -657,7 +669,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
 
                 try
                 {
-                    if (_getSetting(_session, _profile, settingId, existing) == NvApiOk)
+                    if (_getSetting(_session, profile, settingId, existing) == NvApiOk)
                     {
                         // Take the driver's own view of the setting and change only what we mean to change.
                         // Marshal.Copy has no IntPtr→IntPtr overload, so the bytes go through a managed buffer.
@@ -674,7 +686,7 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
                 }
             }
 
-            var status = _setSetting(_session, _profile, setting);
+            var status = _setSetting(_session, profile, setting);
 
             return status == NvApiOk
                 ? DrsStatus.Success
@@ -690,12 +702,26 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     {
         if (!CanDelete) return DrsStatus.Fail(-1, UnprovenAbi);
 
+        return DeleteFrom(_profile, settingId);
+    }
+
+    /// <summary>
+    /// Deletes one setting from a specific profile handle.
+    ///
+    /// <para>Like <see cref="WriteTo"/>, this bypasses the capability gate on purpose: the temporary-profile smoke
+    /// is what earns <c>DeleteCallsProven</c>, so it cannot be gated behind it. Nothing on a production path calls
+    /// this — the guarded <see cref="Delete(uint)"/> is what the rest of the program uses.</para>
+    /// </summary>
+    internal DrsStatus DeleteFrom(IntPtr profile, uint settingId)
+    {
+        if (!CanDelete) return DrsStatus.Fail(-1, UnprovenAbi);
+
         EnsureLoaded();
         if (!_available) return DrsStatus.Fail(-1, _unavailableReason);
         if (_session == IntPtr.Zero) return DrsStatus.Fail(-1, "没有已打开的 DRS 会话。");
         if (_deleteProfileSetting is null) return DrsStatus.Fail(-1, "NvAPI_DRS_DeleteProfileSetting 未被解析。");
 
-        var status = _deleteProfileSetting(_session, _profile, settingId);
+        var status = _deleteProfileSetting(_session, profile, settingId);
         return status == NvApiOk
             ? DrsStatus.Success
             : DrsStatus.Fail(status, $"NvAPI_DRS_DeleteProfileSetting 返回 {status}。");
