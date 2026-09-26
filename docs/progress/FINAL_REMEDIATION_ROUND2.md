@@ -41,7 +41,7 @@
 
 ```
 Build:                              0 warnings / 0 errors（dotnet build --no-incremental -c Release）
-Harness:                            866 passed / 0 failed / 10 skipped（原 801 项全保留，新增 65 项）
+Harness:                            878 passed / 0 failed / 10 skipped（原 801 项全保留，新增 77 项）
 Network smoke:                      PASS（Release 解析 + host 白名单）
 Real MFG Asset Smoke:               PASS（真实下载 mfg-smooth 2.8.2 → 312 个文件，二进制 8 / 配置 304，exit 0）
 NVAPI read loop:                    PASS（--nvapi-smoke --loop：200 次真实读取，驱动被触达 200/200，异常 0）
@@ -75,7 +75,7 @@ SHA256 (ZIP):                       52BC0214F00C30CED113F089AC9A81AC64DC8627C42D
 ## 五、Known Risks
 
 1. **P0-09 的确认框仍不描述计划**：用户看到的是防作弊风险，而不是各游戏的实际计划与被阻止的原因。
-2. **§13 是随附式加清单式核对，而非逐项补齐**：每个修复都带了断言（累计新增 65 项）。**三项缺口已补** —— SafeZip 的**单文件上限**与**总大小上限**（`78f89d2`，把两个上限改成**带默认值的参数**，默认值即原常量、生产调用点一行未改，于是几百字节即可覆盖全部分支）；以及 **payload 旧版本清理**（`1db5bea`，`PayloadPaths.OtherVersions` 早有完整实现却**全仓库无调用点**，新增的 `RemoveUnreferenced(providerId, keepVersion, referenced)` **只删调用方明确声明未使用的版本** —— 一个 provider 的 payload 可能支撑多个游戏的部署，替调用方判断哪些算没用会破坏那些部署，所以策略必须留在调用方）。**未覆盖的剩余四项**记在 `ROUND2_TEST_COVERAGE.md`，逐项缺口为：Profile Wiring 的端到端链条 · Read-back **值不一致**时的行为 · **未传版本时是否真的调用了 `CheckLatestAsync`**（「步骤存在」与「顺序排在兼容性查询之前」都已有断言，缺的是「真被调用」）· 部署结果与计划**不一致**时的处理。共同根因是 UI 文件不在 Harness 编译白名单内 —— 该文件对每一行都写明了**位置**与**缺口**，是本轮整改里最精确的一份记录，**不要用概括去覆盖它**。
+2. **§13 已从随附式补齐为逐项覆盖**：累计新增 **77 项**断言，`ROUND2_TEST_COVERAGE.md` 十一个主题的缺口列**全部收敛为「—」**。补齐过程集中在**为每一处「夹具让某条路径不可达」增加一个可选注入点**（不改既有签名、不改行为）：`SafeZip` 的两个大小上限改成带默认值的参数（`78f89d2`）· `PayloadPaths.RemoveUnreferenced(providerId, keepVersion, referenced)` 只删调用方声明未使用的版本（`1db5bea`）· `MakeRequest` 的 `providerVersion` 变成可选（原来硬编码 `"2.9.0"`，把「去问 provider」那条路堵死了）· `FakeDrsAdapter.ReadOverrides`（原来把写入原样读回，读回校验永远不会失败）· `RecordingProvider.RecordsDeployed`（原来不写部署记录，执行器永远走「无从核对」分支）。**三个缺口的根因完全相同：夹具的默认行为把目标分支短路了。** 该文件对每一行都写明了**位置**与**缺口**，是本轮整改里最精确的一份记录，**不要用概括去覆盖它**。
 3. **UI 路径的测试覆盖有限**：批量部署、Provider 下拉、Plan Preview 的改动**不在 Harness 编译白名单内**（`MainWindow.xaml.cs` / `MainWindow.Actions.cs`），Build 0/0 与 Harness 全绿只说明没有破坏既有行为，不等于新路径被执行过。
 4. **视觉结果未经确认**：深色主题的隐式样式已验证到「样式被正确加载、资源键可解析、窗口正常渲染」（启动日志无 `XamlParseException` / `Cannot find resource`），**实际字形颜色是视觉结果，需人在界面上确认**。
 
