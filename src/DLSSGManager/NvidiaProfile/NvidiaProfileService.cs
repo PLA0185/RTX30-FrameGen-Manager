@@ -152,6 +152,27 @@ public sealed record DrsStatus(bool Ok, int Code, string Message)
 /// elevation probing — lives above this interface, which is what lets it be tested without touching a
 /// real NVIDIA profile. The adapter is the only place that knows about NVAPI at all.
 /// </summary>
+/// <summary>
+/// What the driver reports about an executable, and the profile that owns it.
+///
+/// <para><b>Both names are carried.</b> The application name is what the driver matched by, and the profile
+/// name is what a later session must be opened with — they are not the same string, and collapsing them is how
+/// the wrong profile ends up being configured.</para>
+/// </summary>
+public sealed record DrsApplicationLookup(
+    bool Found,
+    string ApplicationName,
+    string ProfileName,
+    string Message)
+{
+    /// <summary>Nothing matched. Whether that means "create it" or "decline" is the caller's decision.</summary>
+    public static DrsApplicationLookup NotFound(string applicationName, string message) =>
+        new(false, applicationName, "", message);
+
+    public static DrsApplicationLookup Matched(string applicationName, string profileName, string message) =>
+        new(true, applicationName, profileName, message);
+}
+
 public interface IDrsAdapter
 {
     /// <summary>Adapter name, for diagnostics.</summary>
@@ -177,6 +198,19 @@ public interface IDrsAdapter
 
     /// <summary>Opens a session bound to one profile. <paramref name="profileName"/> null means the base profile.</summary>
     DrsStatus Open(string? profileName);
+
+    /// <summary>
+    /// Finds the driver profile that owns an executable, starting from the executable's own file name.
+    ///
+    /// <para><b>Why this exists:</b> a game's display name is not its NVIDIA Profile name, and the two differ
+    /// often enough that using one for the other configures the wrong profile — or, more usually, finds nothing
+    /// and writes nowhere while reporting success. The renderer executable is the one thing this program
+    /// actually knows before it deploys, so that is where the lookup starts.</para>
+    ///
+    /// <para>An adapter that cannot answer must say so rather than guessing; the caller may then create the
+    /// application, or decline.</para>
+    /// </summary>
+    DrsApplicationLookup FindApplication(string executableName);
 
     /// <summary>Reads one setting, distinguishing the three states.</summary>
     ProfileSettingSnapshot Read(uint settingId);

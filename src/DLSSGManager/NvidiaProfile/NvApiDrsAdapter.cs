@@ -32,6 +32,40 @@ public sealed class NvApiDrsAdapter : IDrsAdapter
     private const uint IdDrsSetSetting = 0x577dd202;
     private const uint IdDrsDeleteProfileSetting = 0xe4a26362;
 
+    // Application lookup, for locating a profile by the executable it owns rather than by the game's display
+    // name. Both IDs were read off the official header rather than recalled.
+    private const uint IdDrsFindApplicationByName = 0xeee566b2;
+    private const uint IdDrsGetProfileInfo = 0x61cd6fd6;
+
+    /// <summary>
+    /// Looks up the profile that owns an executable, by the executable's own file name.
+    ///
+    /// <para><b>The route is the official one:</b> <c>NvAPI_DRS_FindApplicationByName</c> (<c>0xeee566b2</c>)
+    /// resolves the executable to a profile handle, and <c>NvAPI_DRS_GetProfileInfo</c> (<c>0x61cd6fd6</c>) turns
+    /// that handle into the profile <i>name</i> — which is what a later session must be opened with. A game's
+    /// display name is never used for this, because it is not the profile name.</para>
+    ///
+    /// <para><b>Its unmanaged calls are deliberately not wired yet.</b> They have to marshal two structures by
+    /// hand — <c>NVDRS_APPLICATION_V1</c> is 12296 bytes and <c>NVDRS_PROFILE_V1</c> is 4116 — and structure
+    /// marshalling is exactly what currently faults on the read path. Adding a second caller of it before that is
+    /// fixed would add a second way to fault, so this reports that it cannot answer. The order matters: prove
+    /// the marshalling first, then wire this.</para>
+    /// </summary>
+    public DrsApplicationLookup FindApplication(string executableName)
+    {
+        if (string.IsNullOrWhiteSpace(executableName))
+            return DrsApplicationLookup.NotFound(executableName ?? "", "未提供可执行文件名。");
+
+        if (!DriverCallsProven)
+            return DrsApplicationLookup.NotFound(executableName, UnprovenAbi);
+
+        if (_session == IntPtr.Zero)
+            return DrsApplicationLookup.NotFound(executableName, "没有已打开的 DRS 会话。");
+
+        return DrsApplicationLookup.NotFound(executableName,
+            "应用查找的结构体封送尚未接入：在只读循环证明封送安全之前，不新增第二条会触碰驱动结构体的调用路径。");
+    }
+
     /// <summary>NVAPI_OK. Every other value is a failure and is reported by number, never swallowed.</summary>
     private const int NvApiOk = 0;
 
@@ -542,6 +576,13 @@ public sealed class AbsentDrsAdapter : IDrsAdapter
     public bool CanSave => false;
 
     public DrsStatus Open(string? profileName) => DrsStatus.Fail(-1, Reason);
+
+    /// <summary>
+    /// No driver library, so no lookup. Says so explicitly rather than returning an empty match that a caller
+    /// might mistake for "the profile has no name".
+    /// </summary>
+    public DrsApplicationLookup FindApplication(string executableName) =>
+        DrsApplicationLookup.NotFound(executableName, Reason);
 
     public ProfileSettingSnapshot Read(uint settingId) => ProfileSettingSnapshot.Unreadable(settingId, Reason);
 

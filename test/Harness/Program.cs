@@ -3606,6 +3606,23 @@ public static class Program
 
         public string Name => "fake-drs";
 
+        /// <summary>
+        /// What application lookup should report, when a test cares. Null means "nothing matched", which is the
+        /// honest default: a double that invents a profile would let a test pass on a lookup the real adapter
+        /// cannot perform.
+        /// </summary>
+        public DrsApplicationLookup? ApplicationLookup { get; set; }
+
+        public DrsApplicationLookup FindApplication(string executableName)
+        {
+            // Mirrors the real adapter's guard, so a test cannot pass on input the real one would refuse.
+            if (string.IsNullOrWhiteSpace(executableName))
+                return DrsApplicationLookup.NotFound(executableName ?? "", "未提供可执行文件名。");
+
+            return ApplicationLookup
+                ?? DrsApplicationLookup.NotFound(executableName, "测试适配器未配置应用查找结果。");
+        }
+
         public bool IsAvailable { get; set; } = true;
 
         /// <summary>Capability switches, so tests can exercise the "no write capability" refusal.</summary>
@@ -4401,6 +4418,35 @@ public static class Program
 
         Check("不存在的配置文件被拒",
             !AppProviders.Patch.VerifyPackage(Path.Combine(roleDir, "missing.ini")).Accepted);
+
+        // ---- 第二轮 P0-04：Profile 必须由可执行文件定位，而不是拿游戏显示名猜 ----
+        // A game's display name is not its NVIDIA Profile name. Using one for the other configures the wrong
+        // profile — or, more usually, matches nothing and writes nowhere while the run reports success.
+        Check("DRS 适配器接口具备按可执行文件定位 Profile 的能力",
+            typeof(NvidiaProfile.IDrsAdapter).GetMethod("FindApplication") is not null);
+
+        Check("定位结果同时携带应用名与 Profile 名（二者不是同一个字符串）",
+            typeof(NvidiaProfile.DrsApplicationLookup).GetProperty("ApplicationName") is not null &&
+            typeof(NvidiaProfile.DrsApplicationLookup).GetProperty("ProfileName") is not null);
+
+        var lookupDrs = new FakeDrsAdapter();
+
+        Check("未配置时定位明确返回「未找到」，而不是伪造一个 Profile",
+            !lookupDrs.FindApplication("Game.exe").Found);
+
+        lookupDrs.ApplicationLookup =
+            NvidiaProfile.DrsApplicationLookup.Matched("Game.exe", "Ground Branch", "测试用");
+
+        var matched = lookupDrs.FindApplication("Game.exe");
+
+        Check("定位成功时返回驱动给出的 Profile 名",
+            matched.Found && matched.ProfileName == "Ground Branch", matched.ProfileName);
+
+        Check("空的可执行文件名被拒绝",
+            !lookupDrs.FindApplication("   ").Found);
+
+        Check("无驱动的适配器明确拒绝定位（不返回空匹配）",
+            !new NvidiaProfile.AbsentDrsAdapter().FindApplication("Game.exe").Found);
 
         // ---- H: the configuration service the window now calls (整改 H) ----
         var hParts = Build(work, "wfHMatrix");
