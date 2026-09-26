@@ -4511,6 +4511,49 @@ public static class Program
         Check("未证明的 ABI 不声称任何写入能力",
             real.CanWrite == (real.CanRead && real.CanDelete && real.CanSave));
 
+        // ---- §18.3：能力门按「各自被证明」独立开启，读通过不自动开放写 ----
+        //
+        // 这不是理论练习。第三轮之前只有一个 DriverCallsProven 开关，200 次成功的读取把写、保存、删除
+        // 一起打开了 —— 而它们从未在真实驱动上跑过一次。下面三档验证现在的行为。
+        Check("只证明读取时写能力保持关闭",
+            !NvApiDrsAdapter.ReadCallsProven || NvApiDrsAdapter.WriteCallsProven || !real.CanWrite,
+            $"read={NvApiDrsAdapter.ReadCallsProven} write={NvApiDrsAdapter.WriteCallsProven} canWrite={real.CanWrite}");
+
+        Check("写能力要求写门被证明（读通过本身不够）",
+            real.CanWrite == (real.CanRead && NvApiDrsAdapter.WriteCallsProven && real.CanDelete && real.CanSave),
+            $"read={real.CanRead} write={NvApiDrsAdapter.WriteCallsProven} delete={real.CanDelete} save={real.CanSave}");
+
+        // 第三档：把四道门都打开，写能力才允许为真。**必须恢复原值** —— 它们跨实例共享，
+        // 留着改动会污染后面所有用例（那正是「测试之间互相影响」的经典形状）。
+        {
+            var savedRead = NvApiDrsAdapter.ReadCallsProven;
+            var savedWrite = NvApiDrsAdapter.WriteCallsProven;
+            var savedDelete = NvApiDrsAdapter.DeleteCallsProven;
+            var savedSave = NvApiDrsAdapter.SaveCallsProven;
+
+            try
+            {
+                NvApiDrsAdapter.ReadCallsProven = true;
+                NvApiDrsAdapter.WriteCallsProven = true;
+                NvApiDrsAdapter.DeleteCallsProven = true;
+                NvApiDrsAdapter.SaveCallsProven = true;
+
+                Check("四道门都被证明后写能力才开启", real.CanWrite, real.UnavailableReason);
+
+                // 抽掉任意一道，写能力必须立刻收回 —— 只测「全开为真」会让一个只检查其中一道的实现通过。
+                NvApiDrsAdapter.DeleteCallsProven = false;
+
+                Check("抽掉删除门后写能力立刻关闭（删除不可缺）", !real.CanWrite);
+            }
+            finally
+            {
+                NvApiDrsAdapter.ReadCallsProven = savedRead;
+                NvApiDrsAdapter.WriteCallsProven = savedWrite;
+                NvApiDrsAdapter.DeleteCallsProven = savedDelete;
+                NvApiDrsAdapter.SaveCallsProven = savedSave;
+            }
+        }
+
         Check("没有会话时读取返回 Unknown 而非猜测",
             real.Read(idA).State == ProfileSettingState.Unknown);
 
