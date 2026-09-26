@@ -152,6 +152,21 @@ public sealed class ProfileJournal
     /// <summary>Which profile these entries came from. Null means the base profile.</summary>
     public string? ProfileName { get; }
 
+    /// <summary>
+    /// 这次运行实际绑定的可执行文件名，以及 Profile / 应用绑定是不是本次运行创建的。
+    ///
+    /// <para>回滚必须知道它究竟动过什么。只记 <see cref="ProfileName"/> 不够：同一个 Profile 名下可能有多个
+    /// 应用绑定，而「本次是不是创建了它」决定了回滚应当删掉它、还是只恢复设置 —— <b>删掉用户原本就有的
+    /// Profile 或绑定，比留下一点残留严重得多</b>，而只看名字无法区分这两种情况。</para>
+    /// </summary>
+    public string? ApplicationExe { get; init; }
+
+    /// <summary>本次运行是否创建了这个 Profile（而非使用已有的）。只有为真时回滚才允许删除它。</summary>
+    public bool WasProfileCreated { get; init; }
+
+    /// <summary>本次运行是否创建了这个应用绑定。只有为真时回滚才允许解绑。</summary>
+    public bool WasApplicationCreated { get; init; }
+
     public List<ProfileJournalEntry> Entries { get; } = new();
 
     /// <summary>Set once a rollback has actually run against this journal.</summary>

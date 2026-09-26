@@ -571,7 +571,15 @@ public sealed class SmoothMotionWorkflow
                 var apply = writes.Count > 0
                     ? _profile.Apply(lookup.ProfileName, writes)
                     : new ProfileApplyResult(true, "计划中的设置都没有可安全写入的值，已跳过。",
-                        new ProfileJournal(lookup.ProfileName), Array.Empty<string>());
+                        new ProfileJournal(lookup.ProfileName)
+                        {
+                            // P1-14：回滚必须能区分「这个绑定是我们建的」与「用户本来就有」—— 只有前者才允许
+                            // 解绑或删除。走到这里说明 lookup 定位到的是**已有的**应用绑定，两个标志因此都是
+                            // false；rendererExe 是实际用来定位的那个文件名。
+                            ApplicationExe = rendererExe,
+                            WasProfileCreated = false,
+                            WasApplicationCreated = false,
+                        }, Array.Empty<string>());
 
                 profileJournal = apply.Journal;
 
