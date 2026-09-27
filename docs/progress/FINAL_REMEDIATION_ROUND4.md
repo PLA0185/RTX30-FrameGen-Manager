@@ -357,13 +357,20 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 4. **`--nvapi-write-smoke` 的提权路径无自动测试** —— 需要人工点 UAC，属**外部真实阻塞**（§27 允许的停止理由）。
 5. **运行时 `CanWrite` 仍为 `false`** —— 三个能力门是 `internal static` 进程内状态：默认 `false`、每次启动重置、生产路径不跑 smoke。**提权路径已被真实证明，但生产运行不会自动获得该状态。**（**已由「写入前 Blocked」妥善处理**：做不到就不动磁盘，而不是装完再删。）
 6. **`P2-③` 的「写」那一半未接线** —— 矩阵**不会自动积累**兼容性记录（`Add`/`Persist` 在 `src/` 无调用者）。这是**有意留待产品决策**：它会改变产品行为（用户会因此少看到确认框），且需要先定义**什么算一次可靠的记录**。**「读」那一半已接线并有断言守护。**
-7. **零消费者/零生产者声明**（如实标注，不写成「已生效」）：`NvApiStatus.RequiresElevation` · `IsNameCollision` · `ProviderRegistry.AllHealth()` · `DeploymentFileSource.ExistingReusable` · `ProviderMetadata` 的 8 个字段 · `OpResult.RollbackHandled`（它在 `src/` 只有写入、没有读取 —— 详见该属性的文档）。
+7. **零消费者/零生产者声明**（如实标注，不写成「已生效」）：`NvApiStatus.RequiresElevation` · `IsNameCollision` · `ProviderRegistry.AllHealth()` · `DeploymentFileSource.ExistingReusable` · `ProviderMetadata` 的 8 个字段 · `OpResult.RollbackHandled`（它在 `src/` 只有写入、没有读取 —— 详见该属性的文档）· **`WasProfileCreated`（零生产者）**。
+   **★ 还有一条更值得写的（Pass J 的 P2-⑨）**：**`UI/Presentation.cs` 的 `StatusPresenter` / `LibraryPresenter` / `AdvancedPanel` 在生产里零消费者** —— 全 `src/` grep 只有 `Presentation.cs` 自己引用；三个 WPF 窗口一个都没调（`NavigationModel` 是唯一接线的一处，`MainWindow.xaml.cs:541`）。
+   **⇒ 这意味着 `TestPresentationLayer` 那 20+ 条「诚实性」断言，证明的是一个【成品从不执行的模块】，而不是界面。** 这与「矩阵写那一半未接线」同类，但**更值得记**：那条是「有 API 无调用者」，这条是「**有测试、有断言、但被测对象不在成品里**」—— 它让「UI 层有 20+ 条断言」这个印象**在事实上是空的**。
    **「死键」也属于这一类。** Pass J 逐键扫过全部 **416** 个键（排除两个语言表本身）后的准确清单是：**21 个键零引用** —— `Common.Ok` · `Common.Yes` · `Common.No` · `Common.Unknown` · `Deploy.Settings` · `Deploy.AllProxiesTaken` · `Restore.RemoveLogsOption` · `Adopt.ManualVersion` · `Batch.Item` · `Status.DeployedDetail` · `Status.Summary` · `Status.SummaryBackups` · `Gpu.NameWithDriver` · `Fetch.PickerSingleNote` · `Fetch.Confirm` · `Fetch.ConfirmTitle` · `ModSource.IniMissingAt` · `Page.Library.Purpose` · `Page.Dashboard.NoGamesTitle` · `Page.Dashboard.NoGamesBody` · `Error.DirNotFound`；**另有 3 个只在注释里**（`Adopt.AdoptedSuffix` · `List.NewGame` · `Scan.SourceFolder`）。
    **⚠️ 我此前把 `Gpu.NotFound` 误列进了这一条**（Pass J 的 P2-②）：它在 `test/Harness/Program.cs:1668` 是**真代码**（`Gpu.cs:496` 才是注释；`:512` 用的是**另一个键** `Gpu.NotFoundAdvice`，前缀撞名）。**死键清单本身也需要「逐键扫描」而不是「凭印象列举」** —— 我列的是我记得改过的那些。
    **⚠️ 而且 grep 看不见全部死键**：`ModFetcher.cs:287` 有**动态构造键名**（`Loc.T($"Fetch.Note.{s.Id}")`）⇒ `Fetch.Note.*` 这 6 个键**不是死键**，只是静态搜索找不到它们 —— **「审计的盲区是另一个方向」的又一例**。
    **无害，保留**（删掉要同时改两个语言表，而审计要求两种语言的键集完全一致），但**必须记在这里**，否则下一位读者会以为它们是被使用的。**缓解事实**：`LocalizationAudit.SourceFiles` 包含 `test/`，所以删掉任何仍在测试里引用的键会被审计抓到。
 8. **「日志干净」未核验** —— 未定位到日志文件。
 9. **真实游戏 / 视觉人工验证** —— 属 `Pending User Validation`（**§26 允许的唯一类别**）：实机 `Applied`/`Verified`、深色主题提示字色、Provider 下拉、Plan Preview、七页导航、高级折叠；以及 Ground Branch 的第一次真实 E2E。
+10. **`VerificationReport.Reason` 是硬编码中文，而且它【进持久化】**（Pass J 的 P2-④）：
+    `SmoothMotionWorkflow.cs:868/871` 把它同时写进 `EvidenceRef.Reference` 与 `note`，而 `CompatibilityEvidence.cs:308/310` 与 `CompatibilityMatrix.cs:322` 把它们序列化进 `%APPDATA%\DLSSGManager\recipe-memory.json` / `compatibility.json`。
+    **⇒ 影响是两条，不是一条**：**英文界面下用户读到中文** **+** **中文被写进持久化文件**。
+    **⚠️ 但严重性仍限 P2，理由要说准**：它是**语言无关的硬编码** —— **两种语言产出同一个值、不会分裂键空间**。**这与前面六处「文案当数据」有本质区别**（那六处都是 `Loc.T` 的结果，会随语言变化并分裂目录名/矩阵键）。**不要把这一条与那六处并列。**
+    **修它需要**：给 `Reason` 的五个句子加语言表键、并让 `SignalNames` 的显示走本地化 ⇒ 改动面比 `SignalNames` 那一步大。**记在这里，未做。**
 
 > **★ 一条贯穿本节的观察：审计的盲区永远是「另一个方向」，而漏掉的总是「看起来正常的那一侧」。** 本会话见过三种同型：
 > | 审计 | 覆盖的方向 | 漏掉的方向 | 漏掉的东西长什么样 |

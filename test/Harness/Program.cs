@@ -1694,14 +1694,25 @@ public static class Program
         //
         // 现在断言的是**新的不变量**：`Name` 要么是真实的适配器名，要么是空串，
         // **永远不是一句给人看的文案** —— 那才是「文案当数据」这件事的可检查形式。
-        Check("Name 是适配器名或空串，不是本地化文案（它会被写进 library.json 并进入矩阵）",
-            !Languages.All.Any(language =>
-            {
-                Loc.SetLanguage(language);
-                var sentence = Loc.T("Gpu.NotFound");
-                Loc.SetLanguage(Languages.ChineseSimplified);
-                return string.Equals(info.Name, sentence, StringComparison.Ordinal);
-            }),
+        // ⚠️ **断言必须与它的名字一样宽**（Pass J 的 P2-⑦）：这里此前只排除了
+        // `Loc.T("Gpu.NotFound")` **这一句**（而那个键**已无生产者**，只在测试里被引用），
+        // 于是一个把 `Name` 写成 `Loc.T("Gpu.NoAdapter")` 的实现**照样通过** ——
+        // 而断言名宣称的是「是适配器名**或空串**」。**名不副实的断言比没有断言更糟**：
+        // 它让人以为这条路径被守住了。
+        //
+        // ⇒ 现在断言的是**真正的不变量**：`Name` **不等于任何语言表里的任何一句话**。
+        // 那正是「文案当数据」的可检查形式 —— 不依赖具体是哪个键。
+        var nameIsASentence = Languages.All.Any(language =>
+        {
+            Loc.SetLanguage(language);
+            var hit = Strings.For(language).Values.Any(sentence =>
+                string.Equals(info.Name, sentence, StringComparison.Ordinal));
+            Loc.SetLanguage(Languages.ChineseSimplified);
+            return hit;
+        });
+
+        Check("Name 是适配器名或空串 —— 不是任何语言表里的任何一句文案",
+            !nameIsASentence,
             $"Name=\"{info.Name}\"");
 
         // 「没有适配器」与「探测失败」是两件事：前者是**空串**，后者会在 `Advice` 里说明。
