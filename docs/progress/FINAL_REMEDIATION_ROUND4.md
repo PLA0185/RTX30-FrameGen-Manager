@@ -317,7 +317,7 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 | 完成条件 | 状态 |
 |---|---|
 | Build PASS | ✅ 0 错误 / 0 警告 |
-| Harness PASS | ✅ 本地 **973**/0/10（`1dbd2fd`）· **干净 clone 932**/0/10（`54ef370`），差 **27** 全部来自 `extra-proxies/d3d12.dll`） |
+| Harness PASS | ✅ 本地 **973**/0/10（`1dbd2fd`）· **干净 clone 946**/0/10（`54ef370`），差 **27** —— 那 27 项**恰好**是只在有 `extra-proxies/d3d12.dll` 时才跑的断言 |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
 | **Independent Code Review PASS** | **[待 Pass H]** |
