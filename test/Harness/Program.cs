@@ -2155,6 +2155,44 @@ public static class Program
                 && DLSSGManager.Providers.AppProviders.Registry.Get(game.Deployment!.ProviderId) is not null,
             $"id=\"{game.Deployment?.ProviderId}\"");
 
+        // ---- §17 P1-1（Pass E 报出）：**接管的版本号绝不能是本地化文案** ----
+        //
+        // ⚠️ **这条守护此前只在 `TestAdopt` 里，而那个方法首行就是 `SkipWithoutModFiles` ⇒ 在默认套件里
+        // 永不执行。** 更糟的是它当时的期望值取自**实现里的同一个表达式**
+        //（`adoptedVersion ?? Loc.T("ModSource.UnknownVersion")`）⇒ **把缺陷行为写成了期望**，
+        // 任何正确的修复都会让它失败、还会把修复说成回归。**这就是我上一轮只修了读取端
+        //（`ModSource.Version`）、漏掉写入端（`Adopt`）的原因之一：读取端没有这样的断言挡路。**
+        //
+        // 这里用的是**与实现无关**的判据：这份夹具的 INI 是 `[DLSSG SM86]`（**没有版本横幅**），
+        // 所以正确的记录就是**空串**；而**任何语言的占位符都不允许出现** —— 它会被
+        // `GetInstalledVersion` 当成「已知版本」回灌，从而**跳过版本探测** ⇒ payload 目录分裂
+        //（同一份 payload 下载两次）+ 矩阵键永不匹配 + 配方记忆里留下两条互不相认的记录。
+        Check("（前置）这份夹具的 INI 确实读不到版本横幅（§17 P1-1）",
+            ModSource.ReadVersion(Path.Combine(dir, ModSource.IniName)) is null,
+            ModSource.ReadVersion(Path.Combine(dir, ModSource.IniName)) ?? "(null)");
+
+        Check("接管记录的 ModVersion 读不到就是空串，不是本地化文案（§17 P1-1）",
+            game.Deployment?.ModVersion == "",
+            $"«{game.Deployment?.ModVersion}»");
+
+        Check("接管记录的 ModVersion 不是任何语言的占位符（§17 P1-1）",
+            !Languages.All.Any(l =>
+            {
+                Loc.SetLanguage(l);
+                var placeholder = Loc.T("ModSource.UnknownVersion");
+                Loc.SetLanguage(Languages.ChineseSimplified);
+                return string.Equals(game.Deployment?.ModVersion, placeholder, StringComparison.Ordinal);
+            }),
+            $"«{game.Deployment?.ModVersion}»");
+
+        // **落点断言**：那个版本值必须让 payload 目录落到 `_unknown` —— **与「未接管但同样读不到版本」
+        // 的路径落在同一个目录**，否则同一份 payload 会被下载两次。
+        Check("读不到版本时，接管路径与普通路径落在同一个 payload 目录（§17 P1-1）",
+            string.Equals(PayloadPaths.For(DlssgSm86Provider.ProviderId, game.Deployment?.ModVersion ?? ""),
+                          PayloadPaths.For(DlssgSm86Provider.ProviderId, ""),
+                          StringComparison.Ordinal),
+            PayloadPaths.For(DlssgSm86Provider.ProviderId, game.Deployment?.ModVersion ?? ""));
+
         // **反向配对**：记录里的 id 必须**跟着传入值走** —— 防「恒为某个常量」的实现。
         // 只写上面那条时，一个 `ProviderId = "dlssg-sm86"` 写死的实现也能通过。
         var other = new GameEntry { Name = "GameAdoptProvider2", RenderDir = dir };
