@@ -5551,6 +5551,16 @@ public static class Program
             noWriteResult.Outcome == WorkflowOutcome.Blocked && noWriteLeft.Count == 0,
             $"outcome={noWriteResult.Outcome} 写了={string.Join("、", noWriteLeft)}");
 
+        // **但上面那条只看到「最终状态」，而「不得先装后删」是抓不到的** —— 那次运行在 Profile 步骤
+        // 失败后会**回滚**，把刚写的文件删干净：**「写了又回滚」与「从未写过」在最终状态上长得一模一样**。
+        // （这是回退验证发现的：把写门去掉之后，目录断言确实变红了，但看不出它与「没写」有什么区别。）
+        //
+        // 真正要守的是**这次运行有没有走到安装** —— `Evidence` 正是这件事的判据：
+        // `Installed` 表示装过，`None` 表示从没走到那一步。**断言中间过程，而不是最终状态。**
+        Check("写不了驱动时不得走到安装阶段（§17 P1-1 · 断言中间过程）",
+            noWriteResult.Evidence == SmoothMotionEvidence.None,
+            $"evidence={noWriteResult.Evidence}（Installed 表示装过再回滚）");
+
         // ---- 1. blocked: unknown API writes nothing ----
         var blockedParts = Build(work, "wfBlocked");
         var blockedDir = Path.Combine(work, "wf-blocked-payload");
