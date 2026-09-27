@@ -77,7 +77,28 @@ public static class Program
         var modRoot = ModSourceLocator.FindExisting(null)
                       ?? ModSourceLocator.ResolveTarget(null);
 
-        _hasModFiles = ModSourceLocator.LooksLikeSource(modRoot);
+        // ⚠️ **`LooksLikeSource` 只看一个 INI 文件**（`dlssg_sm86.ini`），**不看 DLL**（Pass G 报出）。
+        //
+        // 后果不是「判错就多用几个跳过」那么轻：一个**半套/残留**的目录（有 INI、没 DLL）会让
+        // `_hasModFiles = true` ⇒ 依赖真实 Mod 文件的用例**不再跳过、真的往里跑** ⇒ 撞上缺失的 DLL
+        // ⇒ **以未处理异常中止整套**，而套件**仍然打印一个看起来正常的总结**（Pass G 实测：
+        // 「通过 123 · 失败 14」）。**那比跳过糟得多** —— 跳过是诚实的，中途炸掉再印个总结是误导。
+        //
+        // ⇒ 这里用一个**自己的、更严的判据**：标记文件**和**它必须提供的那个代理都要在。
+        // **这与 P1-2 是同一族：前置条件的判据必须与「用例真正需要什么」同宽**，而不是与
+        // 「生产代码怎么粗判一个目录像不像源」同宽 —— 后者是**为另一个目的写的**（选择下载目标）。
+        var markerOnly = ModSourceLocator.LooksLikeSource(modRoot);
+        var proxyPresent = File.Exists(Path.Combine(modRoot, "altnative", "d3d12.dll"));
+        _hasModFiles = markerOnly && proxyPresent;
+
+        if (markerOnly && !proxyPresent)
+        {
+            Console.WriteLine("⚠️ Mod 源目录里有标记文件，但缺少 altnative\\d3d12.dll —— 这是一个半套目录。");
+            Console.WriteLine("   按「尚未获取」处理（否则依赖真实 Mod 的用例会中途抛异常，"
+                              + "而总结仍会打印成正常）。");
+            Console.WriteLine("   修复：删掉该目录后重新运行 --fetch，或补回缺失的文件。");
+            Console.WriteLine();
+        }
 
         Console.WriteLine("Mod 源目录: " + modRoot + (_hasModFiles ? "" : "   ← 尚未获取"));
         Console.WriteLine("测试工作区: " + work);
