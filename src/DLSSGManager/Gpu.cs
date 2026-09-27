@@ -490,7 +490,21 @@ public static class Gpu
         {
             var adapters = Adapters();
             return new GpuInfo(
-                adapters.Count > 0 ? string.Join(" / ", adapters.Select(a => a.Name)) : Loc.T("Gpu.NotFound"),
+                // ⚠️ **没有适配器时 `Name` 是空串，不是一句本地化文案**（Pass I 报出的第六处
+                // 「文案当数据」——它推翻了此前「五处全清」的结论）。
+                //
+                // 那一句 `Loc.T("Gpu.NotFound")` 会经 `MainWindow.xaml.cs` 的
+                // `_data.GpuName = info.Name` 落进 `library.json`（`Models.cs` 的该字段**没有
+                // `[JsonIgnore]`**），再经 `SmoothMotionWorkflow` 到
+                // **`CompatibilityMatrix` 参与维度比较** ⇒ **两种语言产出两个不同的矩阵键**，
+                // 与已经修过的 `ModSource.Version` **完全同型**。
+                //
+                // 触发路径比「本机没有 N 卡」宽：`Adapters()` 只保留 `AttachedToDesktop` 且跳过
+                // Basic Render ⇒ **RDP / headless 会话、驱动替换中途**都会走到这里。
+                //
+                // **显示不受影响**：UI 显示的是 `Advice`（由 `BuildAdvice` 生成，它在 `mismatch`
+                // 为假时根本不读 `name`），而不是这个字段。空串在这里的语义正是「没有适配器」。
+                adapters.Count > 0 ? string.Join(" / ", adapters.Select(a => a.Name)) : "",
                 "",
                 "SM86",
                 adapters.Count == 0
