@@ -3443,13 +3443,16 @@ public static class Program
 
         // The pin has to reject bytes that do not match — a tampered or substituted file must never be
         // treated as the community build.
+        //
+        // ⚠️ **这一段此前包在 `if (File.Exists(repoFile))` 里，而 `repoFile` 与上面的 `community`
+        // 是同一个路径** ⇒ 干净 clone 上必然为假 ⇒ **这 2 条断言既不执行、不计 `_skipped`、
+        // 也不打印 `[跳过]`**（Pass K 报出：**它就在我刚改好的「如实计入跳过」那一段下面 20 行**）。
+        // 而它们检验的是「固定哈希对**单字节**改动敏感」—— **完全不需要那个 10 MB 的文件**。
+        // ⇒ 用 `MakeRandomFile` 造一个 4 KB 的样本再翻一个字节即可，**无条件执行**。
         var pinnedHash = ModFetcher.KnownCommunityBuildHashes[0];
-        var repoFile = Path.Combine(repoRoot, "extra-proxies", "d3d12.dll");
         var tampered = Path.Combine(work, "extra-tampered.dll");
-
-        if (File.Exists(repoFile))
         {
-            var bytes = File.ReadAllBytes(repoFile);
+            var bytes = File.ReadAllBytes(MakeRandomFile(work, "extra-tamper-source.dll", 4096));
             bytes[^1] ^= 0xFF;                                  // one flipped bit is enough
             File.WriteAllBytes(tampered, bytes);
 
