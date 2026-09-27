@@ -3357,16 +3357,26 @@ public static class Program
         //
         // 教训：这两条断言在开发机上恒真（那里恰好有这个文件），**只有在干净环境才会暴露** ——
         // 901 项全绿掩盖了它，是 §23 的 Clean-state 验证把它抓出来的。
-        if (!File.Exists(community))
+        // ⚠️ **这里此前是 `Console.WriteLine(...); return;`** —— 那个 `return` 把**下面全部**断言
+        // 一起带走了，包括**完全不依赖这个文件**的那些（`ReadVersionFromText` 的 4 条纯逻辑断言、
+        // 哈希拒绝的 3 条）。而且它**既不计 `_skipped`、也不打印 `[跳过]`** ⇒
+        // Pass J 实测：干净 clone 上**20 条断言静默消失，套件一个字都不说**（977 → 949，
+        // 而 `跳过` 只从 10 变成 11）—— **「静默 return 比永远失败的断言更危险」的又一例**。
+        //
+        // 现在：**只在需要那个文件的部分计入跳过并继续**，其余断言照跑。
+        var hasCommunity = File.Exists(community);
+        if (!hasCommunity)
         {
-            Console.WriteLine($"       （未找到参考副本 {community} —— 它故意不入库，跳过哈希校验）");
-            return;
+            _skipped++;
+            _skippedNeedingCommunityProxy++;
+            Console.WriteLine("  [跳过] 参考副本的哈希校验与识别"
+                              + "（需要在仓库根放置 extra-proxies\\d3d12.dll；--fetch 不提供它）");
         }
-
-        Check("仓库中保留参考副本", true, community);
-
-        if (File.Exists(community))
+        else
         {
+            // ⚠️ **这里此前还有一条 `Check("仓库中保留参考副本", true, community)`** ——
+            // 条件是字面量 `true` ⇒ **恒真断言**，而且它**在文件不存在时根本走不到**。
+            // 已删除：它提供不了任何信息，只让通过数看起来好一点。
             Check("参考副本与记录的哈希一致",
                 ModFetcher.MatchesPin(community, hashes[0]),
                 $"记录 {hashes[0]}，实际 {Sha(community)}");
@@ -3424,13 +3434,21 @@ public static class Program
         // 同 TestCommunityBuildIdentification：这个参考副本故意不入库（`.gitignore` 的
         // `extra-proxies/*.dll`），所以「它存在」不是一条可以要求的断言 —— 在干净 clone 里必然不存在，
         // 而那种失败会连带让打包脚本失败（它会先跑 Harness）。
+        //
+        // ⚠️ **但必须【如实计入跳过】**（Pass J 报出）：此前这里是 `Console.WriteLine(...); return;`
+        // ⇒ 整个方法的 8 条断言**静默消失**（既不计 `_skipped`、也不打印 `[跳过]`），
+        // 于是「跳过 N」这个数字**不反映真实覆盖面**。这个方法的 mod 那一支（下面不远处）
+        // 反而是规范写法 —— **同一族位置，我只改了两组、漏了这两组。**
         if (!File.Exists(published))
         {
-            Console.WriteLine($"       （未找到 {published} —— 它故意不入库，跳过手工安装识别）");
+            _skipped++;
+            _skippedNeedingCommunityProxy++;
+            Console.WriteLine("  [跳过] 识别手工安装的 d3d12.dll"
+                              + "（需要在仓库根放置 extra-proxies\\d3d12.dll；--fetch 不提供它）");
             return;
         }
 
-        Check("仓库里有可用的发布文件", true, published);
+        // （这里此前还有一条 `Check("仓库里有可用的发布文件", true, published)` —— 恒真断言，已删。）
 
         var dir = MakeGameDir(work, "GameHandInstalled");
         File.Copy(published, Path.Combine(dir, "d3d12.dll"));
