@@ -5538,6 +5538,34 @@ public static class Program
             noWriteResult.Outcome == WorkflowOutcome.Blocked,
             noWriteResult.Outcome + " / " + string.Join("; ", noWriteResult.Errors));
 
+        // ---- 0c. 回退计划的入口 `SourcePath` 必须是「源未知」，不能是目标名（§17 P0-1(a) · Pass C 报出）----
+        //
+        // 成因 (a) 的触发条件是 **`ManifestOf` 拿不到清单** —— 即**每次会话的第一次 MFG 运行**：
+        // 计划在下载之前就建好了（`SmoothMotionWorkflow` 里 L421 早于 L490），那时 payload 目录还不存在。
+        // 而 `payloadFiles` 在无清单时**只含 INI、不含任何代理入口**（L379-383）⇒ 代理只能由
+        // **回退分支**加入 ⇒ 旧代码在那里填了**目标名**（`version.dll`），于是工作流拿它去 payload 清单
+        // 里做精确路径匹配 ⇒ **每次都判「payload 缺少计划要求的文件」⇒ 安装前就失败，一个字节都没写**。
+        //
+        // 这里用一个**不存在的 payload 目录**跑一次真实 workflow，直接检查计划给出的 `SourcePath`。
+        var fallbackParts = Build(work, "wfFallbackSource");
+        var fallbackGame = new GameEntry { Name = "wfFallbackSource", RenderDir = MakeGameDir(work, "wfFallbackGame") };
+
+        var fallbackResult = fallbackParts.Workflow.RunAsync(
+            MakeRequest("wfFallbackSource", Path.Combine(work, "wf-fallback-does-not-exist"),
+                fallbackParts.Provider, fallbackGame) with { UserConfirmedUnverified = true },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        var fallbackProxies = (fallbackResult.Plan?.PlannedFiles ?? Array.Empty<PlannedFile>())
+            .Where(f => f.SourceKind == DeploymentFileSource.Payload)
+            .ToList();
+
+        Check("回退计划确实产出了代理条目（§17 P0-1(a) 的前置）",
+            fallbackProxies.Count > 0, $"payload 来源的条目数 {fallbackProxies.Count}");
+
+        Check("回退计划的 SourcePath 是 null（源未知），不是入口名（§17 P0-1(a)）",
+            fallbackProxies.All(f => f.SourcePath is null),
+            string.Join("、", fallbackProxies.Select(f => $"{f.TargetRelativePath}=>{f.SourcePath ?? "(null)"}")));
+
         // **「一个文件都没写」指的是「没有本次计划会写的东西」（代理入口 + INI），而不是「目录是空的」**
         // —— 夹具本身会放 `game.exe` 之类的文件，用「目录为空」当判据会得到一个与被测行为无关的失败。
         var noWriteLeft = Directory.EnumerateFiles(noWriteGame.RenderDir)
