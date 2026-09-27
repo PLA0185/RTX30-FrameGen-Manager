@@ -1,4 +1,4 @@
-# 第四轮 · 自主闭环整改报告（§28）
+﻿# 第四轮 · 自主闭环整改报告（§28）
 
 > **状态：草稿，等待 Pass G 结果填入。** 标 `[待 Pass G]` 的位置在审查返回后更新。
 >
@@ -44,7 +44,7 @@
 |---|---|
 | `build -c Release --no-incremental` | **0 错误 / 0 警告**（`49a028d`） |
 | Harness（**本地**，含 `extra-proxies/d3d12.dll`） | **973 通过 / 0 失败 / 10 跳过**（`1dbd2fd`） |
-| Harness（**干净 clone**，无 `d3d12.dll`） | **932 通过 / 0 失败 / 10 跳过**（`77ff788`，**其后未复测** —— §23 会重测） |
+| Harness（**干净 clone**，无 `d3d12.dll`） | **946 通过 / 0 失败 / 10 跳过**（`54ef370`） |
 | 打包脚本 `scripts/package-release.ps1` | **`EXIT=0`** —— EXE **63.0 MB** · ZIP **57.7 MB** · SHA256SUMS（`1dbd2fd`） |
 | `--nvapi-smoke --loop` | **200 次真实读取，驱动被触达 200/200，异常 0** |
 | `--nvapi-smoke` | A1–A4 PASS · B1 ABI 层 PASS · B2 NOT_FOUND · C/D NOT_RUN |
@@ -55,7 +55,7 @@
 **★ 口径说明（必须写进结论里）**：
 - **本节的每一行都单独标注了测量点，但它们不是同一次测的** —— 本表是**跨轮次拼起来**的：本地 Harness 实测于 `1dbd2fd`，干净 clone 实测于更早的 `77ff788`（**其后未复测**，因为那之后又改过若干处），打包脚本实测于 `1dbd2fd`。
 - **干净 clone 的测量方式**（「干净」这个前提必须确认，不确认就等于没测）：`git clone --no-hardlinks` 到临时目录 → 确认 `extra-proxies\d3d12.dll` **不存在** → `build --no-incremental` **0 错误 / 0 警告** → Harness **932 通过 / 0 失败 / 10 跳过**。
-- **差值是 23，而且它跨了多轮大量修复保持不变**：`ab6dff8` 本地 928 / 干净 905 · `77ff788` 本地 955 / 干净 932 —— **两次都差 23，两边同步增长**。**这比单个数字更有说服力**：它说明那 23 项确实全部来自 `extra-proxies/d3d12.dll`，而不是某个随时间漂移的隐藏依赖。
+- **差值不是常数，它会随「条件夹具」的断言数增长**：`ab6dff8` 差 23（928/905）· `77ff788` 差 23（955/932）· **`54ef370` 差 27（973/946）**。第三次的 **+4 恰好等于 `TestAdoptRecordsProvider` 里新增的断言数**（那 4 条依赖 `extra-proxies/d3d12.dll`，干净 clone 上整段跳过）。**⇒ 差值本身也是证据**：它精确地等于「只在有该文件时才会跑的那些断言」。
 - 该文件被 `.gitignore` 排除（设计上由使用者自备），干净树里相关断言走「不存在则如实跳过」分支。**这不是隐藏的开发机依赖；但把本地数字写成通用数字是错的。**
 **★ 跳过数两边都是 10**（不再是 9）—— 因为原先一处**静默 `return;`** 的守卫（`Adopt` 的 `ProviderId`）已改为走套件的跳过机制（计数 + 打印），这是它**可见**的结果。
 
@@ -284,7 +284,7 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 | 完成条件 | 状态 |
 |---|---|
 | Build PASS | ✅ 0 错误 / 0 警告 |
-| Harness PASS | ✅ 本地 **973**/0/10（`1dbd2fd`）· **干净 clone 932**/0/10（`77ff788`，**§23 会重测**），差 **23** 全部来自 `extra-proxies/d3d12.dll`） |
+| Harness PASS | ✅ 本地 **973**/0/10（`1dbd2fd`）· **干净 clone 932**/0/10（`54ef370`），差 **27** 全部来自 `extra-proxies/d3d12.dll`） |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
 | **Independent Code Review PASS** | **[待 Pass G]** |
