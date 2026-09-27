@@ -191,7 +191,7 @@ public static partial class Strings
 
         ["Adopt.Starting"] = "— Adopting {0}",
         ["Adopt.Failed"] = "Adopt failed: {0}",
-        ["Adopt.Confirm"] = "Adopting registers an existing proxy DLL as installed by this manager: one of this project's five entries, or the `d3d12.dll` published as an extra (recognised by its pinned hash).\n\nUse it when you copied the mod in by hand. The record has no original backup, so a later restore can only delete these files by their recorded SHA256.\n\nContinue?",
+        ["Adopt.Confirm"] = "Adopting registers an existing proxy DLL as installed by this manager: any entry name this project knows (including `winhttp.dll`, used by older releases). `d3d12.dll` is one of them, recognised by its pinned hash.\n\nUse it when you copied the mod in by hand. The record has no original backup, so a later restore can only delete these files by their recorded SHA256.\n\nContinue?",
         ["Adopt.ConfirmTitle"] = "Adopt manual install",
         ["Adopt.Done"] = "Adopted {0}",
         ["Adopt.Note"] = "Note: no original backup exists, because the files were placed by hand.",

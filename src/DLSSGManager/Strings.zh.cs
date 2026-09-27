@@ -189,7 +189,7 @@ public static partial class Strings
         ["Restore.NoRecordTitle"] = "确认恢复",
         ["Restore.RemoveLogsOption"] = "恢复时一并删除 dlssg_sm86\\logs 日志目录",
 
-        ["Adopt.Confirm"] = "接管会把当前目录里已存在的代理 DLL 登记为「由本管理器安装」：本项目的 5 个入口，或随附加入口分发的 `d3d12.dll`（按固定哈希识别）。\n\n适用于你之前手工复制过 Mod 的情况。接管记录不含原始备份，之后恢复只能按记录里的 SHA256 删除这些文件。\n\n继续吗？",
+        ["Adopt.Confirm"] = "接管会把当前目录里已存在的代理 DLL 登记为「由本管理器安装」：本项目已知的入口名（含历史发行用过的 `winhttp.dll`），`d3d12.dll` 也在其中（按固定哈希识别）。\n\n适用于你之前手工复制过 Mod 的情况。接管记录不含原始备份，之后恢复只能按记录里的 SHA256 删除这些文件。\n\n继续吗？",
         ["Adopt.Starting"] = "— 接管 {0}",
         ["Adopt.Failed"] = "接管失败：{0}",
         ["Adopt.ConfirmTitle"] = "接管手工安装",
