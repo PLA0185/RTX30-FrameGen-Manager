@@ -36,7 +36,61 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-function Step([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan }
+# ── 兜底：**任何**一步失败都要说清「临时产物还在不在」（Pass I 报出，本轮补）──────
+#
+# 此前只有**替换阶段**的 `catch` 会报告临时产物残留。而脚本**大部分失败发生在更早** ——
+# 最常见的正是 `Get-FileHash`（生成 SHA256SUMS 那一步）：它一抛，脚本直接退出，
+# **根本不进替换阶段的 `catch`** ⇒ 三个临时产物（`$StageTmp` / `*.tmp.zip` / `*.tmp`）
+# **全留且无人提及**，而其中 `*.tmp.zip` 是一个**完整可用的 ZIP**，看起来就是发布物。
+#
+# `trap` 捕获**脚本级**的终止错误（`$ErrorActionPreference='Stop'` 下所有普通错误都是终止错误），
+# 所以在开头装一个就覆盖了全部失败点，**不必把 400 行都缩进一层**。
+# **注意它只报告、不删除** —— 失败时那些 `.tmp` 可能是唯一的新产物（回滚不完整时）。
+trap {
+    $failedStep = if ($script:currentStep) { "「$script:currentStep」这一步" } else { "某一步" }
+    Write-Host ""
+    Write-Host "$failedStep 失败：$($_.Exception.Message)" -ForegroundColor Red
+
+    # ⚠️ **逐个判断、逐个输出，不要先拼进数组再 join** ——
+    # 那样写过一次，结果是 `Cannot convert value ".win-x64-staging（63 MB）…" to type "System.Int32"`
+    # 这条**与本因无关的**错误行盖在真正的失败信息上面（注入验证时实测到）。
+    # 原因不重要，重要的是：**兜底处理器本身不能再出错** —— 它出错时读者连「为什么失败」都看不到。
+    $found = $false
+    foreach ($p in @($script:StageTmp, $script:ZipTmp, $script:SumsTmp))
+    {
+        if (-not $p) { continue }
+        if (-not (Test-Path $p)) { continue }
+
+        if (-not $found)
+        {
+            Write-Host "本次运行留下的临时产物**没有删除**（回滚不完整时它们可能是唯一的新产物）：" -ForegroundColor Yellow
+            $found = $true
+        }
+
+        $mb = 0.0
+        if ((Get-Item $p).PSIsContainer)
+        {
+            $sum = (Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue |
+                    Measure-Object Length -Sum).Sum
+            if ($sum) { $mb = [math]::Round($sum / 1MB, 1) }
+        }
+        else
+        {
+            $mb = [math]::Round((Get-Item $p).Length / 1MB, 1)
+        }
+
+        Write-Host ("  " + (Split-Path $p -Leaf) + "  (" + $mb + " MB)") -ForegroundColor Yellow
+    }
+
+    if ($found)
+    {
+        Write-Host "它们**不是发布物**；下一次成功运行会自动清掉。" -ForegroundColor Yellow
+    }
+
+    exit 1
+}
+
+function Step([string]$Text) { Write-Host "`n=== $Text ===" -ForegroundColor Cyan; $script:currentStep = $Text }
 
 # ── 定位仓库根（脚本位于 scripts/）────────────────────────────────────────
 $RepoRoot = Split-Path -Parent $PSScriptRoot
@@ -343,25 +397,42 @@ catch
 
     # ⚠️ **把残留的临时产物也说出来**（Pass I 报出）：它们**不删**（回滚不完整时可能是唯一的新产物），
     # 但**必须让用户知道它们在、叫什么、以及它们看起来像发布物**。
-    $leftover = @()
+    #
+    # ⚠️ **这里也曾用「先拼进数组再 join」的写法，而它抛**
+    # `Cannot convert value ".win-x64-staging（63 MB）…" to type "System.Int32"`
+    # —— **一条与本因无关的错误行盖在真正的失败信息上面**（注入验证实测到）。
+    # **同一处写法我在文件里犯过两次**（这里与 `trap` 里），两次都是注入验证抓到的。
+    # 现在改成**直接拼一条消息**，不用中间数组。
+    $leftoverNote = ""
+    $firstLeftover = $true
     foreach ($p in @($StageTmp, $ZipTmp, $SumsTmp))
     {
-        if (Test-Path $p)
+        if (-not (Test-Path $p)) { continue }
+
+        $mb = 0.0
+        if ((Get-Item $p).PSIsContainer)
         {
-            $sizeMb = if ((Get-Item $p).PSIsContainer) {
-                [math]::Round((Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue |
-                               Measure-Object Length -Sum).Sum / 1MB, 1)
-            } else { [math]::Round((Get-Item $p).Length / 1MB, 1) }
-            $leftover += "$(Split-Path $p -Leaf)（${sizeMb} MB）"
+            $sum = (Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue |
+                    Measure-Object Length -Sum).Sum
+            if ($sum) { $mb = [math]::Round($sum / 1MB, 1) }
         }
+        else
+        {
+            $mb = [math]::Round((Get-Item $p).Length / 1MB, 1)
+        }
+
+        if ($firstLeftover)
+        {
+            $leftoverNote = "`n⚠️ 本次运行留下的临时产物**没有删除**"
+            $firstLeftover = $false
+        }
+
+        $leftoverNote = $leftoverNote + "`n  " + (Split-Path $p -Leaf) + "  (" + $mb + " MB)"
     }
 
-    $leftoverNote = if ($leftover.Count -eq 0) {
-        ""
-    } else {
-        "`n⚠️ 本次运行留下的临时产物**没有删除**（回滚不完整时它们可能是唯一的新产物）："
-        + ($leftover -join "、")
-        + " —— 它们不是发布物；下一次成功运行会自动清掉。"
+    if (-not $firstLeftover)
+    {
+        $leftoverNote = $leftoverNote + "`n它们**不是发布物**；下一次成功运行会自动清掉。"
     }
 
     $script:replaceFailure = "替换正式产物失败：$reason`n$rollbackState$leftoverNote"
