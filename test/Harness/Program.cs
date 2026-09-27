@@ -2659,14 +2659,25 @@ public static class Program
 
         var steamLibs = Detection.SteamLibraries().ToList();
         Console.WriteLine("      检测到 Steam 库: " + (steamLibs.Count == 0 ? "(无)" : string.Join(" | ", steamLibs)));
-        // ⚠️ **这里此前是 `Check("Steam 库枚举未抛异常", true);`** —— 恒真断言（Pass M 的 P1-①）。
-        // **而且它是冗余的**：上面那行调用**本身**就会在抛异常时让测试中止
-        // （`Main` 的 try/catch 会 `_fail++`），所以「未抛异常」**已由「能走到这里」证明**，
-        // 再断言一次不增加任何信息。**⇒ 删掉。**
-        // 将来若要断言枚举结果，应断言**结果的性质**（例如「无重复路径」），而不是断言一个字面量。
-        Check("Steam 库枚举结果没有重复路径",
-            steamLibs.Distinct(StringComparer.OrdinalIgnoreCase).Count() == steamLibs.Count,
-            $"共 {steamLibs.Count} 条");
+        // ⚠️ **我第一次修这条时写的「枚举结果没有重复路径」也是恒真的**（Pass M 预测到了，
+        // 它明确说「未做注入实验，属不确定项」）—— 读源码确认：`SteamLibraries()` 的最后一行
+        // 就是 `return roots.Distinct(StringComparer.OrdinalIgnoreCase);` ⇒ **去重已经做过了**。
+        // **⇒ 这是「我的修复又写了一条恒真断言」的第二次**（第一次是 HAGS 那条，被编译器 `CS8794` 抓到）。
+        // ⇒ 改成断言该函数的【真实契约】。**我第一次写的版本是**：
+        //   「每个返回值都必须含 `steamapps\libraryfolders.vdf`」—— 它**立刻变红**：
+        //   `不含该文件的: F:\SteamLibrary`。**而那次红是【断言写错了】，不是代码错**：
+        //   该函数对**候选目录**要求有 `libraryfolders.vdf`（`Detection.cs:62`），
+        //   而对 **vdf 内部引用的库**只要求 `Directory.Exists`（`:74`）——
+        //   **Steam 库目录本身不必各自带 `libraryfolders.vdf`**。
+        // **★ 这一步值得记**：**先让断言能失败，再让它对** —— 一个从没红过的断言，
+        //   你无法区分「代码正确」与「断言写错」；而这次它红了，我立刻就分清了。
+        var missingDirs = steamLibs.Where(p => !Directory.Exists(p)).ToList();
+        var duplicateDirs = steamLibs.Count - steamLibs.Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        Check("Steam 库枚举只返回存在的目录，且无重复",
+            missingDirs.Count == 0 && duplicateDirs == 0,
+            $"共 {steamLibs.Count} 条"
+            + (missingDirs.Count > 0 ? "；不存在的: " + string.Join(" | ", missingDirs) : "")
+            + (duplicateDirs > 0 ? $"；重复 {duplicateDirs} 条" : ""));
     }
 
     private static void TestModSourceLocator(string modRoot, string work)
