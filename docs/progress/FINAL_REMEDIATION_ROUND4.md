@@ -1,4 +1,4 @@
-# 第四轮 · 自主闭环整改报告（§28）
+﻿# 第四轮 · 自主闭环整改报告（§28）
 
 > **状态：草稿，等待 Pass G 结果填入。** 标 `[待 Pass G]` 的位置在审查返回后更新。
 >
@@ -42,10 +42,10 @@
 
 | 项目 | 结果 |
 |---|---|
-| `build -c Release --no-incremental` | **0 错误 / 0 警告**（`bfd2fe4`） |
-| Harness（**本地**，含 `extra-proxies/d3d12.dll`） | **955 通过 / 0 失败 / 10 跳过**（`bfd2fe4`） |
-| Harness（**干净 clone**，无 `d3d12.dll`） | **932 通过 / 0 失败 / 10 跳过**（`77ff788`） |
-| 打包脚本 `scripts/package-release.ps1` | **`EXIT=0`** —— EXE **63.0 MB** · ZIP **57.7 MB** · SHA256SUMS（`bfd2fe4`） |
+| `build -c Release --no-incremental` | **0 错误 / 0 警告**（`49a028d`） |
+| Harness（**本地**，含 `extra-proxies/d3d12.dll`） | **973 通过 / 0 失败 / 10 跳过**（`1dbd2fd`） |
+| Harness（**干净 clone**，无 `d3d12.dll`） | **932 通过 / 0 失败 / 10 跳过**（`77ff788`，**其后未复测** —— §23 会重测） |
+| 打包脚本 `scripts/package-release.ps1` | **`EXIT=0`** —— EXE **63.0 MB** · ZIP **57.7 MB** · SHA256SUMS（`1dbd2fd`） |
 | `--nvapi-smoke --loop` | **200 次真实读取，驱动被触达 200/200，异常 0** |
 | `--nvapi-smoke` | A1–A4 PASS · B1 ABI 层 PASS · B2 NOT_FOUND · C/D NOT_RUN |
 | `--nvapi-write-smoke` | **非提权**：`-137`，三门 `false`（预期行为）· **提权**：往返全通，三门 `true` |
@@ -53,8 +53,9 @@
 | `--network-smoke` | PASS |
 
 **★ 口径说明（必须写进结论里）**：
-- **两侧都实测于最终代码**：本地 **955**（含 `extra-proxies/d3d12.dll`）与干净 clone **932**（不含），**均实测于 `77ff788`**。干净 clone 的测量方式：`git clone --no-hardlinks` 到临时目录 → `build --no-incremental` **0 错误 / 0 警告** → Harness **932 通过 / 0 失败 / 10 跳过**；**并确认 `extra-proxies/d3d12.dll` 在该 clone 中不存在**（那是「干净」的前提，不确认就等于没测）。
-- **差值是 23，而且它跨了两轮大量修复保持不变**：上一轮实测（`ab6dff8`）本地 928 / 干净 905，同样差 23。**本地从 928→955、干净从 905→932，两边都涨了 27** —— 这比单个数字更有说服力：**它说明那 23 项确实全部来自 `extra-proxies/d3d12.dll`，而不是某个随时间漂移的隐藏依赖。**
+- **本节的每一行都单独标注了测量点，但它们不是同一次测的** —— 本表是**跨轮次拼起来**的：本地 Harness 实测于 `1dbd2fd`，干净 clone 实测于更早的 `77ff788`（**其后未复测**，因为那之后又改过若干处），打包脚本实测于 `1dbd2fd`。
+- **干净 clone 的测量方式**（「干净」这个前提必须确认，不确认就等于没测）：`git clone --no-hardlinks` 到临时目录 → 确认 `extra-proxies\d3d12.dll` **不存在** → `build --no-incremental` **0 错误 / 0 警告** → Harness **932 通过 / 0 失败 / 10 跳过**。
+- **差值是 23，而且它跨了多轮大量修复保持不变**：`ab6dff8` 本地 928 / 干净 905 · `77ff788` 本地 955 / 干净 932 —— **两次都差 23，两边同步增长**。**这比单个数字更有说服力**：它说明那 23 项确实全部来自 `extra-proxies/d3d12.dll`，而不是某个随时间漂移的隐藏依赖。
 - 该文件被 `.gitignore` 排除（设计上由使用者自备），干净树里相关断言走「不存在则如实跳过」分支。**这不是隐藏的开发机依赖；但把本地数字写成通用数字是错的。**
 **★ 跳过数两边都是 10**（不再是 9）—— 因为原先一处**静默 `return;`** 的守卫（`Adopt` 的 `ProviderId`）已改为走套件的跳过机制（计数 + 打印），这是它**可见**的结果。
 
@@ -183,7 +184,7 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 
 ## 3b. 修复的断言守护状态（**不写成「已覆盖」**）
 
-**「有回归断言」与「断言真的能失败」是两件事。** 对每条新增断言都做了**回退验证**（临时回退修复 → 确认断言变红 → 恢复），**累计 17 次，16 成功 / 1 失败**（那次失败恰恰证明了回退验证的必要：**第一版 workflow 层断言回退后仍全绿，它守不住任何东西，已改到 Executor 层**）。
+**「有回归断言」与「断言真的能失败」是两件事。** 对每条新增断言都做了**回退验证**（临时回退修复 → 确认断言变红 → 恢复），**累计 25 次**（其中审查者做了 1 次：`Adopt` 写回占位符 ⇒ 971/2/10，红的两条正是「空串」与「不是占位符」）—— **24 次成功 / 1 失败**（那次失败恰恰证明了回退验证的必要：**第一版 workflow 层断言回退后仍全绿，它守不住任何东西，已改到 Executor 层**）。
 
 | 修复 | 回退后的结果 | 状态 |
 |---|---|---|
@@ -274,14 +275,14 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 | 完成条件 | 状态 |
 |---|---|
 | Build PASS | ✅ 0 错误 / 0 警告 |
-| Harness PASS | ✅ 本地 **955**/0/10 · **干净 clone 932**/0/10（**均实测于 `77ff788`**，差 **23** 全部来自 `extra-proxies/d3d12.dll`） |
+| Harness PASS | ✅ 本地 **973**/0/10（`1dbd2fd`）· **干净 clone 932**/0/10（`77ff788`，**§23 会重测**），差 **23** 全部来自 `extra-proxies/d3d12.dll`） |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
 | **Independent Code Review PASS** | **[待 Pass G]** |
 | No Known P0 | ✅ Pass A 的 P0 已修 + 回归断言 |
 | No Known P1 | ✅ Pass A 的 4 条 P1 已修 + 回归断言 |
 | Documentation Claims Match Code | ✅ §22 审计的 5 条过时陈述已在白板与报告中更正 |
-| Packaging PASS | ✅ 两次全新 clone 各跑一次打包：`exit=0`、EXE 63.0 MB + ZIP 57.7 MB |
+| Packaging PASS | ✅ **主工作区与干净 clone 各跑一次**：`PACK_EXIT=0`、EXE 63.0 MB + ZIP 57.7 MB（**`77ff788` 与 `1dbd2fd`**）|
 
 **DRS + Transaction Remediation: [待 Pass G 结果后填写]**
 
