@@ -613,7 +613,8 @@ public partial class MainWindow : Window
             : "传输进度显示在窗口底部的进度条中。已下载的 Mod 文件：\n" + string.Join("\n", payloads);
 
         DiagnosticsSummary.Text = $"日志位于窗口底部。兼容性数据库与证据规则见 docs/COMPATIBILITY.md；" +
-                                  "数据库当前为空，因此没有任何条目达到 Project Verified。\n" +
+                                  "启动时会读取你已有的兼容性记录并用于判定，**只有它为空时**才会出现" +
+                                  "「没有任何条目达到 Project Verified」的情况。\n" +
                                   $"已登记游戏 {games.Count} 个，其中 {deployed.Count} 个有部署记录。";
 
         SettingsSummary.Text = "语言与主题在上方工具栏；代理入口、图形 API 与 NVIDIA Profile 相关设置" +
