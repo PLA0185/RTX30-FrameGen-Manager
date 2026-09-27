@@ -41,6 +41,16 @@ public sealed class OpResult
     /// <para><b>触发面不小</b>：进入事务后、第一个游戏目录写入之前只写 `%RestoreRoot%` 下的快照 ——
     /// 磁盘满、杀软锁、源 DLL 被独占、目标 DLL 被别的进程加载，都会走这条「catch 自回滚」的路径。
     /// 而「改设置后重新部署」正好落在它上面。</para>
+    ///
+    /// <para><b>⚠️ 当前没有任何读取者（Pass D 核实）。</b>写入处只有 <c>Deploy</c> 的收尾
+    /// （<c>RollbackHandled = fullyUndone</c>），而调用方 <c>InstallPlanExecutor</c> **目前只用
+    /// <see cref="FilesWritten"/> 就够了** —— 因为 <c>Deploy</c> 自回滚成功时会把 <c>FilesWritten</c>
+    /// 一并收回，所以「写没写过」这一个问题的答案已经够调用方决定要不要再回滚一次。</para>
+    ///
+    /// <para><b>它仍然保留，是因为它回答的是另一个问题</b>（「我们自己收尾成功了吗」），
+    /// 而那个问题在**回滚失败**时与「要不要回滚」分道扬镳：将来若有调用方需要区分
+    /// 「已收尾」与「收尾失败、现场还在」，就得靠它。**在那之前它是「零消费者的公开声明」，
+    /// 如实记在报告 §5 里，而不是为了消除这个标注去硬接一个读取者** —— 那会为了让统计好看而加代码。</para>
     /// </summary>
     public bool RollbackHandled { get; set; }
 
