@@ -645,7 +645,7 @@ public partial class MainWindow : Window
 
         var source = new ModSource(existing);
         ModSourceText.Text = existing;
-        ModSourceBadgeText.Text = source.IsValid ? Loc.T("Toolbar.ModReady", source.Version) : Loc.T("Toolbar.ModIncomplete");
+        ModSourceBadgeText.Text = source.IsValid ? Loc.T("Toolbar.ModReady", source.DisplayVersion) : Loc.T("Toolbar.ModIncomplete");
         _modSourceValid = source.IsValid;
         ColorFromCode();
         ModSourceText.ToolTip = source.IsValid

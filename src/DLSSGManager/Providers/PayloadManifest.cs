@@ -179,15 +179,15 @@ public static class PayloadPaths
     {
         if (string.IsNullOrWhiteSpace(value)) return "_unknown";
 
-        // **本地化占位符不是版本名。** `ModSource.Version` 在 payload 读不到版本标签时会回落到
-        // `Loc.T("ModSource.UnknownVersion")` —— 那是一句**给用户看的中文**。它被当成版本回传后，
-        // payload 目录就变成了 `payloads/mfg-smooth/未知`：**一个中文目录名，而且它会随界面语言变化**
-        // （换到英文就变成另一个目录，于是同一个游戏在两个语言下用两份 payload）。
+        // **本地化占位符不是版本名。**
         //
-        // 判据用**形状**而不是**值匹配**：版本号不会含非 ASCII 字符。
-        //   · 值匹配要跟着语言表走，加一种语言就漏一次；
-        //   · 形状判据与语言无关，而且顺带挡住了任何被本地化的字符串。
-        // 真正含非 ASCII 的版本号不存在于这个生态（上游用的是 `2.9.0-R1` 这类形式）。
+        // ⚠️ **这条形状判据只挡住非 ASCII 的那一半，而且它守的不是根因。** 根因已修在来源处：
+        // `ModSource.Version` 读不到标签时现在返回**空串**（而不是 `Loc.T(...)`），于是这里走
+        // `IsNullOrWhiteSpace` 分支落到 `_unknown`，**两种语言收敛到同一个表示**。
+        //
+        // 形状判据作为**第二道防线**保留：任何别的调用方若把本地化文本喂进来（中文含非 ASCII），
+        // 它仍然挡得住。但**不要再把「挡住中文」当成修好了** —— 英文的 `"Unknown"` 全是 ASCII，
+        // 这道judge拦不住它（Pass D 报出）。
         if (value.Any(c => c > 127)) return "_unknown";
 
         var invalid = Path.GetInvalidFileNameChars();

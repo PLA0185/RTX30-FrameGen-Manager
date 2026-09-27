@@ -47,7 +47,30 @@ public sealed class ModSource
 
     public string Root { get; }
     public bool IsValid { get; }
-    public string Version { get; } = Loc.T("ModSource.UnknownVersion");
+
+    /// <summary>
+    /// The payload's release label, or <b>the empty string when it could not be read</b>.
+    ///
+    /// <para><b>它绝不返回「给用户看的句子」。</b>这个值会流进**持久化数据**：
+    /// 部署记录的 <c>ModVersion</c>（<c>DeploymentService</c>）、payload 目录名
+    /// （<c>PayloadPaths.For</c>）以及兼容性矩阵与配方里的 <c>ProviderVersion</c> 键。
+    /// 它曾经在读不到标签时回落到 <c>Loc.T("ModSource.UnknownVersion")</c> —— **那是一句本地化文案**，
+    /// 于是：① 目录名变成 <c>payloads/mfg-smooth/未知</c>（中文）/ <c>.../Unknown</c>（英文）；
+    /// ② **两种语言产出两个不同的键**，同一台机器切换语言就会换目录、换矩阵键；
+    /// ③ 第二次安装时该串被回灌成「已解析的版本」，于是目录与首次不同 ⇒ **必须重新下载整个 payload**。</para>
+    ///
+    /// <para>判据：**空串表示「不知道」，本地化文案表示「我编了一个看起来像版本的东西」** ——
+    /// 下游对前者有明确处理（<c>PayloadPaths</c> 落到 <c>_unknown</c>），对后者没有也不可能有。
+    /// 需要给用户显示时，由显示层在拿到空串时自己决定说什么（见 <see cref="HasKnownVersion"/>）。</para>
+    /// </summary>
+    public string Version { get; } = "";
+
+    /// <summary>True when <see cref="Version"/> is a real release label rather than "unknown".</summary>
+    public bool HasKnownVersion => !string.IsNullOrWhiteSpace(Version);
+
+    /// <summary>What the UI should show for the version — a real label, or a localised "unknown".</summary>
+    public string DisplayVersion => HasKnownVersion ? Version : Loc.T("ModSource.UnknownVersion");
+
     public List<string> Proxies { get; } = new();
     public string ValidationMessage { get; } = "";
 
@@ -95,7 +118,9 @@ public sealed class ModSource
                 : Loc.T("ModSource.NoDll");
 
         IsValid = (Proxies.Count > 0 || ImportedProxies.Count > 0) && File.Exists(iniPath);
-        if (IsValid) Version = ReadReleaseLabel(root) ?? Loc.T("ModSource.UnknownVersion");
+        // **读不到标签就留空** —— 不要在这里回落到本地化文案（见 `Version` 的文档）。
+        // 显示层要说话时用 `DisplayVersion`，那是「给人看」的；`Version` 是「给数据用」的。
+        if (IsValid) Version = ReadReleaseLabel(root) ?? "";
     }
 
     /// <summary>

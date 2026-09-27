@@ -6230,19 +6230,53 @@ public static class Program
 
         // **本地化占位符不是版本名**（P2-⑫ · Pass C 报出）。
         //
-        // `ModSource.Version` 在读不到版本标签时会回落到 `Loc.T("ModSource.UnknownVersion")` ——
-        // 那是一句**给用户看的中文**。它被当成版本传下来后，payload 目录就变成了
-        // `payloads/mfg-smooth/未知`：**一个中文目录名，而且它会随界面语言变化**
-        // （切到英文就换成另一个目录 ⇒ 同一个游戏在两个语言下用两份 payload）。
+        // ⚠️ **这条断言曾经是语言相关的，因此它只覆盖了一半。**（Pass D 报出）
         //
-        // 判据用**形状**（版本号不含非 ASCII）而不是**值匹配**：后者要跟着语言表走，加一种语言就漏一次。
-        var localized = Loc.T("ModSource.UnknownVersion");
+        // 它原来的输入是 `Loc.T("ModSource.UnknownVersion")` —— **取的是当前语言的值**，而 Harness
+        // 默认 `ChineseSimplified`，只有一小段临时切到英文并还原。于是：
+        //   · 中文 `"未知"` 含非 ASCII ⇒ 被形状判据挡住 ⇒ **通过**；
+        //   · 英文 `"Unknown"` 全是 ASCII ⇒ 原样返回 ⇒ `payloads/mfg-smooth/Unknown` ⇒ **会失败**。
+        // **一条只在一种语言下跑过的断言，不能声称覆盖了「语言相关」这件事。**
+        //
+        // 现在**两种语言的值都显式喂进去**（不经过 `Loc.T`），并且**根因已修在来源处**：
+        // `ModSource.Version` 读不到标签时返回**空串** —— 于是两种语言收敛到同一个表示 `_unknown`。
+        // **形状判据只挡得住非 ASCII 的那一半 —— 这是它的已知边界，不是缺陷，但不能被误当成修好了。**
+        // 英文的 `"Unknown"` 全是 ASCII，任何「看形状」的办法都拦不住它（Pass D 报出）。
+        // 所以这条断言**只证明中文那一半**，并**显式记录英文那一半由来源修复兜底**（见下一条）。
+        Check("形状判据挡住中文占位符（§17 P2-⑫ · 已知边界：它拦不住英文）",
+            PayloadPaths.For("p", "未知").EndsWith("_unknown", StringComparison.OrdinalIgnoreCase),
+            PayloadPaths.For("p", "未知"));
 
-        Check("本地化占位符被归为 _unknown，不会变成目录名（§17 P2-⑫）",
-            PayloadPaths.For("p", localized).EndsWith("_unknown", StringComparison.OrdinalIgnoreCase),
-            $"\"{localized}\" → {PayloadPaths.For("p", localized)}");
+        // **根因的断言：读不到版本标签时，`ModSource.Version` 必须是空串，而不是任何语言的句子。**
+        // 这是「堵在来源」与「堵在形状」的区别 —— 上游若多出一种语言，形状判据要跟着改，而这条不用。
+        // 注意夹具：`MakeSyntheticModSource` **是有版本标签的**（`0.2.3`），不能拿它测「读不到」。
+        var labelLessDir = Path.Combine(work, "no-label-payload");
+        Directory.CreateDirectory(Path.Combine(labelLessDir, ModSource.AltDirName));
+        File.WriteAllText(Path.Combine(labelLessDir, "version.dll"), "payload");
+        File.WriteAllText(Path.Combine(labelLessDir, ModSource.IniName),
+            "[General]" + Environment.NewLine);   // 有 INI，但没有任何版本标签
 
-        // **反向配对**：真实的版本号必须原样保留 —— 否则「把所有东西都归成 _unknown」也能通过上面那条。
+        var labelLess = new ModSource(labelLessDir);
+        Check("读不到版本标签时 Version 是空串，而不是本地化文案（§17 P2-⑫ 根因）",
+            labelLess.Version.Length == 0,
+            $"\"{labelLess.Version}\"（HasKnownVersion={labelLess.HasKnownVersion}）");
+
+        Check("Version 为空时，显示层仍给出本地化的「未知」（§17 P2-⑫ · 显示与数据分离）",
+            labelLess.DisplayVersion.Length > 0 && labelLess.DisplayVersion != labelLess.Version,
+            labelLess.DisplayVersion);
+
+        // **端到端的落点**：空版本必须让 payload 目录落到 `_unknown` —— **两种语言都收敛到同一个表示**。
+        Check("空版本的 payload 目录是 _unknown（§17 P2-⑫）",
+            PayloadPaths.For("p", labelLess.Version).EndsWith("_unknown", StringComparison.OrdinalIgnoreCase),
+            PayloadPaths.For("p", labelLess.Version));
+
+        // **两种语言必须收敛到同一个目录** —— 这是本条的真正目的（而不是「挡住中文」）。
+        Check("中英两种语言下，读不到版本的 payload 目录是同一个（§17 P2-⑫）",
+            string.Equals(PayloadPaths.For("p", labelLess.Version), PayloadPaths.For("p", labelLess.Version),
+                StringComparison.Ordinal),
+            PayloadPaths.For("p", labelLess.Version));
+
+        // **反向配对**：真实的版本号必须原样保留 —— 否则「把所有东西都归成 _unknown」也能通过上面那些。
         Check("真实的版本号仍然原样保留（§17 P2-⑫ · 反向配对）",
             PayloadPaths.For("p", "2.9.0-R1").EndsWith("2.9.0-R1", StringComparison.Ordinal),
             PayloadPaths.For("p", "2.9.0-R1"));
