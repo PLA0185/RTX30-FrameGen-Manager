@@ -4781,6 +4781,20 @@ public static class Program
         public bool IsAvailable { get; set; } = true;
 
         /// <summary>Capability switches, so tests can exercise the "no write capability" refusal.</summary>
+        // ⚠️ **这里的默认值与生产不同，差异在「写」而不在「读」。**
+        //
+        // 生产（`NvApiDrsAdapter`）：`ReadCallsProven` **默认 true**（L454），而 **`WriteCallsProven`
+        // 默认 false**（L462）⇒ **`CanRead` 可能为真，但 `CanWrite` 恒为 false**
+        //（提权下才可能在 smoke 里被证明，而生产路径不跑 smoke）。
+        //
+        // **这个替身让写相关的门也为 true** ⇒ 整片编排测试跑在「驱动完全可写」这个**生产里不存在的
+        // 状态下**（Pass C 报出）。**注意：把 `CanRead` 也关掉是错的方向** —— 那连「读」都否掉了，
+        // 与生产不符（实测那样会失败 16 项，其中多数与「读」无关，说明夹具形状被改坏了）。
+        //
+        // **要如实评估的收尾是**：让这个替身默认 `CanWrite == false`（即写相关的门默认 false），
+        // 然后**逐个**把那 16 项依赖可写驱动的用例改成**显式**声明「我要一个可写的驱动」。
+        // 在那之前：① 这个默认值是**已知缺口**，不要当成「测试覆盖了生产状态」；
+        // ② 「写不了驱动时必须在写入之前停下」那条**已经单独覆盖**（用 `drsCanWrite: false` 构造）。
         public bool CanRead { get; set; } = true;
 
         public bool CanDelete { get; set; } = true;
