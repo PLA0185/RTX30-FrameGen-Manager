@@ -561,6 +561,14 @@ public static class InstallPlanner
         Add(ModSource.IniName, DeploymentFileSource.Generated, null, "config");
 
         // 选定值可能是 payload 里没有的（例如本地导入的入口），所以单独补。
+        //
+        // **`SourcePath` 在这里是 `null`，而不是 `chosen`。** 两者含义完全不同：
+        //   · 正常分支（上面那条）的 `SourcePath` 是 **payload 里的真实相对路径**（形如
+        //     `Manual/Version/version.dll`）；
+        //   · 这里是**回退** —— 计划在 payload 存在之前就建好了，我们**并不知道**它对应 payload 里的哪个文件。
+        // 曾经这里填 `chosen`（**目标名**），于是工作流拿 `version.dll` 去 payload 清单里做**精确路径匹配**
+        // ⇒ 每次都判「payload 缺少计划要求的文件：version.dll」⇒ **安装前就失败，一个字节都没写**。
+        // 填 `null` 是诚实表达「源未知」；比对侧据此改用**文件名**匹配（见 `SmoothMotionWorkflow` 的核对那段）。
         foreach (var chosen in new[] { proxyChoice, asiChoice })
         {
             if (chosen is null) continue;
@@ -569,7 +577,7 @@ public static class InstallPlanner
             if (result.Any(f => string.Equals(f.TargetRelativePath, chosen, StringComparison.OrdinalIgnoreCase)))
                 continue;
 
-            Add(chosen, DeploymentFileSource.Payload, chosen, "proxy");
+            Add(chosen, DeploymentFileSource.Payload, null, "proxy");
         }
 
         return result;

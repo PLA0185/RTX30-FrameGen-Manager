@@ -509,12 +509,26 @@ public sealed class SmoothMotionWorkflow
             {
                 var expectedFromPayload = plan.PlannedFiles
                     .Where(f => f.SourceKind == DeploymentFileSource.Payload)
-                    .Select(f => f.SourcePath ?? f.TargetRelativePath)
-                    .Where(f => !string.IsNullOrWhiteSpace(f))
                     .ToList();
 
+                // **匹配规则取决于 `SourcePath` 是否已知。**
+                //
+                // 正常分支给的是 payload 里的**真实相对路径**（`Manual/Version/version.dll`）⇒ 精确匹配；
+                // **回退分支给的是 `null`**（计划在 payload 存在之前就建好了，我们并不知道它对应哪个文件）
+                // ⇒ 按**文件名**匹配 —— 入口名就是文件名（`ModSource.ResolveDllPath` 用入口名决定它落在
+                // 根目录还是 `altnative/`）。
+                //
+                // 曾经这里统一用 `SourcePath ?? TargetRelativePath` 做**精确路径**匹配 ⇒ 回退计划拿
+                // **目标名**去比**相对路径**，每次都判「payload 缺少计划要求的文件：version.dll」
+                // ⇒ **安装前就失败，一个字节都没写**（真实 MFG 的**首次**运行必现：此时还没有缓存清单，
+                // 走的正是回退分支）。
                 var absent = expectedFromPayload
-                    .Where(f => !downloaded.Contains(f))
+                    .Where(f => f.SourcePath is not null
+                        ? !downloaded.Contains(f.SourcePath)
+                        : !downloaded.Files.Any(d => string.Equals(
+                            Path.GetFileName(d.RelativePath), f.TargetRelativePath,
+                            StringComparison.OrdinalIgnoreCase)))
+                    .Select(f => f.SourcePath ?? f.TargetRelativePath)
                     .ToList();
 
                 steps.Add(new WorkflowStep("核对 payload 清单", absent.Count == 0,
