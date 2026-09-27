@@ -907,16 +907,25 @@ public sealed class SmoothMotionWorkflow
         // Recorded here rather than on the success path alone, so a failed attempt is remembered too: knowing
         // that a combination did not work is exactly what stops the next attempt from repeating it.
         //
-        // **但「记录」的前提是「真的尝试过」。** 三种情形不算：
+        // **但「记录」的前提是「真的尝试过」。** 判据是**碰过磁盘**，而不只是看 `outcome`：
         //   · `PreviewOnly` —— 用户只是想看一眼，什么都没做；
         //   · `NeedsConfirmation` —— 我们还停在等用户决定，谈不上成败；
-        //   · `Blocked` —— **计划或能力根本不允许执行**（例如写不了驱动、API 未知），一次磁盘都没碰。
-        // 三者都会走到这个 `Finish`，把它们记下来会让 `RankFor` 在将来把**从未发生的运行**当成历史证据：
-        // 一次批量预览会变成一批「成功过」的记忆，而一次「驱动写不了」的失败会让这个组合被记成
-        // 「试过但没成」——**而它其实一次都没试**。
-        if (!request.PreviewOnly
+        //   · `Blocked` —— **计划或能力根本不允许执行**（例如写不了驱动、API 未知）；
+        //   · **`Failed` 且一个文件都没写** —— 例如「payload 目录不存在」「下载失败」「payload 清单
+        //     核对不上」：这些失败**发生在写第一个字节之前**，与「试过但没成」是两件事。
+        //
+        // ⚠️ **最后一条是 Pass D 报出后补上的。** 原来的判据只看 `outcome`，而**注释说的是「真的尝试过」**
+        // —— **判据比它声称的窄**。后果：**一次网络失败会被记成「这个组合试过但没成」**，
+        // 于是 `RankFor` 会把一次**没碰过磁盘**的失败当成历史证据，下次可能因此避开一个其实没试过的组合。
+        //
+        // **判据用的是 `filesWritten`（真实结果），不是「有没有调用过写入」** —— 与
+        // `OpResult.FilesWritten` 同一口径：**碰过磁盘才算试过。**
+        var actuallyAttempted = !request.PreviewOnly
             && outcome != WorkflowOutcome.NeedsConfirmation
-            && outcome != WorkflowOutcome.Blocked)
+            && outcome != WorkflowOutcome.Blocked
+            && (outcome != WorkflowOutcome.Failed || filesWritten);
+
+        if (actuallyAttempted)
             RecordOutcome(request, report, succeeded: outcome == WorkflowOutcome.Succeeded,
                 providerVersion: plan.ProviderVersion ?? "");
 

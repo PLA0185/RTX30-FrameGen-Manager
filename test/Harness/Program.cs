@@ -5820,6 +5820,24 @@ public static class Program
         Check("被 Blocked 的运行不留下配方记录（§17 P2-② · 从未发生的运行不是历史证据）",
             blockedRecipes.Count == 0, "记录数 " + blockedRecipes.Count);
 
+        // ---- P2-5：**「Failed」不等于「试过」**（判据是「碰过磁盘」）----
+        //
+        // ⚠️ **这里没有断言，原因是夹具造不出那个场景，而不是它不重要。**
+        //
+        // 修复本身已落地（`Finish` 里 `actuallyAttempted` 现在要求 `Failed` 时 `filesWritten` 为真）。
+        // 但要**断言**它，需要一次**零写入的 `Failed`**：Pass D 点名的三个返回点分别是
+        // 「payload 目录不存在」「下载失败」「payload 清单核对不上」—— **它们全在真实 `Deploy`
+        // 内部**，而 workflow 级测试用的是 `FakeWorkflowDetector` + 替身 provider：
+        //   · 我试过「让 payload 目录不存在」，结果那次运行 **`Succeeded`**（替身不检查目录），
+        //     它反而真的写下了文件、并污染了后续测试（`version.dll 已被其他 Mod 使用`）—— **已撤销**；
+        //   · 走 `:582`（清单核对）需要真实 provider 的 `VerifyPayload` 参与，替身给不出。
+        //
+        // **能覆盖它的是 Executor 层**：`RecordingProvider { FailInstallWithoutWriting = true }`
+        // 已经能造出「Install 失败且零写入」（见本节前面那条 §17 P1-2 断言）。**要在 workflow 层
+        // 覆盖 `Finish` 的这条判据，需要一个能注入该 provider 的 workflow 夹具** —— 那是独立的一次改动。
+        //
+        // **在这之前如实记入报告 §3b 的「无断言守护」清单**，不写成已覆盖。
+
         // ---- 1. blocked: unknown API writes nothing ----
         var blockedParts = Build(work, "wfBlocked");
         var blockedDir = Path.Combine(work, "wf-blocked-payload");
