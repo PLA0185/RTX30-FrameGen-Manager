@@ -1857,7 +1857,14 @@ public static class Program
             false => "未开启",
             null => "平台未提供该设置",
         }));
-        Check("HAGS 状态读取不抛异常", true);
+        // ⚠️ **这里此前是 `Check("HAGS 状态读取不抛异常", true);`** —— 恒真断言（Pass M 的 P1-①）。
+        // **我第一次修它时又写了一个恒真断言**（`hags is null or true or false`），
+        // 被编译器当场抓到：`warning CS8794: 类型"bool?"的表达式始终与提供的模式匹配`
+        // —— **`bool?` 的值域就是那三个，所以那个模式必然匹配**。
+        // **⇒ 这条断言本质上无法写成可失败的**：类型决定了它只有三种取值，而三种都合法。
+        // 「读取不抛异常」这件事**已由「能走到这里」证明**（真抛异常时 `Main` 的 try/catch 记 `_fail`），
+        // 所以这里**不该有断言**，只留上面那行 `Console.WriteLine`。
+        // **★ 判据：「换成能失败的断言」必须能说出【它在什么输入下会失败】—— 说不出，就不要写。**
 
         // Wording must stay useful for the families that need special handling.
         Check("RTX 40 系提示无需本 Mod",
@@ -2609,7 +2616,14 @@ public static class Program
 
         var steamLibs = Detection.SteamLibraries().ToList();
         Console.WriteLine("      检测到 Steam 库: " + (steamLibs.Count == 0 ? "(无)" : string.Join(" | ", steamLibs)));
-        Check("Steam 库枚举未抛异常", true);
+        // ⚠️ **这里此前是 `Check("Steam 库枚举未抛异常", true);`** —— 恒真断言（Pass M 的 P1-①）。
+        // **而且它是冗余的**：上面那行调用**本身**就会在抛异常时让测试中止
+        // （`Main` 的 try/catch 会 `_fail++`），所以「未抛异常」**已由「能走到这里」证明**，
+        // 再断言一次不增加任何信息。**⇒ 删掉。**
+        // 将来若要断言枚举结果，应断言**结果的性质**（例如「无重复路径」），而不是断言一个字面量。
+        Check("Steam 库枚举结果没有重复路径",
+            steamLibs.Distinct(StringComparer.OrdinalIgnoreCase).Count() == steamLibs.Count,
+            $"共 {steamLibs.Count} 条");
     }
 
     private static void TestModSourceLocator(string modRoot, string work)
@@ -4142,7 +4156,11 @@ public static class Program
             ReleaseVersion.Compare("smfix", "0.3.5") == VersionOrder.Unordered);
         Check("数字标签正常比较", ReleaseVersion.Compare("0.3.5", "0.2.4") == VersionOrder.Greater);
         Check("无序值不判为更新", !ReleaseVersion.IsNewer("smfix", "0.3.5"));
-        Check("列表顺序不是版本顺序（乱序输入仍取到最大）", true); // 由下面的服务级断言覆盖
+        // ⚠️ **这里此前是 `Check("列表顺序不是版本顺序（乱序输入仍取到最大）", true);`** ——
+        // 恒真断言（Pass M 的 P1-①），**而它自己的注释就写着「由下面的服务级断言覆盖」**。
+        // **⇒ 删掉。** 它声称的那件事由下面 `unorderedList` + `ReleaseFetchResult` 的服务级断言覆盖；
+        // 保留一条永真的占位只会让通过数虚增 1。**若将来这条服务级覆盖被删，应在同一处补真断言，
+        // 而不是留一条 `true`。**
 
         // ---- 32.2 / 32.3 Latest Available / Compatible + Pin / Hold ----
         Section("更新系统：版本决策与 Pin/Hold（Stage 4）");
@@ -4228,7 +4246,22 @@ public static class Program
         var broke = false;
         try { brokenCache.Load(); } catch { broke = true; }
         Check("损坏的缓存不影响启动", !broke);
-        Check("损坏缓存后仍可写入", true);
+        // ⚠️ **这里此前是 `Check("损坏缓存后仍可写入", true);`** —— 恒真断言（Pass M 的 P1-①）：
+        // 它**声称**「损坏的缓存被读之后仍能写入」，而实际上**没有任何代码去写过**。
+        // ⇒ 改成**真的走一次写入路径**（`Put`），并断言**落盘内容可被重新读回**。
+        // **这才检验了它标题声称的那件事**（损坏缓存不该把后续写入也弄坏）。
+        var afterBroken = new ReleaseCache(brokenPath, clock.Read);
+        afterBroken.Load();                                  // 先读损坏的文件（不应抛）
+        afterBroken.Put("k", new[] { MakeRelease("0.3.5", 1) });
+
+        var reread = new ReleaseCache(brokenPath, clock.Read);
+        var rereadOk = true;
+        try { reread.Load(); } catch { rereadOk = false; }
+
+        var written = File.ReadAllText(brokenPath);
+        Check("损坏缓存被读之后仍可写入，且写出的内容可读回",
+            rereadOk && written.Contains("0.3.5", StringComparison.Ordinal),
+            $"可读回={rereadOk} · 落盘 {written.Length} 字节");
 
         Check("同 Tag 不同 Release ID 判为已失效",
             ReleaseCache.IsStaleIdentity(
