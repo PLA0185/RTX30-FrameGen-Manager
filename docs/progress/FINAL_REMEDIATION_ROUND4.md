@@ -1,4 +1,4 @@
-﻿# 第四轮 · 自主闭环整改报告（§28）
+# 第四轮 · 自主闭环整改报告（§28）
 
 > **状态：草稿，等待新一轮审查（Pass J）结果填入。** 标 `[待 Pass J]` 的位置在审查返回后更新。
 >
@@ -43,8 +43,8 @@
 | 项目 | 结果 |
 |---|---|
 | `build -c Release --no-incremental` | **0 错误 / 0 警告**（`49a028d`） |
-| Harness（**本地**，含 `extra-proxies/d3d12.dll`） | **977 通过 / 0 失败 / 10 跳过**（`0f12de1`） |
-| Harness（**干净 clone**，无 `d3d12.dll`） | **946 通过 / 0 失败 / 10 跳过**（`54ef370`） |
+| Harness（**本地**，含 `extra-proxies/d3d12.dll`） | **975 通过 / 0 失败 / 10 跳过**（`d4f6ba4`） |
+| Harness（**干净 clone**，无 `d3d12.dll`、无 `mod/`） | **956 通过 / 0 失败 / 13 跳过**（`d4f6ba4`） |
 | 打包脚本 `scripts/package-release.ps1` | **`EXIT=0`** —— EXE **63.0 MB** · ZIP **57.7 MB** · SHA256SUMS（`1dbd2fd`） |
 | `--nvapi-smoke --loop` | **200 次真实读取，驱动被触达 200/200，异常 0** |
 | `--nvapi-smoke` | A1–A4 PASS · B1 ABI 层 PASS · B2 NOT_FOUND · C/D NOT_RUN |
@@ -55,9 +55,9 @@
 **★ 口径说明（必须写进结论里）**：
 - **本节的每一行都单独标注了测量点，但它们不是同一次测的** —— 本表是**跨轮次拼起来**的：本地 Harness 实测于 `1dbd2fd`，干净 clone 实测于更早的 `77ff788`（**其后未复测**，因为那之后又改过若干处），打包脚本实测于 `1dbd2fd`。
 - **干净 clone 的测量方式**（「干净」这个前提必须确认，不确认就等于没测）：`git clone --no-hardlinks` 到临时目录 → 确认 `extra-proxies\d3d12.dll` **不存在** → `build --no-incremental` **0 错误 / 0 警告** → Harness **932 通过 / 0 失败 / 10 跳过**。
-- **差值不是常数，它会随「条件夹具」的断言数增长**：`ab6dff8` 差 23（928/905）· `77ff788` 差 23（955/932）· **`54ef370` 差 27（973/946）**。第三次的 **+4 恰好等于 `TestAdoptRecordsProvider` 里新增的断言数**（那 4 条依赖 `extra-proxies/d3d12.dll`，干净 clone 上整段跳过）。**⇒ 差值本身也是证据**：它精确地等于「只在有该文件时才会跑的那些断言」。
+- **差值不是常数，它会随「条件夹具」的断言数增长**：`ab6dff8` 差 23（928/905）· `77ff788` 差 23（955/932）· **`d4f6ba4` 差 19（975/956）**。**⇒ 差值本身也是证据**：它等于「只在有该文件时才会跑的那些断言」—— 而它**随条件夹具的增减而变**，所以**每次改动后必须重测，不能沿用**。
 - 该文件被 `.gitignore` 排除（设计上由使用者自备），干净树里相关断言走「不存在则如实跳过」分支。**这不是隐藏的开发机依赖；但把本地数字写成通用数字是错的。**
-**★ 跳过数两边都是 10**（不再是 9）—— 因为原先一处**静默 `return;`** 的守卫（`Adopt` 的 `ProviderId`）已改为走套件的跳过机制（计数 + 打印），这是它**可见**的结果。
+**★ 跳过数：本地 10 · 干净 clone 13。** 这里此前写着「两边都是 10，因为静默 `return` 已改为走跳过机制」—— **那句话已被 Pass J 实测证伪，而且它用错了证据**（当时干净 clone 其实是 11，现在 13）。更糟的是**它把「静默 return 已清」当成了结论，而事实上还有两处**（`Program.cs` 的 `TestCommunityBuildRecognition` 与 `TestHandInstalledExtra`）：它们**既不计 `_skipped`、也不打印 `[跳过]`**，于是 **20 条断言在干净 clone 上无声消失**（其中 7 条**完全不依赖**那个文件）。**那两处已在本轮修好**（改成 `_skipped++` + `[跳过]` 行，并把不依赖该文件的 7 条断言移出 `return` 之前）；同时**删掉了两条恒真断言**（`Check(…, true, …)`），所以本地通过数从 977 **降到** 975 —— **那是正确的方向**。
 
 ---
 
@@ -333,7 +333,10 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 5. **运行时 `CanWrite` 仍为 `false`** —— 三个能力门是 `internal static` 进程内状态：默认 `false`、每次启动重置、生产路径不跑 smoke。**提权路径已被真实证明，但生产运行不会自动获得该状态。**（**已由「写入前 Blocked」妥善处理**：做不到就不动磁盘，而不是装完再删。）
 6. **`P2-③` 的「写」那一半未接线** —— 矩阵**不会自动积累**兼容性记录（`Add`/`Persist` 在 `src/` 无调用者）。这是**有意留待产品决策**：它会改变产品行为（用户会因此少看到确认框），且需要先定义**什么算一次可靠的记录**。**「读」那一半已接线并有断言守护。**
 7. **零消费者/零生产者声明**（如实标注，不写成「已生效」）：`NvApiStatus.RequiresElevation` · `IsNameCollision` · `ProviderRegistry.AllHealth()` · `DeploymentFileSource.ExistingReusable` · `ProviderMetadata` 的 8 个字段 · `OpResult.RollbackHandled`（它在 `src/` 只有写入、没有读取 —— 详见该属性的文档）。
-   **「死键」也属于这一类**：`Adopt.AdoptedSuffix` · `List.NewGame` · `Scan.SourceFolder` · **`Gpu.NotFound`**（P2-1 之后没有消费者）· **`Adopt.ManualVersion`**（Pass H 报出：全仓零引用、连注释都没有） —— **各有 2 处语言表定义（zh + en）+ 1 处代码引用，而那 1 处全都在注释里**（我修它们时留下的解释文字）。**多语言审计（`LocalizationAudit`）只查「用到但未定义」，不查「定义了但没用」** ⇒ 它们会一直留着，且**看起来像在用**（grep 有命中）。**无害，保留**（删掉要同时改两个语言表，而审计要求两种语言的键集完全一致），但**必须记在这里**，否则下一位读者会以为它们是被使用的。
+   **「死键」也属于这一类。** Pass J 逐键扫过全部 **416** 个键（排除两个语言表本身）后的准确清单是：**21 个键零引用** —— `Common.Ok` · `Common.Yes` · `Common.No` · `Common.Unknown` · `Deploy.Settings` · `Deploy.AllProxiesTaken` · `Restore.RemoveLogsOption` · `Adopt.ManualVersion` · `Batch.Item` · `Status.DeployedDetail` · `Status.Summary` · `Status.SummaryBackups` · `Gpu.NameWithDriver` · `Fetch.PickerSingleNote` · `Fetch.Confirm` · `Fetch.ConfirmTitle` · `ModSource.IniMissingAt` · `Page.Library.Purpose` · `Page.Dashboard.NoGamesTitle` · `Page.Dashboard.NoGamesBody` · `Error.DirNotFound`；**另有 3 个只在注释里**（`Adopt.AdoptedSuffix` · `List.NewGame` · `Scan.SourceFolder`）。
+   **⚠️ 我此前把 `Gpu.NotFound` 误列进了这一条**（Pass J 的 P2-②）：它在 `test/Harness/Program.cs:1668` 是**真代码**（`Gpu.cs:496` 才是注释；`:512` 用的是**另一个键** `Gpu.NotFoundAdvice`，前缀撞名）。**死键清单本身也需要「逐键扫描」而不是「凭印象列举」** —— 我列的是我记得改过的那些。
+   **⚠️ 而且 grep 看不见全部死键**：`ModFetcher.cs:287` 有**动态构造键名**（`Loc.T($"Fetch.Note.{s.Id}")`）⇒ `Fetch.Note.*` 这 6 个键**不是死键**，只是静态搜索找不到它们 —— **「审计的盲区是另一个方向」的又一例**。
+   **无害，保留**（删掉要同时改两个语言表，而审计要求两种语言的键集完全一致），但**必须记在这里**，否则下一位读者会以为它们是被使用的。**缓解事实**：`LocalizationAudit.SourceFiles` 包含 `test/`，所以删掉任何仍在测试里引用的键会被审计抓到。
 8. **「日志干净」未核验** —— 未定位到日志文件。
 9. **真实游戏 / 视觉人工验证** —— 属 `Pending User Validation`（**§26 允许的唯一类别**）：实机 `Applied`/`Verified`、深色主题提示字色、Provider 下拉、Plan Preview、七页导航、高级折叠；以及 Ground Branch 的第一次真实 E2E。
 
@@ -362,7 +365,7 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 | 完成条件 | 状态 |
 |---|---|
 | Build PASS | ✅ 0 错误 / 0 警告 |
-| Harness PASS | ✅ 本地 **977**/0/10（`0f12de1`）· **干净 clone 待重测**（本轮 +4 条断言中有 1 条依赖 `extra-proxies`，差值必然变化 —— **收官时必须重测**，不能沿用旧的 946/27）|
+| Harness PASS | ✅ 本地 **975**/0/10 · **干净 clone 956**/0/13（**均实测于 `d4f6ba4`**），差 **19**（其中 **3** 项显式计入跳过，另 **16** 项来自不走跳过机制的条件分支）|
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
 | **Independent Code Review PASS** | **[待 Pass J]** |
