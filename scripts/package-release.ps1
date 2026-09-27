@@ -218,6 +218,12 @@ Step "替换正式产物"
 # **判据**：**「每个动作原子」不等于「一串动作原子」** —— 后者要靠「失败时能回到起点」来保证，
 # 也就是事务。这里的回滚很便宜（rename），所以没有理由不做。
 
+# ⚠️ **必须先初始化**：成功路径上 `catch` 不执行 ⇒ 后面那个 `if ($script:replaceFailure)`
+# 会读一个未定义的变量，而脚本开了严格模式 ⇒ 报
+# `The variable '$script:replaceFailure' cannot be retrieved because it has not been set.`
+# （**而且那次运行的退出码仍是 0** —— 又一次说明退出码不能当作成功的证据。）
+$script:replaceFailure = $null
+
 $artifacts = @(
     @{ Live = $StageDir;  Tmp = $StageTmp;  Old = "$StageDir.old";  Kind = 'dir'  },
     @{ Live = $ZipPath;   Tmp = $ZipTmp;    Old = "$ZipPath.old";   Kind = 'file' },
@@ -259,24 +265,69 @@ catch
     $reason = $_.Exception.Message
     Write-Warning "替换失败，正在恢复原状：$reason"
 
-    # 回滚：先撤已经放上去的新产物（它们此刻占着正式名），再把 .old 换回原名。
+    # ⚠️ **回滚本身也会失败，而它必须把「哪些撤了、哪些没撤」说清楚**（Pass H 报出）：
+    #
+    #   · 上一轮把**清理遗留 `.old`** 的两处改成了 `-ErrorAction Stop`，却**漏了这里的同类两处**
+    #     ⇒ 「脚本里已无静默删除」这个说法比实际宽。
+    #   · 更要紧的是**原来的 `throw` 写在 `catch` 块里** ⇒ 它一抛，下面的语句就**永不执行**：
+    #     原始 `$reason` 丢失、循环提前中断造成**部分回滚**、而且**没有任何一句话告诉用户
+    #     旧产物是否已恢复**。实测（Pass H 的注入）：终止错误会是
+    #     `Cannot create a file when that file already exists.` —— **与本因完全无关**。
+    #
+    # ⇒ 现在：回滚分两步各自记录结果，**在 `catch` 之外抛出**，消息里同时带上原始原因与恢复结果。
+    $undoNotes = New-Object System.Collections.ArrayList
+
+    # 第一步：撤掉已经放上去的新产物（它们此刻占着正式名）
     foreach ($a in $artifacts)
     {
         if (Test-Path $a.Tmp) { continue }        # Tmp 还在 ⇒ 它还没被放上去
         if (Test-Path $a.Live)
         {
-            if ($a.Kind -eq 'dir') { Remove-Item $a.Live -Recurse -Force -ErrorAction SilentlyContinue }
-            else { Remove-Item $a.Live -Force -ErrorAction SilentlyContinue }
+            try
+            {
+                Remove-Item $a.Live -Recurse -Force -ErrorAction Stop
+            }
+            catch
+            {
+                $leaf = Split-Path $a.Live -Leaf
+                [void]$undoNotes.Add("$leaf 未能撤下（$($_.Exception.Message)）")
+            }
         }
     }
 
+    # 第二步：把 .old 换回正式名
     for ($i = $moved.Count - 1; $i -ge 0; $i--)
     {
         $a = $moved[$i]
-        if (Test-Path $a.Old) { Rename-Item $a.Old $a.Live -ErrorAction Stop }
+        if (Test-Path $a.Old)
+        {
+            try
+            {
+                Rename-Item $a.Old $a.Live -ErrorAction Stop
+            }
+            catch
+            {
+                $leaf = Split-Path $a.Live -Leaf
+                [void]$undoNotes.Add("$leaf 未能换回（$($_.Exception.Message)）—— 它的旧版本仍在 $leaf.old")
+            }
+        }
     }
 
-    throw "替换正式产物失败，旧产物已恢复：$reason"
+    # **在 catch 之外抛出**：这样上面的语句一定执行完，且这条消息一定发得出去。
+    $rollbackState = if ($undoNotes.Count -eq 0) {
+        "旧产物已全部恢复。"
+    } else {
+        "⚠️ 恢复不完整：" + ($undoNotes -join "；") + " —— 请手工检查 artifacts 目录。"
+    }
+
+    $script:replaceFailure = "替换正式产物失败：$reason`n$rollbackState"
+}
+
+# **在 catch 之外抛出**：这样回滚的两步一定执行完、消息一定发得出去、原始原因一定保留。
+# **位置也很重要：必须在删 `.old` 之前** —— 否则会先把唯一的恢复材料删掉，再报告「恢复失败」。
+if ($script:replaceFailure)
+{
+    throw $script:replaceFailure
 }
 
 # 到这里三个都换好了 —— 才删 .old
@@ -288,7 +339,6 @@ foreach ($a in $artifacts)
 # **替换之后要重新指向正式路径** —— 临时目录已经不存在了，汇总段若仍用 `$exe` / `$ZipTmp`
 # 的旧值，`Get-Item` 会找不到文件（本脚本第一次跑新顺序时就踩到）。
 $exe = Join-Path $StageDir 'DLSSGManager.exe'
-
 # ── 9. 汇总 ───────────────────────────────────────────────────────────────
 Step "完成"
 "版本            : $Version"
