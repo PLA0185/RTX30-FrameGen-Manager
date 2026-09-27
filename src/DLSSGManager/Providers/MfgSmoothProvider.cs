@@ -398,10 +398,17 @@ public sealed class MfgSmoothProvider : IPatchProvider, IReleaseVersionResolver
 
             return canonical;
         }
-        catch
+        catch (Exception ex)
         {
             // 正规化失败就如实返回 null，让调用方沿用原目录 —— 那时 ModSource 会明确报它不兼容，
             // 而不是让一次半成品的复制变成一次错误的安装。
+            //
+            // **但要记日志**（Pass D 报出）。不记的话，「正规化失败」与「payload 本来就不兼容」
+            // 在用户看来**完全一样** —— 两条路径最终都只是「这个 Mod 用不了」。
+            // 而这条 catch 恰恰是**磁盘满 / 权限不足 / 文件被占用**最常见的落点：
+            // 那三种情况下 payload 本身是好的，用户重试一次或换个目录就能成，
+            // 但没有任何线索告诉他这一点。
+            AppPaths.Log($"MFG payload 正规化失败（沿用原目录）：{ex.GetType().Name}: {ex.Message}");
             return null;
         }
     }
