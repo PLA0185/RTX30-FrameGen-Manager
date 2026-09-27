@@ -1187,21 +1187,33 @@ public static class Program
         // is re-fetched from the network and moves on, and a stale expectation here would fail the
         // suite for a reason that has nothing to do with the manager.
         //
-        // ⚠️ **这条断言此前是恒真的**（Pass H 报出）：`Version` 现在的值域是 **`""` ∪ {真实发布标签}**，
-        // 而 `Loc.T("ModSource.UnknownVersion")` 是「未知」/「Unknown」⇒ 两边**永不可能相等** ⇒ 永远通过。
-        // 它**恰好是上一轮把 `Version` 改成空串时没有同步更新的那条守护** ——
-        // 旧语义下 `Version` 读不到就回落到那句文案，所以当时它是有意义的。
+        // ⚠️ **期望值必须【不取自实现】。** 这条断言有过两次失败（都由独立审查者报出）：
+        //   ① 最初写 `source.Version != Loc.T("ModSource.UnknownVersion")` —— `Version` 的值域是
+        //      `""` ∪ {真实标签}，与那句文案**永不可能相等** ⇒ **恒真**。
+        //   ② 我第一次修它时写 `source.Version == (ModSource.ReadVersion(ini) ?? "")` ——
+        //      而 `ReadVersion(ini)` **就是** `ReadReleaseLabel` 的**第一分支**（`ModSource.cs:132`）
+        //      ⇒ **同一个静态方法、同一个输入**，不独立：
+        //        · 横幅存在 ⇒ **恒真**
+        //        · **横幅缺失而 `.manager-version` 存在 ⇒ 必失败**（期望 `""`，实际 marker 内容）
+        //      而后者**正是真实生产环境** —— 0.3.0 起发布不再带横幅，改由下载器写 marker
+        //      （`ModFetcher.TryWriteVersionMarker`，`ModSource.cs:127-128` 的注释明说这件事）。
         //
-        // 而 `bannerVersion` 被赋值后**全函数零读取**，注释却写着「Compared against the INI's own banner」
-        // —— **那说明原本有一个 `source.Version == bannerVersion` 形式的有效比较被改没了**。
-        // （`bannerVersion` 是方法调用的返回值，所以编译器的 0 警告拦不住这种「赋值后不用」。）
-        //
-        // 现在按注释的原意写回来：**与 INI 横幅独立读出的那份比较**。
-        // 横幅读不到时为 `null`，而那时**正确的期望就是空串** —— 那正是新语义。
-        var bannerVersion = ModSource.ReadVersion(Path.Combine(modRoot, ModSource.IniName));
-        Check("版本号从 INI 横幅或版本标记解析",
-            source.Version == (bannerVersion ?? ""),
-            $"source=\"{source.Version}\" / INI 横幅=\"{bannerVersion ?? "(null)"}\"");
+        // 现在用**两条独立的观察**拼出期望：测试自己读 marker 文件，自己正则解析 INI 前 6 行的横幅。
+        // 解析规则与实现各写一遍 —— **这是刻意的重复**：测试的期望必须来自"我以为它该是什么"，
+        // 而不是"它现在算出来是什么"。
+        var markerPath = Path.Combine(modRoot, ModFetcher.VersionMarkerName);
+        var markerText = File.Exists(markerPath) ? File.ReadAllText(markerPath).Trim() : "";
+        var bannerText = "";
+        foreach (var line in File.ReadLines(Path.Combine(modRoot, ModSource.IniName)).Take(6))
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(line, @"(\d+\.\d+(?:\.\d+)?)");
+            if (m.Success) { bannerText = m.Groups[1].Value; break; }
+        }
+
+        var expectedVersion = bannerText.Length > 0 ? bannerText : markerText;
+        Check("版本号来自 INI 横幅或下载器写的 marker（两者都没有时为空）",
+            source.Version == expectedVersion,
+            $"source=\"{source.Version}\" / 横幅=\"{bannerText}\" / marker=\"{markerText}\" / 期望=\"{expectedVersion}\"");
         Check("自带的入口全部识别", source.Proxies.Count == ModSource.ProxyCandidates.Length,
             "实际: " + string.Join(",", source.Proxies));
         Check("version.dll 在根目录", File.Exists(Path.Combine(modRoot, "version.dll")));
