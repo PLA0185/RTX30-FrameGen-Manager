@@ -5589,6 +5589,33 @@ public static class Program
             noWriteResult.Evidence == SmoothMotionEvidence.None,
             $"evidence={noWriteResult.Evidence}（Installed 表示装过再回滚）");
 
+        // **`Blocked` 也不该被记成一次尝试**（P2-② · Pass C 报出）。
+        //
+        // 它连一次磁盘都没碰（本次是「写不了驱动」⇒ 写入之前就停下了）—— 把它记成「试过但没成」会让
+        // `RankFor` 基于**不存在的事实**排序：用户看到的是「这个组合失败过一次」，而它一次都没试。
+        // 这与 `PreviewOnly`（没做任何事）和 `NeedsConfirmation`（还没决定）是同一条判据：
+        // **记录的前提是「真的尝试过」。**
+        var blockedRecipes = new RecipeMemoryStore(Path.Combine(work, "recipe-blocked-memory.json"));
+        var blockedRecipeParts = Build(work, "wfBlockedRecipe", drsCanWrite: false);
+        var blockedRecipeWorkflow = new SmoothMotionWorkflow(
+            blockedRecipeParts.Detector, new NvidiaProfileService(blockedRecipeParts.Drs, () => false),
+            blockedRecipeParts.Matrix, blockedRecipes);
+
+        var blockedRecipeGame = new GameEntry { Name = "wfBlockedRecipe", RenderDir = MakeGameDir(work, "wfBlockedRecipeGame") };
+
+        var blockedRecipeResult = blockedRecipeWorkflow.RunAsync(
+            MakeRequest("wfBlockedRecipe", Path.Combine(work, "wf-blocked-recipe-payload"),
+                blockedRecipeParts.Provider, blockedRecipeGame)
+                with { ProfileSettings = new[] { SmoothMotionSettings.All[0] } },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("（前置）那次运行确实被 Blocked（§17 P2-②）",
+            blockedRecipeResult.Outcome == WorkflowOutcome.Blocked,
+            blockedRecipeResult.Outcome.ToString());
+
+        Check("被 Blocked 的运行不留下配方记录（§17 P2-② · 从未发生的运行不是历史证据）",
+            blockedRecipes.Count == 0, "记录数 " + blockedRecipes.Count);
+
         // ---- 1. blocked: unknown API writes nothing ----
         var blockedParts = Build(work, "wfBlocked");
         var blockedDir = Path.Combine(work, "wf-blocked-payload");
