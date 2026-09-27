@@ -129,7 +129,11 @@ public partial class MainWindow
     /// </summary>
     private static bool CanAttemptRestore(GameEntry game) =>
         game.Deployment is not null
-        && !string.IsNullOrWhiteSpace(game.Deployment.ProviderId);
+        && !string.IsNullOrWhiteSpace(game.Deployment.ProviderId)
+        // **注册表里没有这个 id 也不行。** `ProviderForRestore` 有三个失败分支（没有 `ProviderId` ·
+        // id 不在注册表 · provider 构造失败），而入口此前只覆盖了第一个 ⇒ **放行之后只得到一行错误**。
+        // （Pass E 报出：这是「判据必须与执行一样宽」的又一处。）
+        && Providers.AppProviders.Registry.Get(game.Deployment.ProviderId) is not null;
 
     private (Providers.IPatchProvider? Provider, string Error) ProviderForRestore(GameEntry game)
     {
@@ -518,8 +522,13 @@ public partial class MainWindow
     {
         if (_busy) { _log.Write(Loc.T("Scan.Busy")); return; }
 
+        // **与单个恢复共用同一个判据**（`CanAttemptRestore`）。
+        //
+        // 这里曾经只判 `Deployment is not null` —— 于是「老记录（无 `ProviderId`）」会被确认框
+        // **承诺恢复**，执行时被 `ProviderForRestore` **逐个拒绝**，用户拿到 N 行必然失败。
+        // **批量路径比单个路径更糟**：确认框会把 N 个游戏都列出来，制造「这些都能恢复」的印象。
         var targets = _data.Games
-            .Where(g => g.Deployment is not null && !string.IsNullOrWhiteSpace(g.RenderDir) && Directory.Exists(g.RenderDir))
+            .Where(g => CanAttemptRestore(g) && !string.IsNullOrWhiteSpace(g.RenderDir) && Directory.Exists(g.RenderDir))
             .ToList();
 
         if (targets.Count == 0) { _log.Write(Loc.T("Batch.NothingToRestore")); return; }

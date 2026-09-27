@@ -912,7 +912,16 @@ public partial class MainWindow : Window
         StatusBody.Text = StatusDetailText(game);
 
         var deployed = game.Deployment is not null;
-        RestoreButton.IsEnabled = deployed;
+
+        // **恢复按钮问的是「能不能真的恢复」，不是「有没有记录」。**
+        //
+        // 两者对**老记录**（Pass A 之前，没有 `ProviderId`）给出不同答案：记录在，但恢复必然失败。
+        // 用它当启用条件，用户看到的会是一个**可点、点了只得到一行错误**的按钮。
+        // （Pass E 报出：这是「判据只有一份」的第三处遗漏。）
+        RestoreButton.IsEnabled = CanAttemptRestore(game);
+
+        // **接管按钮仍然只看「有没有记录」** —— 这里 `deployed` 的含义是「这份安装已被本工具接管过」，
+        // 与「能不能恢复」是两个不同的问题，所以它刻意**不**跟着上面改。
         AdoptButton.IsEnabled = !deployed || game.Status == GameStatus.Modified;
         OpenLogButton.IsEnabled = game.RenderDir is not null &&
                                   Directory.Exists(Path.Combine(game.RenderDir, ModSource.LogDirName));
