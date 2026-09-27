@@ -1578,9 +1578,29 @@ public static class Program
         // the assertions are shaped around what was actually detected.
         var hasNvidia = info.Name.Contains("NVIDIA", StringComparison.OrdinalIgnoreCase);
 
-        Check("探测有结果且未抛异常", !string.IsNullOrWhiteSpace(info.Name), info.Name);
+        // ⚠️ **这条断言此前是 `!IsNullOrWhiteSpace(info.Name)`，而新语义下「没有适配器」就是空串**
+        // （Pass I 的 P2-1：`Gpu.Probe` 在探测不到 NVIDIA 适配器时曾把 `Loc.T("Gpu.NotFound")`
+        // 写进 `Name`，而那个值会落进 `library.json` 并**参与兼容性矩阵的维度比较** ⇒
+        // 两种语言产出两个矩阵键）。**改语义必须同步改断言** —— 否则它在无 N 卡的机器上会红，
+        // 而本机有 N 卡 ⇒ 它在这里永远不跑那个分支（**这正是这条缺陷当初能藏住的原因**）。
+        //
+        // 现在断言的是**新的不变量**：`Name` 要么是真实的适配器名，要么是空串，
+        // **永远不是一句给人看的文案** —— 那才是「文案当数据」这件事的可检查形式。
+        Check("Name 是适配器名或空串，不是本地化文案（它会被写进 library.json 并进入矩阵）",
+            !Languages.All.Any(language =>
+            {
+                Loc.SetLanguage(language);
+                var sentence = Loc.T("Gpu.NotFound");
+                Loc.SetLanguage(Languages.ChineseSimplified);
+                return string.Equals(info.Name, sentence, StringComparison.Ordinal);
+            }),
+            $"Name=\"{info.Name}\"");
+
+        // 「没有适配器」与「探测失败」是两件事：前者是**空串**，后者会在 `Advice` 里说明。
+        Check("Advice 始终说明发生了什么（无适配器时也不为空）",
+            !string.IsNullOrWhiteSpace(info.Advice), "(空)");
+
         Check("路由取值合法", info.Router is "SM86" or "SM75", info.Router);
-        Check("给出了说明文字", !string.IsNullOrWhiteSpace(info.Advice), "(空)");
 
         if (hasNvidia)
         {
