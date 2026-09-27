@@ -562,6 +562,9 @@ public sealed class NvidiaProfileService
         var failed = 0;
         var skipped = 0;
 
+        // 保存是否成功 —— `finally` 里的「标记已回滚」必须看它（见那里的注释）。
+        var savedOk = true;
+
         try
         {
             foreach (var entry in journal.Entries.AsEnumerable().Reverse())
@@ -623,6 +626,7 @@ public sealed class NvidiaProfileService
                 var save = _adapter.Save();
                 if (!save.Ok)
                 {
+                    savedOk = false;
                     notes.Add($"回滚后的保存失败（code {save.Code}）：{save.Message}");
                     return new ProfileRollbackResult(false, $"已恢复 {restored} 项，但保存失败。", notes);
                 }
@@ -635,7 +639,12 @@ public sealed class NvidiaProfileService
             // Single-shot only when it actually finished. A partially failed rollback stays open to a retry — the
             // entries that came back are marked Restored and will be skipped, so the retry touches only what is
             // still wrong. Marking it consumed regardless is what made a half-undone profile unrecoverable.
-            if (failed == 0 && skipped == 0) journal.MarkRolledBack();
+            //
+            // ⚠️ **`savedOk` 必须参与判据**（Pass D 报出）：`Save()` 失败时上面是 `return`，而 `return`
+            // 会**先走 `finally`** —— 那时 `failed == 0 && skipped == 0` 仍然成立，于是旧代码把一次
+            // **没有真正完成**的回滚标成了已回滚 ⇒ **同一进程内的重试会被跳过**，
+            // 而机器上的状态并没有被固定下来。**「标记完成」的依据必须是「真的完成了」。**
+            if (failed == 0 && skipped == 0 && savedOk) journal.MarkRolledBack();
         }
 
         // 恢复设置之后，还要把本次运行**自己创建**的东西拆掉。只恢复设置会留下一个空的 RTX30FGM-* Profile

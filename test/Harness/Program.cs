@@ -4986,6 +4986,24 @@ public static class Program
         Check("保存失败时返回失败", !rSave.Ok);
         Check("保存失败已回滚全部写入", !e.Has(idA));
 
+        // ---- P2-7（Pass D 报出）：**保存失败的回滚不能被标成「已完成」** ----
+        //
+        // `Save()` 失败时 `Rollback` 里走的是 `return`，而 `return` 会**先执行 `finally`** —— 那时
+        // `failed == 0 && skipped == 0` 仍然成立，于是旧代码把一次**没有真正完成**的回滚标成了已回滚
+        // ⇒ **同一进程内的重试会被跳过**（`:549` 附近按 `IsRolledBack` 短路），
+        // 而机器上的状态并没有被固定下来。**「标记完成」的依据必须是「真的完成了」。**
+        var saveFailAdapter = new FakeDrsAdapter { FailSave = true };
+        var svcSaveFail = new NvidiaProfileService(saveFailAdapter, () => false);
+
+        var appliedThenSaveFailed = svcSaveFail.Apply("P", new[] { W(Setting(idA), 1u) });
+        var rbSaveFail = svcSaveFail.Rollback(appliedThenSaveFailed.Journal);
+
+        Check("回滚后的保存失败仍被判为失败（§17 P2-7）", !rbSaveFail.Ok, rbSaveFail.Message);
+
+        Check("回滚后的保存失败不把日志标成已完成（§17 P2-7 · 否则重试会被跳过）",
+            !appliedThenSaveFailed.Journal.IsRolledBack,
+            "IsRolledBack=" + appliedThenSaveFailed.Journal.IsRolledBack);
+
         // ---- session init failure / profile missing / binding missing ----
         var f = new FakeDrsAdapter { FailOpenCode = -3 };
         var rSession = new NvidiaProfileService(f, () => false).Apply("P", new[] { W(Setting(idA), 1u) });
