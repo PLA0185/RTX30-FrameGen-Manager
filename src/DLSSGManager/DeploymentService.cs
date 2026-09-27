@@ -290,19 +290,38 @@ public static class DeploymentService
         }
     }
 
-    public static List<Process> ProcessesRunningIn(string directory)
+    /// <param name="determined">
+    /// 这次检查是否**真的能判定**。为 false 表示「查不到」。
+    ///
+    /// <para><b>为什么必须把它与空表分开。</b>调用方用这个结果守「游戏正在运行就不要写」。而空表
+    /// **同时**表示两件事：「确实没有进程占用」与「我们查不到」—— 两者的处置**相反**：前者可以继续
+    /// 部署，后者应当停下来。曾经这里两种情况都返回空表，于是**查不到被当成了不在运行**，
+    /// 失败被推后到写入阶段变成 `Access to the path is denied`（那时用户已经动过磁盘了）。</para>
+    /// </param>
+    public static List<Process> ProcessesRunningIn(string directory, out bool determined)
     {
         var result = new List<Process>();
+        determined = false;
         string full;
         try { full = Path.GetFullPath(directory).TrimEnd('\\') + "\\"; }
         catch { return result; }
+
+        // 路径可解析 ⇒ 到目前为止可以判定；下面任何一次「读不到进程路径」都会把它降回去。
+        determined = true;
 
         foreach (var p in Process.GetProcesses())
         {
             try
             {
                 var path = Native.GetProcessPath(p.Id);
-                if (string.IsNullOrEmpty(path)) continue;
+                if (string.IsNullOrEmpty(path))
+                {
+                    // **读不到一个进程的路径，就不能声称「它不在这个目录」** —— 它可能恰恰就在
+                    // （受保护进程、跨权限读取、刚启动还没映射映像）。如实降级为「无法判定」。
+                    determined = false;
+                    continue;
+                }
+
                 var dir = Path.GetDirectoryName(path);
                 if (string.IsNullOrEmpty(dir)) continue;
                 var dirFull = Path.GetFullPath(dir).TrimEnd('\\') + "\\";
@@ -470,11 +489,26 @@ public static class DeploymentService
             return r;
         }
 
-        var running = ProcessesRunningIn(game.RenderDir);
+        var running = ProcessesRunningIn(game.RenderDir, out var runningDetermined);
         if (running.Count > 0)
         {
             r.Fail(Loc.T("Deploy.GameRunning", Loc.Join(running.Select(p => p.ProcessName))));
             return r;
+        }
+
+        // **「查不到」不等于「不在运行」—— 但也**不能因此拒绝**。**
+        //
+        // 有些进程的映像路径读不出来（受保护进程、跨权限），而普通权限下**这是常态**：系统里总有
+        // 若干这样的进程。所以「有任何进程读不到就拒绝部署」会让本工具在普通权限下**完全不可用**
+        // —— 实测把全部部署用例打成了失败（118 通过 / 5 失败）。
+        //
+        // 正确的处置是**记录下来让用户知情**，而不是替他做一个他无法推翻的决定：如果是游戏本身
+        // 读不到，用户的下一步（关闭游戏重试）与「游戏在运行」时的建议一致；如果不是，他也不会
+        // 被无谓地挡住。
+        if (!runningDetermined)
+        {
+            r.Note("提示：有进程的映像路径读不出来（通常是权限不足），因此「游戏是否正在运行」无法完全确认。"
+                   + "如果这次部署遇到文件被占用，请先关闭游戏再重试。");
         }
 
         var protection = AntiCheat.Scan(game.RenderDir);
@@ -832,11 +866,19 @@ public static class DeploymentService
             return r;
         }
 
-        var running = ProcessesRunningIn(game.RenderDir);
+        var running = ProcessesRunningIn(game.RenderDir, out var runningDetermined);
         if (running.Count > 0)
         {
             r.Fail(Loc.T("Restore.GameRunning", Loc.Join(running.Select(p => p.ProcessName))));
             return r;
+        }
+
+        // **恢复同样记提示而不是拒绝。** 理由与 `Deploy` 那处相同：普通权限下「有进程路径读不出来」
+        // 是常态，用它拒绝会让工具不可用。而这里的提示对用户同样可行动。
+        if (!runningDetermined)
+        {
+            r.Note("提示：有进程的映像路径读不出来（通常是权限不足），因此「游戏是否正在运行」无法完全确认。"
+                   + "如果恢复时遇到文件被占用，请先关闭游戏再重试。");
         }
 
         if (!IsWritable(game.RenderDir))
