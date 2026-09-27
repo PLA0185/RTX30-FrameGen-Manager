@@ -4108,6 +4108,39 @@ public static class Program
         reloaded.Load();
         Check("矩阵可持久化并重载", reloaded.Count == 1, "实际: " + reloaded.Count);
 
+        // **但「Load 能用」不等于「有人会调它」** —— 这正是本会话反复踩到的接缝。
+        //
+        // `CompatibilityMatrixStore.Load()` 是**显式方法**（构造函数不调），而全仓**没有任何生产代码
+        // 调用它**（Round 74 才在 `SmoothMotionWorkflow` 构造里接上）。接线之前：即使用户的矩阵文件
+        // 已经存在，判定也永远用不上它 ⇒ 矩阵恒空 ⇒ `InstallPlanner` 恒 `NeedsConfirmation`
+        // ⇒ **每次部署都弹确认框**。
+        //
+        // 上面那条**显式调了 `Load()`**，所以它对这个缺陷**不敏感** —— 它证明的是「Load 内部正确」，
+        // 而不是「装配处会调用它」。**要守接线，断言就必须走装配处。**
+        var wiredPath = Path.Combine(work, "matrix-wired-by-workflow.json");
+        if (File.Exists(wiredPath)) File.Delete(wiredPath);
+
+        var writer = new CompatibilityMatrixStore(wiredPath);
+        writer.Add(new CompatibilityRecord(
+            Gpu: "RTX 3070 Ti", Driver: "617.14", GraphicsApi: GraphicsApi.Dx12,
+            Game: "wfMatrixWire", Store: StoreKind.Steam, RendererExe: "Game.exe",
+            Provider: MfgSmoothProvider.ProviderId, ProviderVersion: "2.9.0",
+            InstallMode: InstallMode.DirectProxy, ProxyAsi: ModSource.KnownProxyNames[0],
+            LaunchMode: "normal", Validation: ValidationState.ReportedWorking));
+        writer.Persist();
+
+        // 新建的 store 在构造后**是空的** ——「磁盘上有」与「内存里有」是两件事。
+        var wired = new CompatibilityMatrixStore(wiredPath);
+        Check("（前置）新建的矩阵 store 在构造后是空的（§17 P2-③）",
+            wired.Count == 0, "Count=" + wired.Count);
+
+        // 构造 workflow ⇒ 它应当把磁盘上的记录读进来。
+        _ = new SmoothMotionWorkflow(new FakeWorkflowDetector(),
+            new NvidiaProfileService(new FakeDrsAdapter(), () => false), wired);
+
+        Check("构造 workflow 会把磁盘上的矩阵读进来（§17 P2-③ · 守接线而不是守 Load）",
+            wired.Count == 1, "Count=" + wired.Count);
+
         var corruptPath = Path.Combine(work, "compat-corrupt.json");
         File.WriteAllText(corruptPath, "{ this is not json");
         var corrupt = new CompatibilityMatrixStore(corruptPath);
