@@ -1186,10 +1186,22 @@ public static class Program
         // Compared against the INI's own banner rather than a hard-coded version: the upstream payload
         // is re-fetched from the network and moves on, and a stale expectation here would fail the
         // suite for a reason that has nothing to do with the manager.
+        //
+        // ⚠️ **这条断言此前是恒真的**（Pass H 报出）：`Version` 现在的值域是 **`""` ∪ {真实发布标签}**，
+        // 而 `Loc.T("ModSource.UnknownVersion")` 是「未知」/「Unknown」⇒ 两边**永不可能相等** ⇒ 永远通过。
+        // 它**恰好是上一轮把 `Version` 改成空串时没有同步更新的那条守护** ——
+        // 旧语义下 `Version` 读不到就回落到那句文案，所以当时它是有意义的。
+        //
+        // 而 `bannerVersion` 被赋值后**全函数零读取**，注释却写着「Compared against the INI's own banner」
+        // —— **那说明原本有一个 `source.Version == bannerVersion` 形式的有效比较被改没了**。
+        // （`bannerVersion` 是方法调用的返回值，所以编译器的 0 警告拦不住这种「赋值后不用」。）
+        //
+        // 现在按注释的原意写回来：**与 INI 横幅独立读出的那份比较**。
+        // 横幅读不到时为 `null`，而那时**正确的期望就是空串** —— 那正是新语义。
         var bannerVersion = ModSource.ReadVersion(Path.Combine(modRoot, ModSource.IniName));
         Check("版本号从 INI 横幅或版本标记解析",
-            source.Version != Loc.T("ModSource.UnknownVersion"),
-            "实际: " + source.Version);
+            source.Version == (bannerVersion ?? ""),
+            $"source=\"{source.Version}\" / INI 横幅=\"{bannerVersion ?? "(null)"}\"");
         Check("自带的入口全部识别", source.Proxies.Count == ModSource.ProxyCandidates.Length,
             "实际: " + string.Join(",", source.Proxies));
         Check("version.dll 在根目录", File.Exists(Path.Combine(modRoot, "version.dll")));
