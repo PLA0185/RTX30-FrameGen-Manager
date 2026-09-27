@@ -1184,6 +1184,18 @@ public static class Program
             fromOwn.Contains("; 用户自己的注释") && !fromOwn.Contains("[FrameGeneration]"),
             fromOwn.Replace("\r\n", " / "));
 
+        // **给出去的文件必须能证明它属于谁**（§17 P2-⑫ 第三件）。
+        //
+        // 卸载时的归属判据（`DeploymentService.LooksLikeProjectIni`）是「前 4 行含 `Native x.y`」
+        // **或**「全文含 `dlssg_sm86`」。而这份 fallback 模板此前**两样都没有** ⇒ 用户一旦编辑过它
+        // （哈希对不上部署记录），卸载就会把它当成**别人的文件**保留下来
+        // （Pass C 实测消息：「保留 dlssg_sm86.ini：不是本项目的配置文件，未删除」）。
+        //
+        // 这里直接按那个判据的**第二个分支**断言 —— 用同一个字面量，两边不会漂移。
+        Check("生成出来的 INI 带有本项目的标识（§17 P2-⑫）",
+            fromStub.Contains("dlssg_sm86", StringComparison.OrdinalIgnoreCase),
+            fromStub.Split('\n').FirstOrDefault()?.Trim() ?? "(空)");
+
         // 下面这些需要**真实的 mod 模板**，所以它们的跳过检查放在这里而不是方法开头。
         if (SkipWithoutModFiles("INI 渲染（真实模板相关）")) return;
 
