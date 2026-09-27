@@ -1184,6 +1184,33 @@ public static class Program
             fromOwn.Contains("; 用户自己的注释") && !fromOwn.Contains("[FrameGeneration]"),
             fromOwn.Replace("\r\n", " / "));
 
+        // ---- P2-2（Pass D 报出）：**「有键」不等于「有我们能填的键」** ----
+        //
+        // 上一版的判据是「模板里有没有 `Key=` 行」，而替换循环只在**它认得的键**上填值。
+        // 两者**宽度不同** ⇒ 模板里全是**不认识的键**时（最典型：上游把设置改名，`Enabled` → `Enable`），
+        // 旧判据说「有键，用模板」，替换循环却**一个都命中不了** ⇒ **部署出去的 INI 里没有任何用户设置，
+        // 而用户看到「部署成功」**。这与本轮已修的 P2-⑫（桩 INI 无键）**后果完全相同**，只是触发更窄。
+        var renamedKeys = "[General]" + Environment.NewLine + "Enable=1" + Environment.NewLine
+            + "Optimise=2" + Environment.NewLine;   // 全是认不出的键名
+        var fromRenamed = IniTemplate.Render(renamedKeys, new GameProfile
+        {
+            Enabled = true, OptimizedTier = 2, MaxGeneratedFrames = 3, LogLevel = 1,
+        });
+
+        Check("模板里全是认不出的键时，用户的设置仍然落得下去（§17 P2-2）",
+            fromRenamed.Contains("MaxGeneratedFrames=3") && fromRenamed.Contains("Level=1"),
+            fromRenamed.Replace("\r\n", " / "));
+
+        // **反向配对**：模板里只要有**一个**认识的键，就必须原样使用它 —— 否则「任何模板都换成 fallback」
+        // 也能通过上面那条，而那会丢掉用户自己加的注释与其它键。
+        var partlyKnown = "[General]" + Environment.NewLine + "Enabled=1" + Environment.NewLine
+            + "; 用户自己的注释" + Environment.NewLine;
+        var fromPartly = IniTemplate.Render(partlyKnown, new GameProfile { Enabled = true });
+
+        Check("模板里有一个认识的键时仍原样使用它（§17 P2-2 · 反向配对）",
+            fromPartly.Contains("; 用户自己的注释"),
+            fromPartly.Replace("\r\n", " / "));
+
         // **给出去的文件必须能证明它属于谁**（§17 P2-⑫ 第三件）。
         //
         // 卸载时的归属判据（`DeploymentService.LooksLikeProjectIni`）是「前 4 行含 `Native x.y`」

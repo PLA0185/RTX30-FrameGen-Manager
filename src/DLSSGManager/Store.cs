@@ -232,7 +232,7 @@ public static class IniTemplate
         // （那个 provider 的注释写着「真实部署会覆盖它」—— **那句话是错的**，覆盖只发生在模板已有的键上。）
         //
         // 判据改成**「模板里有没有可填的键」**，而不是「模板是不是空的」。
-        var text = HasAnyKey(templateText) ? templateText : FallbackTemplate(p);
+        var text = HasAnyFillableKey(templateText, p) ? templateText : FallbackTemplate(p);
         var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
 
         var values = Values(p);
@@ -259,15 +259,27 @@ public static class IniTemplate
     }
 
     /// <summary>
-    /// 模板里有没有**至少一个可填的键**（`Key=` 形式的行）。
+    /// 模板里有没有**至少一个我们能填的键** —— 即：模板里的某个键名**出现在 <c>Values(p)</c> 里**。
     ///
-    /// <para>判据与下面替换循环用的正则**必须是同一个** —— 用两个判据判断「能不能填」，
-    /// 迟早会出现「这个函数说有、替换循环说没有」的分歧，而那次分歧的表现就是**静默丢失用户的设置**。</para>
+    /// <para><b>为什么不是「有没有 `Key=` 行」。</b>那是上一版的判据，而它比替换循环**宽**：
+    /// 替换循环只在**它认得的键**上填值（<c>values.TryGetValue</c>）。于是当模板里全是**不认识的键**
+    /// —— 最典型的触发是**上游把设置改名**（例如 `Enabled` → `Enable`）—— 旧判据说「有键，用模板」，
+    /// 替换循环却**一个都命中不了** ⇒ **部署出去的 INI 里没有任何用户设置，而用户看到「部署成功」**。
+    /// 这与本轮已修的 P2-⑫（桩 INI 无键）**后果完全相同**，只是触发条件更窄。</para>
+    ///
+    /// <para><b>判据必须与替换循环同宽，而不是同形。</b>两者都问「这个键我填得了吗」——
+    /// 只按语法（有没有 <c>=</c>）判断，就会在「语法上是键、语义上不认识」的那一类上漏掉。</para>
     /// </summary>
-    private static bool HasAnyKey(string? templateText) =>
-        !string.IsNullOrWhiteSpace(templateText)
-        && templateText.Replace("\r\n", "\n").Split('\n')
-            .Any(line => Regex.IsMatch(line, @"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*="));
+    private static bool HasAnyFillableKey(string? templateText, GameProfile p)
+    {
+        if (string.IsNullOrWhiteSpace(templateText)) return false;
+
+        var known = Values(p);
+
+        return templateText.Replace("\r\n", "\n").Split('\n')
+            .Select(line => Regex.Match(line, @"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*="))
+            .Any(m => m.Success && known.ContainsKey(m.Groups[1].Value));
+    }
 
     /// <summary>
     /// Used when no usable template exists — either none could be read, or what was read has no keys to fill.
