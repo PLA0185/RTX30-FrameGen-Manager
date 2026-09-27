@@ -266,6 +266,20 @@ if (-not ($zipEntries | Where-Object { $_ -like '*DLSSGManager.exe' })) { throw 
 Step "生成 SHA256SUMS"
 $SumsTmp = "$SumsPath.tmp"
 $lines = @()
+
+# ── **记录产物的来源 commit**（Pass O 的建议）──────────────────────────────
+#
+# 没有这一行时，「**产物 == 当前源码**」这件事**无法被直接验证**：
+# `artifacts/` 被 `.gitignore` 排除（`git ls-files artifacts` 为空）· EXE 的应用 IL 被压缩
+# （`DeploymentService` / `ModFetcher` 等类型名在 EXE 内零命中）⇒ 只剩 mtime 可推断，
+# 而 mtime 是**弱证据**（时钟可以乱、文件可以被 touch）。
+# ⇒ 写一行注释头：`# source <sha> dirty=<0|1>`，让**下一轮审查直接核对**而不是推断。
+# （`dirty=1` 表示构建时工作树有未提交改动 ⇒ 该产物不对应任何 commit，**不应作为正式交付**。）
+$srcSha = (& git rev-parse HEAD 2>$null)
+$srcDirty = if (@(& git status --porcelain 2>$null).Count -gt 0) { 1 } else { 0 }
+$lines += "# source $srcSha dirty=$srcDirty  built $(Get-Date -Format 'yyyy-MM-ddTHH:mm:ssK')"
+Write-Host "  来源: $srcSha (dirty=$srcDirty)"
+
 foreach ($f in @($exe, $ZipTmp)) {
     $hash = (Get-FileHash $f -Algorithm SHA256).Hash
     $lines += "{0}  {1}" -f $hash, (Split-Path $f -Leaf).Replace('.tmp.zip', '')

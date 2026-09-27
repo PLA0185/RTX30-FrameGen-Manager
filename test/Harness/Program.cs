@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -1515,7 +1515,10 @@ public static class Program
         // 我第一版两条都写 `== Strings.AllKeys.Count()`，而我当时以为 `AllKeys` 是**两张表的键并集**（**错**）
         // —— 它**只在两表键集完全一致时才等于某一张表的键数**。
         // **实测**：在中文表插入一个英文表没有的新键 ⇒ 英文那条也**变红**
-        //（`定义行 415 vs 去重键 416`），**而英文表根本没有重复键** —— 真因是并集从 415 变 416。
+        //（`定义行 415 vs 去重键 416`），**而英文表根本没有重复键** ——
+        // **真因是它拿的是【另一张表】的键数**（`AllKeys` 就是中文表的键集 ⇒ 中文表加键它跟着变），
+        // **不是「并集」**。**决定性实验**（Pass O 做的）：把判据改回 `AllKeys.Count()` 并
+        // **往英文表**插独有键 ⇒ 红的是**英文**那条（416 vs 415）、中文那条绿 ⇒ **「并集」被证伪**。
         // **⇒ 那是【假红】：它报的不是自己的事。** 而两表一致这个前提由**另一条**断言守着
         // ⇒ **两条断言之间产生了隐式耦合**，破坏了「每条断言独立守一件事」。
         // **★ 判据：一条断言的判据若依赖另一条断言的前提，那它就不是独立断言。**
@@ -3476,10 +3479,14 @@ public static class Program
         // ⇒ 现在**真的把每个源的真实地址喂给地址策略**。
         foreach (var s in ModFetcher.AvailableSources)
         {
-            // 「文件源」没有压缩包地址（`ArchiveUrlFor` 会抛）⇒ 退回版本探针地址；**两者都必须过策略**。
-            string url;
-            try { url = ModFetcher.ArchiveUrlFor(s.Id); }
-            catch { url = ModFetcher.VersionProbeUrl; }
+            // **per-file 源得到的是【路径为空】的模板地址**（`ArchiveUrlFor` 对它们返回 `UrlFor(..., null)`），
+            // 而策略只看 scheme / host / 解析地址 ⇒ 这仍是**有效的地址策略检查**。
+            // ⚠️ **这里此前包着 `try { … } catch { url = ModFetcher.VersionProbeUrl; }`** —— 那是**死分支**：
+            // `ModFetcher.cs:271-275` 的 `ArchiveUrlFor` 只做 `First(...)` + `UrlFor(..., null)`（纯字符串替换），
+            // **对文件源不抛**。而且它是**静默回退**：万一将来真抛，它会去校验**另一个地址**、
+            // 却仍报「源 [x] 的地址通过 allow-list」。
+            // ⇒ 删掉。（Pass N 声称修过、**实际没落地**；Pass O 的 P2-① 报出。）
+            var url = ModFetcher.ArchiveUrlFor(s.Id);
 
             var allowed = false;
             var detail = url;
