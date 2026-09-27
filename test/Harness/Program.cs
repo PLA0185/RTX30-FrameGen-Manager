@@ -186,9 +186,12 @@ public static class Program
             try { Directory.Delete(work, true); } catch { }
         }
 
-        Console.WriteLine();
-        var skipped = _skipped > 0 ? $" · 跳过 {_skipped}" : "";
-        Console.WriteLine($"===== 通过 {_pass} · 失败 {_fail}{skipped} =====");
+        // ⚠️ **分类核对与桶输出必须排在汇总行【之前】**（Pass M 的 P2-①）：
+        // 此前汇总行（下面那行 `===== 通过 …`）在**最后一条 `Check` 之前**打印，
+        // 于是 ① **页脚的通过数永远比实际少 1**（实测：`[通过]` 行 981 条，页脚印 980）；
+        // ② **它失败时，汇总行仍印「失败 0」，而退出码是 1** ⇒ **文本与退出码给出相反结论**，
+        //    而 §7 判定表恰好直接引用这个数字。
+        // ⇒ 把「先分类、再印汇总」变成固定顺序：**汇总行的数字必须是最终数字**。
         if (_skipped > 0)
         {
             // **两类跳过的补救不同**（Pass G 报出：此前一律印「运行 --fetch」，而其中有几项
@@ -200,7 +203,16 @@ public static class Program
             // 我修 P2-5 加的那处跳过（「手工入口与自带入口并存」）**两样都需要**，
             // 它只做了 `_skipped++` ⇒ 被减进 `needsMod` ⇒ **页脚说「运行 --fetch 即可」，
             // 而用户跑完 `--fetch` 仍会跳过**（它还需要 `extra-proxies\d3d12.dll`）。
-            // **⇒ 三个显式计数，不再做减法**（减法会把「我没归类的那一项」静默算进某一类）。
+            // **⇒ 四个显式计数，不再做减法**（减法会把「我没归类的那一项」静默算进某一类）。
+
+            // **四个桶必须覆盖全部跳过**（否则页脚与总数不一致 —— 这正是减法时代的症状）。
+            // 这条断言守的是「以后新增跳过点忘了归类」：它会在下一次有人手写 `_skipped++` 时变红。
+            var bucketed = _skippedNeedingModFiles + _skippedNeedingCommunityProxy
+                           + _skippedNeedingBoth + _skippedNeedingOther;
+            Check("每个跳过都被归入了一个类别（页脚的分类与总数一致）",
+                bucketed == _skipped,
+                $"总数 {_skipped} vs 已归类 {bucketed}");
+
             if (_skippedNeedingModFiles > 0)
                 Console.WriteLine($"（跳过的 {_skippedNeedingModFiles} 项需要 Mod 文件，运行 Harness.exe --fetch 获取后重试）");
             if (_skippedNeedingCommunityProxy > 0)
@@ -210,15 +222,12 @@ public static class Program
                 Console.WriteLine($"（另有 {_skippedNeedingBoth} 项**两样都需要**：Mod 文件与 extra-proxies\\d3d12.dll）");
             if (_skippedNeedingOther > 0)
                 Console.WriteLine($"（另有 {_skippedNeedingOther} 项是本机环境缺东西，与 Mod 文件和 d3d12.dll 都无关）");
-
-            // **四个桶必须覆盖全部跳过**（否则页脚与总数不一致 —— 这正是减法时代的症状）。
-            // 这条断言守的是「以后新增跳过点忘了归类」：它会在下一次有人手写 `_skipped++` 时变红。
-            var bucketed = _skippedNeedingModFiles + _skippedNeedingCommunityProxy
-                           + _skippedNeedingBoth + _skippedNeedingOther;
-            Check("每个跳过都被归入了一个类别（页脚的分类与总数一致）",
-                bucketed == _skipped,
-                $"总数 {_skipped} vs 已归类 {bucketed}");
         }
+
+        // **汇总行放在最后** —— 它印的必须是最终数字（上面的分类核对可能改变 `_fail`）。
+        Console.WriteLine();
+        var skipped = _skipped > 0 ? $" · 跳过 {_skipped}" : "";
+        Console.WriteLine($"===== 通过 {_pass} · 失败 {_fail}{skipped} =====");
 
         return _fail == 0 ? 0 : 1;
     }
@@ -1502,12 +1511,23 @@ public static class Program
         // —— 既有审计查「用到但未定义」「两表不一致」，**都查不到「定义了一次 vs 定义了两次」**。
         var zhDefs = LocalizationAudit.DefinitionLineCount(Languages.ChineseSimplified);
         var enDefs = LocalizationAudit.DefinitionLineCount(Languages.English);
-        Check("中文表没有重复定义的键（定义行数 == 去重后键数）",
-            zhDefs == Strings.AllKeys.Count(),
-            $"定义行 {zhDefs} vs 去重键 {Strings.AllKeys.Count()}");
-        Check("英文表没有重复定义的键",
-            enDefs == Strings.AllKeys.Count(),
-            $"定义行 {enDefs} vs 去重键 {Strings.AllKeys.Count()}");
+        // ⚠️ **判据必须用【本表】的去重键数，不能用跨表并集**（Pass M 的 P2-2）：
+        // 我第一版两条都写 `== Strings.AllKeys.Count()`，而 `AllKeys` 是**两张表的键并集**
+        // —— 它**只在两表键集完全一致时才等于某一张表的键数**。
+        // **实测**：在中文表插入一个英文表没有的新键 ⇒ 英文那条也**变红**
+        //（`定义行 415 vs 去重键 416`），**而英文表根本没有重复键** —— 真因是并集从 415 变 416。
+        // **⇒ 那是【假红】：它报的不是自己的事。** 而两表一致这个前提由**另一条**断言守着
+        // ⇒ **两条断言之间产生了隐式耦合**，破坏了「每条断言独立守一件事」。
+        // **★ 判据：一条断言的判据若依赖另一条断言的前提，那它就不是独立断言。**
+        var zhUnique = Strings.For(Languages.ChineseSimplified).Count;
+        var enUnique = Strings.For(Languages.English).Count;
+
+        Check("中文表没有重复定义的键（定义行数 == 本表去重键数）",
+            zhDefs == zhUnique,
+            $"定义行 {zhDefs} vs 本表去重键 {zhUnique}");
+        Check("英文表没有重复定义的键（定义行数 == 本表去重键数）",
+            enDefs == enUnique,
+            $"定义行 {enDefs} vs 本表去重键 {enUnique}");
 
         // Placeholder mismatch means string.Format throws or silently drops a value in one language.
         var placeholderIssues = LocalizationAudit.PlaceholderMismatches();
@@ -1782,20 +1802,40 @@ public static class Program
 
         Check("路由取值合法", info.Router is "SM86" or "SM75", info.Router);
 
+        // ⚠️ **这个 if/else 的两支是【互斥】的，所以无论在哪台机器上跑，另一支的断言永不执行**
+        // （Pass M 的 P2-③：`Section("显卡探测")` 静态 57 个 `Check(` 调用点、动态 55 条 ⇒ 差 2）。
+        // 它们此前**既不计 `_skipped`、也不进任何桶** ⇒ 页脚的「跳过 10」不覆盖它们，
+        // 而报告的环境口径只列了 `d3d12.dll` 与 `mod/` **两个**维度，**没提「显卡型号」这第三个**。
+        // ⇒ **给不执行的那一支计入跳过**（第四桶「本机环境缺东西」的语义正合适）。
         if (hasNvidia)
         {
             Console.WriteLine("      （检测到 NVIDIA 显卡，校验路由映射）");
             Check("读到驱动版本", info.Driver.Length > 0, "驱动为空");
 
             if (info.Name.Contains("RTX 30", StringComparison.OrdinalIgnoreCase))
+            {
                 Check("RTX 30 系映射到 SM86", info.Router == "SM86", info.Router);
+                _skipped++; _skippedNeedingOther++;
+                Console.WriteLine("  [跳过] RTX 20 系的型号映射（本机是 RTX 30 系 —— 该分支与 30 系互斥）");
+            }
             else if (info.Name.Contains("RTX 20", StringComparison.OrdinalIgnoreCase))
+            {
+                _skipped++; _skippedNeedingOther++;
+                Console.WriteLine("  [跳过] RTX 30 系的型号映射（本机是 RTX 20 系 —— 该分支与 20 系互斥）");
                 Check("RTX 20 系映射到 SM75", info.Router == "SM75", info.Router);
+            }
+            else
+            {
+                _skipped += 2; _skippedNeedingOther += 2;
+                Console.WriteLine("  [跳过] RTX 30 系与 RTX 20 系的型号映射（本机是其它型号）");
+            }
         }
         else
         {
-            Console.WriteLine("      （无 NVIDIA 显卡，这是 CI 等虚拟环境的正常情况，跳过型号映射校验）");
+            Console.WriteLine("      （无 NVIDIA 显卡，这是 CI 等虚拟环境的正常情况）");
             Check("无 N 卡时给出可读提示", info.Advice.Length > 0, info.Advice);
+            _skipped++; _skippedNeedingOther++;
+            Console.WriteLine("  [跳过] 有 N 卡时的驱动版本与型号映射（本机无 NVIDIA 显卡）");
         }
 
         // The mapping itself is pure logic and is verified regardless of the host's hardware.
@@ -1814,7 +1854,10 @@ public static class Program
             Gpu.ParsePciDeviceId(@"PCI\VEN_10DE&DEV_2208&SUBSYS_88021043&REV_A1\4&D0BDF66&0&0009"));
         Check("解析结果统一大写", Gpu.ParsePciDeviceId(@"PCI\VEN_10DE&DEV_2b85&SUBSYS_X") == "2B85");
         Check("无 ID 的路径返回空", Gpu.ParsePciDeviceId(@"PCI\VEN_10DE&SUBSYS_X") is null);
-        Check("空路径不抛异常", Gpu.ParsePciDeviceId(null) is null);
+        Check("空路径不抛异常（PCI 设备路径解析）", Gpu.ParsePciDeviceId(null) is null);
+        // ⚠️ 断言名必须**唯一**（Pass M 的 P2-⑤）：此前这两处同名（空路径不抛异常），@
+        // 而双树 [通过] 行集合差是**按名字**做的 ⇒ 若 A 跑了第一条、B 跑了第二条，差集为空，
+        // **集合差在这两条上完全盲**。⇒ 加各自的方法名后缀。
 
         Check("识别 NVIDIA 厂商 ID", Gpu.IsNvidiaDevice(@"PCI\VEN_10DE&DEV_2208"));
         Check("识别非 NVIDIA 厂商 ID", !Gpu.IsNvidiaDevice(@"PCI\VEN_1002&DEV_13C0"));
@@ -2737,7 +2780,7 @@ public static class Program
         Check("其他编号的卸载程序同样识别", ModSourceLocator.IsInstalledCopyIn(installedAlt), installedAlt);
 
         Check("不存在的目录不抛异常", !ModSourceLocator.IsInstalledCopyIn(Path.Combine(work, "NoSuchDir")));
-        Check("空路径不抛异常", !ModSourceLocator.IsInstalledCopyIn(""));
+        Check("空路径不抛异常（安装副本判定）", !ModSourceLocator.IsInstalledCopyIn(""));
 
         // Mod files live beside the program whenever that folder is writable, so a copy stays
         // self-contained; a read-only location (Program Files without elevation) falls back to the
@@ -3406,10 +3449,30 @@ public static class Program
         Check("切回中文后名称恢复", ModFetcher.AvailableSources.Select(s => s.Name).SequenceEqual(zhNames));
         Check("切回中文后说明恢复", ModFetcher.AvailableSources.Select(s => s.Note).SequenceEqual(zhNotes));
 
-        // Every source must still pass the address policy — a source added to the picker but rejected
-        // by the allow-list would be selectable yet never work.
+        // ⚠️ **这里此前是 `foreach (var s in …) Check($"源 [{s.Id}] 通过地址策略", true);`**
+        // —— Pass M 的 P1-1，**而且是 4 条同类里唯一「假覆盖」的一条**：
+        //   ① 第二参数是**编译期常量** ⇒ 结构上无法失败；
+        //   ② 它**从来没有调用 `ModFetcher.IsAllowedAddress`** —— 注释声称守「源与 allow-list 一致」，
+        //      而实现是零调用 ⇒ **「每个真实源的 URL 都通过 allow-list」在整仓零覆盖**；
+        //   ③ 它按源的数量打印 N 条「通过」⇒ **虚增通过数换 0 覆盖**。
+        // **为什么邻近的 `TestUrlPolicy` 不能免责**：那 12 条断言的是**硬编码 URI 样本**
+        // （`https://github.com/a/b` 之类），**完全不涉及 `AvailableSources` 里的真实 URL** ——
+        // **名字撞车正好掩盖了这一条的空洞**（「审计的盲区是另一个方向」的又一例）。
+        // ⇒ 现在**真的把每个源的真实地址喂给地址策略**。
         foreach (var s in ModFetcher.AvailableSources)
-            Check($"源 [{s.Id}] 通过地址策略", true);
+        {
+            // 「文件源」没有压缩包地址（`ArchiveUrlFor` 会抛）⇒ 退回版本探针地址；**两者都必须过策略**。
+            string url;
+            try { url = ModFetcher.ArchiveUrlFor(s.Id); }
+            catch { url = ModFetcher.VersionProbeUrl; }
+
+            var allowed = false;
+            var detail = url;
+            try { allowed = ModFetcher.IsAllowedAddress(new Uri(url)); }
+            catch (Exception ex) { detail = $"{url} → {ex.GetType().Name}"; }
+
+            Check($"源 [{s.Id}] 的真实地址通过 allow-list（{detail}）", allowed);
+        }
     }
 
     private static void TestUrlPolicy()
