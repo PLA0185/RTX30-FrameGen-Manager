@@ -1,6 +1,6 @@
 ﻿# 第四轮 · 自主闭环整改报告（§28）
 
-> **状态：草稿，等待 Pass G 结果填入。** 标 `[待 Pass G]` 的位置在审查返回后更新。
+> **状态：草稿，等待 Pass H 结果填入。** 标 `[待 Pass H]` 的位置在审查返回后更新。
 >
 > 基线 `4cf3462` · 无 force push · 未打 Stable Tag。
 >
@@ -176,7 +176,40 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 
 **★ 另一条判据**：**不为了覆盖率数字而做「净损失为正的交换」。** 覆盖率一旦成为目标就会被优化成数字 —— 本会话已见过两种形式（**恒真断言** / **把缺陷写成期望**），而这条出路会是第三种（**把断言搬到一个总会跑但检查别的东西的位置**）。
 
-**§18 的状态**：Pass A–F **各报出缺陷 ⇒ 计数已重来六次**；**Pass G 是新周期的第一轮，正在运行。**
+### Pass G
+
+**结论：0 P0 / 2 P1 / 6 P2。** 它的检查方法是**五组真实文件锁失败注入** + 干净导出跑套件 + `git log -S` 溯源 + 全仓 grep `Loc.T(`。
+
+**P1-1 —— 打包脚本只消掉了 Pass F 两个窗口中的一个。** Pass F 修的是**每个动作内部**的原子性（不留下半个文件）；而 Pass G 用失败注入证明**换序仍有窗口**：目录先换成新的，随后 ZIP 或 `SHA256SUMS` 改名失败 ⇒ 落回「**新 EXE 目录 + 旧 ZIP + 旧 SUMS**」，而 `SHA256SUMS.txt` 正是用户校验发布物时依赖的东西。
+
+| 注入 | Pass G 实测（修复前） |
+|---|---|
+| 锁 `$StageDir\DLSSGManager.exe` | `Rename-Item` 抛 IOException，**旧发布目录一字未动** ⇒ **部分删除窗口确实没了**（Pass F 的修复有效） |
+| 锁**目标 ZIP** | 目录已换新、ZIP 改名失败 ⇒ **混合状态** |
+| 锁 `SHA256SUMS.txt` | 新 EXE + 新 ZIP + **旧 SUMS** |
+| 锁遗留的 `*.tmp.zip` | 在 `:158` 就退出，正式产物未动（安全） |
+
+**已修**：三个替换改成**两阶段事务**（先把三个旧正式名各自改名成 `.old` → 再放新的 → 任一步失败就把已改名的逐个换回 → 全部成功后才删 `.old`），并把两处 `-ErrorAction SilentlyContinue` 的静默删除改成 `-ErrorAction Stop`（Pass G 实测那两处会让一次运行 **EXIT=0 却留下 `.old`**，而**下一次**以 `Cannot create a file when that file already exists` 失败、真因从不打印）。
+**已实测**（后台作业持锁 300 秒）：`WARNING: 替换失败，正在恢复原状：…` + **`[exit code: 1]`**，事后**三项仍自洽、无 `.old` 残留**。
+
+**它同时纠正了我的三处自我认知**：
+1. **「每个动作原子」不等于「一串动作原子」** —— 我上一轮花在让**单个**替换动作原子上（换了三种写法），而那解决的是**另一个问题**。**多动作的一致性只能靠事务（失败时能回到起点）保证。**
+2. **失败注入的操作经验**：我的第一次注入得到 `PACK_EXIT=0` 且产物被正常替换，**差点当成通过** —— 查明原因是**持锁作业只 30 秒，而 build + publish 耗时更长**，锁在替换阶段开始前就释放了。**⇒ 注入之后要先确认「注入真的作用到了那一步」。**
+3. **口径核实**：`-File` 调用下抛错**一律 EXIT=1**（5 组注入全测）；**进程内 `&` 调用后 `$LASTEXITCODE` 不变** —— 这解释了我早先那次 `PACK_EXIT=0` 的读数。
+
+**P1-2 —— Harness 的 Adopt 守护在任何环境里都不成立，而它推翻了我的「判定不改」。**
+我曾评估 P2-5 并下结论「保留现状」，理由是两条出路分别是「改生产」与「降覆盖」。**Pass G 证明还有第三条路**：给这一项一个**不查 `_hasModFiles` 的独立跳过助手**。
+**并且它证明这条守护的真实状态比「条件覆盖」更糟**：干净 clone 整段跳过（**理由字符串还是错的**：真正缺的是 `extra-proxies\d3d12.dll`，而 `--fetch` 写的是 `mod\altnative\d3d12.dll`，页脚的补救对这一项无效）· **跑过 `--fetch` 之后** `SkipWithoutModFiles` 因 `_hasModFiles==true` 返回 false ⇒ 夹具无代理 ⇒ `Adopt` 必然 `NotFound` ⇒ **三条断言失败**。
+**⇒ 它既不是「本机跑」也不是「干净跳过」，而是「没有 Mod 文件时跳过、有 Mod 文件时失败」** —— 而那两种状态都不能算守护。
+**已修**（四层）：① 自己的判据 `SkipWithoutCommunityProxy` · ② 理由字符串说对 · ③ 页脚按类别给不同补救 · ④ 跑过 `--fetch` 后不会再从「跳过」变成「失败」。**已在干净 clone 验证**：`946 / 0 / 10`，页脚两行。
+
+**6 条 P2（全部已处理）**：第五处「文案当数据」（`GameCandidate.Source`）· **假的因**（「成品不含 `compatibility.json`（打包脚本剔 json）」—— 真因是 store 读 `%APPDATA%\DLSSGManager\compatibility.json`，打包脚本碰不到；**照它去做会发现没用**）· 「接管来的由 `ProviderId` 表达」**不成立**（`InstallPlanExecutor:263` 同字段同来源）· `Replace-Artifact` 的过宽注释（随事务重写而删除）· 死键（已并入 §5）· **半套 mod 目录让整套以未处理异常中止却打印「通过 123 · 失败 14」**（已修：Harness 用自己的更严判据，识别并明确报告；**已验证**：造半套目录后打印警告 + 正常结束 `973 / 0 / 10`）。
+
+**★ 本项目应当长期保留的两条**：
+1. **「注释声称已修」比缺口本身更危险** —— 缺口的代价是行为不对；**错误注释的代价是它永远不会被发现**。本会话已见四种同型：**声称已修** · **描述不存在的实现** · **给一个假的因** · **声称信息在别处**。
+2. **审计的盲区永远是「另一个方向」，漏掉的总是「看起来正常的那一侧」** —— 多语言审计查「用到但未定义」不查「定义了但没用」（死键）· 覆盖率统计查数量不查「是否真在跑」· 产物校验查存在不查完整。
+
+**§18 的状态**：Pass A–G **各报出缺陷 ⇒ 计数已重来七次**；**Pass H 是新周期的第一轮，正在运行。**
 
 **基线**：审查者开工时 HEAD `a0c0247`，收尾时已被推进 —— **这是本会话第三次基准漂移**，也是为什么后来要求审查者一律用 `git archive` 导出。
 
@@ -287,14 +320,14 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 | Harness PASS | ✅ 本地 **973**/0/10（`1dbd2fd`）· **干净 clone 932**/0/10（`54ef370`），差 **27** 全部来自 `extra-proxies/d3d12.dll`） |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
-| **Independent Code Review PASS** | **[待 Pass G]** |
+| **Independent Code Review PASS** | **[待 Pass H]** |
 | No Known P0 | ✅ Pass A 的 P0 已修 + 回归断言 |
 | No Known P1 | ✅ Pass A 的 4 条 P1 已修 + 回归断言 |
 | Documentation Claims Match Code | ✅ §22 审计的 5 条过时陈述已在白板与报告中更正 |
 | Packaging PASS | ✅ **主工作区与干净 clone 各跑一次**：`PACK_EXIT=0`、EXE 63.0 MB + ZIP 57.7 MB（**`77ff788` 与 `1dbd2fd`**）|
 
-**DRS + Transaction Remediation: [待 Pass G 结果后填写]**
+**DRS + Transaction Remediation: [待 Pass H 结果后填写]**
 
-**Ready for User Ground Branch E2E: [待 Pass G 结果后填写]**
+**Ready for User Ground Branch E2E: [待 Pass H 结果后填写]**
 
 > 若为 `NO` 且不存在外部阻塞，则继续整改，不停。
