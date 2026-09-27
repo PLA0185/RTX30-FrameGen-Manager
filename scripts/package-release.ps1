@@ -187,19 +187,52 @@ Get-Content $SumsTmp | ForEach-Object { Write-Host "  $_" }
 
 # ── 8b. 到这里才替换正式产物（**前面任何一步失败都没有动过旧产物**）──────
 #
-# **顺序本身就是保证**：先把全部产物做出来并核对完（EXE 在 `$StageTmp`、ZIP 在 `$ZipTmp`、
-# 哈希已经算过），**最后**才一次性替换**四个**正式名（目录 / ZIP / SHA256SUMS）。
-# 这样任何一步失败时，用户手上仍然是**一份自洽的旧发布**（旧 EXE + 旧 ZIP + 与它们对应的旧 SHA256SUMS）。
+# **顺序是保证的一半**：先把全部产物做出来并核对完（EXE 在 `$StageTmp`、ZIP 在 `$ZipTmp`、
+# 哈希已经算过），**最后**才替换那三个正式名（目录 / ZIP / SHA256SUMS）。
 #
-# ⚠️ **替换本身不能「先删后移」**（Pass E 报出）：`Remove-Item` 之后再 `Move-Item`，若移动失败
-#（被占用、杀软刚锁上刚生成的 EXE），用户手上**既没有旧的也没有新的**。
-# `Move-Item -Force` 会直接覆盖目标，没有那个中间状态。
+# ⚠️ **另一半是「每个替换动作本身要尽量原子」—— 这是 Pass F 实测后改的，此前两处注释都是错的：**
+#   · `Remove-Item -Recurse -Force` **不是全有或全无**：目录里只要有一个文件被锁，它会**部分删除**
+#     （实测：4 个文件的目录锁住 1 个 ⇒ 抛 IOException，**其余 3 个含 `DLSSGManager.exe` 已被删除**）。
+#   · `Move-Item -Force` **不是原子覆盖**，它是 delete-then-move：**目标存在且源被锁**时抛 IOException，
+#     而**目标已经被删掉了** —— 正是这里声称要消除的那个状态。
+#（本机 Windows PowerShell 5.1 是唯一真实宿主：脚本 `#Requires -Version 5.1`，且本机没有 `pwsh` 7。）
+#
+# 所以改成：
+#   · **目录**：先把旧的改名成 `.old`（原子），再把新的放到位，**最后**才删 `.old`。
+#     任何一步失败时**旧目录要么还叫原名、要么完整地以 `.old` 存在**，绝不会是半个。
+#   · **文件**：用 `[System.IO.File]::Replace`（同卷、有备份语义的原子替换）。
 Step "替换正式产物"
-if (Test-Path $StageDir) { Remove-Item $StageDir -Recurse -Force }
-Move-Item $StageTmp $StageDir
 
-Move-Item $ZipTmp $ZipPath -Force
-Move-Item $SumsTmp $SumsPath -Force
+# 目录：rename → 放新的 → 删旧的
+$oldStage = "$StageDir.old"
+if (Test-Path $oldStage) { Remove-Item $oldStage -Recurse -Force -ErrorAction SilentlyContinue }
+if (Test-Path $StageDir) { Rename-Item $StageDir $oldStage }
+Move-Item $StageTmp $StageDir
+if (Test-Path $oldStage) { Remove-Item $oldStage -Recurse -Force -ErrorAction SilentlyContinue }
+
+# 文件：**与目录同一个模式**（rename 旧的走 → 放新的 → 删旧的）。
+#
+# ⚠️ 这里换过三种写法，每一种都因为「我以为的 API 语义」与实际不符而失败：
+#   ① `Move-Item $src $dst -Force` —— 实测**不是原子覆盖**，是 delete-then-move：
+#      目标存在且源被锁时抛 IOException，而**目标已经被删掉了**（Pass F 实测）。
+#   ② `foreach ($pair in @(@($a,$b), @($c,$d)))` —— PowerShell **把嵌套数组展平**，
+#      `$pair` 成了单个字符串、`$pair[0]` 是它的第一个字符。
+#   ③ `[System.IO.File]::Replace($src, $dst, $null)` —— 报
+#      「Exception calling "Replace" with "3" argument(s): The path is not of a legal form.」
+#
+# **所以不再依赖任何特殊 API 的语义**，只用最朴素的 `Rename-Item` / `Move-Item`：
+# **任何一步失败时，目标要么还是完整的旧文件、要么已经是完整的新文件**，不会是半个或没有。
+function Replace-Artifact([string]$src, [string]$dst)
+{
+    $old = "$dst.old"
+    if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $dst) { Rename-Item $dst $old }
+    Move-Item $src $dst
+    if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
+}
+
+Replace-Artifact $ZipTmp $ZipPath
+Replace-Artifact $SumsTmp $SumsPath
 
 # **替换之后要重新指向正式路径** —— 临时目录已经不存在了，汇总段若仍用 `$exe` / `$ZipTmp`
 # 的旧值，`Get-Item` 会找不到文件（本脚本第一次跑新顺序时就踩到）。
