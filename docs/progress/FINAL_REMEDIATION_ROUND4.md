@@ -37,7 +37,7 @@
 |---|---|
 | `build -c Release --no-incremental` | **0 错误 / 0 警告**（`bfd2fe4`） |
 | Harness（**本地**，含 `extra-proxies/d3d12.dll`） | **955 通过 / 0 失败 / 10 跳过**（`bfd2fe4`） |
-| Harness（**干净 clone**，无 `d3d12.dll`） | **905 通过 / 0 失败 / 10 跳过**（`ab6dff8`，**其后未复测**） |
+| Harness（**干净 clone**，无 `d3d12.dll`） | **932 通过 / 0 失败 / 10 跳过**（`77ff788`） |
 | 打包脚本 `scripts/package-release.ps1` | **`EXIT=0`** —— EXE **63.0 MB** · ZIP **57.7 MB** · SHA256SUMS（`bfd2fe4`） |
 | `--nvapi-smoke --loop` | **200 次真实读取，驱动被触达 200/200，异常 0** |
 | `--nvapi-smoke` | A1–A4 PASS · B1 ABI 层 PASS · B2 NOT_FOUND · C/D NOT_RUN |
@@ -46,8 +46,9 @@
 | `--network-smoke` | PASS |
 
 **★ 口径说明（必须写进结论里）**：
-- **本地数字（955）实测于 `bfd2fe4`；干净 clone 的数字（905）实测于更早的 `ab6dff8`，之后没有再复测** —— 而 Pass C 之后新增了若干断言，所以干净 clone 的当前值**必然高于 905**。**它将在 §23 clean-state RC 时重新测量**，在那之前不得把 905 当成当前值。
-- **干净环境比本地少 23 项**（`ab6dff8`：本地 928、干净 905）。这个差额**全部**来自 `extra-proxies/d3d12.dll` —— 该文件被 `.gitignore` 排除（设计上由使用者自备），干净树里相关断言走「不存在则如实跳过」分支。**这不是隐藏的开发机依赖；但把本地数字写成通用数字是错的。**
+- **两侧都实测于最终代码**：本地 **955**（含 `extra-proxies/d3d12.dll`）与干净 clone **932**（不含），**均实测于 `77ff788`**。干净 clone 的测量方式：`git clone --no-hardlinks` 到临时目录 → `build --no-incremental` **0 错误 / 0 警告** → Harness **932 通过 / 0 失败 / 10 跳过**；**并确认 `extra-proxies/d3d12.dll` 在该 clone 中不存在**（那是「干净」的前提，不确认就等于没测）。
+- **差值是 23，而且它跨了两轮大量修复保持不变**：上一轮实测（`ab6dff8`）本地 928 / 干净 905，同样差 23。**本地从 928→955、干净从 905→932，两边都涨了 27** —— 这比单个数字更有说服力：**它说明那 23 项确实全部来自 `extra-proxies/d3d12.dll`，而不是某个随时间漂移的隐藏依赖。**
+- 该文件被 `.gitignore` 排除（设计上由使用者自备），干净树里相关断言走「不存在则如实跳过」分支。**这不是隐藏的开发机依赖；但把本地数字写成通用数字是错的。**
 **★ 跳过数两边都是 10**（不再是 9）—— 因为原先一处**静默 `return;`** 的守卫（`Adopt` 的 `ProviderId`）已改为走套件的跳过机制（计数 + 打印），这是它**可见**的结果。
 
 ---
@@ -167,7 +168,7 @@
 | 完成条件 | 状态 |
 |---|---|
 | Build PASS | ✅ 0 错误 / 0 警告 |
-| Harness PASS | ✅ 本地 **955**/0/10（`bfd2fe4`）· **干净环境 905**/0/10（`ab6dff8`，**§23 会复测**） |
+| Harness PASS | ✅ 本地 **955**/0/10 · **干净 clone 932**/0/10（**均实测于 `77ff788`**，差 **23** 全部来自 `extra-proxies/d3d12.dll`） |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
 | **Independent Code Review PASS** | **[待 Pass D]** |
