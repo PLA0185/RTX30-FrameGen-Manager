@@ -96,7 +96,26 @@ public static class LibraryStore
         }
         catch (Exception ex)
         {
-            AppPaths.Log("读取库文件失败: " + ex.Message);
+            // **损坏的文件必须先挪走，否则它会被下一次 `Save` 覆盖掉。**
+            //
+            // 这里的失败路径曾经只写一行日志：读不出来 ⇒ 返回空库 ⇒ 用户看到「游戏列表没了」，
+            // 而**只要他做任何一次改动，`Save` 就会把那些损坏但可能还能抢救的字节覆盖成一份新库**
+            // （连同里面所有的部署记录）。**用户既没有得到提示，也没有留下任何可恢复的东西。**
+            //
+            // 现在把它改名成 `.corrupt-<时间戳>` 保留现场，并在日志里写出位置 ——
+            // 这样「读不出来」这件事**不消耗掉原始的字节**，需要时还能人工看一眼或抢救。
+            AppPaths.Log($"读取库文件失败: {ex.Message}");
+            try
+            {
+                var salvage = $"{file}.corrupt-{DateTime.Now:yyyyMMdd_HHmmss}";
+                File.Move(file, salvage, overwrite: true);
+                AppPaths.Log($"损坏的库文件已保留为: {salvage}（本次以空库继续，原文件未被覆盖）");
+            }
+            catch (Exception moveEx)
+            {
+                // 连改名都失败（被占用、无权限）—— 此时**更要**说明，因为那份文件接下来有被覆盖的风险。
+                AppPaths.Log($"无法保留损坏的库文件（{moveEx.Message}）；它可能在下一次保存时被覆盖。");
+            }
         }
 
         return new AppData();

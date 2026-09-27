@@ -2605,9 +2605,29 @@ public static class Program
         Check("备份哈希往返一致", g2?.Deployment?.Backups[0].Sha256 == "AA");
 
         // Corrupt input must degrade to an empty library rather than throw on startup.
-        File.WriteAllText(Path.Combine(work, "broken.json"), "{ this is not json");
-        var fallback = LibraryStore.Load(Path.Combine(work, "broken.json"));
+        var brokenPath = Path.Combine(work, "broken.json");
+        File.WriteAllText(brokenPath, "{ this is not json");
+        var fallback = LibraryStore.Load(brokenPath);
         Check("损坏的库文件回退为空库", fallback.Games.Count == 0);
+
+        // **但「回退为空库」不能以「覆盖掉原文件」为代价。**
+        //
+        // 这条路径曾经只写一行日志：读不出来 ⇒ 空库 ⇒ 用户看到「游戏列表没了」，
+        // 而**只要他做任何一次改动，`Save` 就会把那些损坏但可能还能抢救的字节覆盖掉**
+        // （连同里面所有部署记录）。用户既没得到提示，也没留下任何可恢复的东西。
+        //
+        // 现在损坏的文件会被改名成 `.corrupt-<时间戳>`。这里断言**原文件仍在**（内容未被吃掉）
+        // —— 那是「可恢复」的唯一前提。
+        Check("损坏的库文件被保留下来而不是被丢弃（§17 P2-⑥）",
+            !File.Exists(brokenPath)
+                && Directory.GetFiles(work, "broken.json.corrupt-*").Length == 1,
+            "原路径仍在: " + File.Exists(brokenPath)
+                + " / 保留副本数: " + Directory.GetFiles(work, "broken.json.corrupt-*").Length);
+
+        var salvaged = Directory.GetFiles(work, "broken.json.corrupt-*").FirstOrDefault();
+        Check("保留的副本内容与损坏前一致（§17 P2-⑥）",
+            salvaged is not null && File.ReadAllText(salvaged) == "{ this is not json",
+            salvaged is null ? "(没有保留副本)" : File.ReadAllText(salvaged));
 
         // Out-of-range values from a hand-edited file get clamped on load.
         File.WriteAllText(Path.Combine(work, "outofrange.json"),
