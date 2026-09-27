@@ -1,4 +1,4 @@
-﻿# 第四轮 · 自主闭环整改报告（§28）
+# 第四轮 · 自主闭环整改报告（§28）
 
 > **状态：草稿，等待 Pass E 结果填入。** 标 `[待 Pass E]` 的位置在审查返回后更新。
 >
@@ -21,11 +21,12 @@
 | **E** | MFG payload 正规化 | `PrepareCanonicalPayload` 把嵌套发行包转成 canonical 布局；实测 `ModSource.IsValid` **False → True** |
 | **F** | `FilesToDeploy` = 最终目标路径清单 | 真实 payload **312/445 文件 → 4**（`dinput8.dll` / `version.dll` / `winmm.dll` / `dlssg_sm86.ini`） |
 | **G** | `DeploymentFileSource` | `PlannedFile` 带 `SourceKind`；**`Generated` 的文件不再被拿去要求它存在于 payload** |
-| **H** | Plan = 实际写入 | `FilesToDeploy` 与 `PlannedFiles` **同源派生**；Executor 的一致性校验是**双向**的 |
+| **H** | Plan = 实际写入 | `FilesToDeploy` 与 `PlannedFiles` **同源派生**；Executor 的一致性校验是**双向**的（**「计划里有、实际没写」这个方向是 Pass C 的 P0-1 之后才补上的** —— 在此之前只有「写了计划外的」那一半） |
 
 ### §29 顺序中的其余条目
 
-§7（提权对照）· §8（smoke EXE 名 GUID 唯一化 + 删后反查）· §10 · §11 · §13 · §14 · §15 · §16 —— 全部落地。
+§8（smoke EXE 名 GUID 唯一化 + 删后反查）· §10 · §11 · §13 · §14 · §15 · §16 —— 全部落地。
+**§7（提权对照）** —— **已完成的那一半**：非提权路径实测 `-137`、三门保持 `false`；**提权后往返全通、三门置 `true`**。**未完成的那一半**：**需要人工点 UAC**，属外部真实阻塞（见 §5 第 4 条），**不写成「全部落地」**。
 
 ---
 
