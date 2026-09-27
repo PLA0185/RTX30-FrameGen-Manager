@@ -429,6 +429,31 @@ public sealed class SmoothMotionWorkflow
                 errors, filesWritten: false, profileWritten: false, journal: profileJournal);
         }
 
+        // **provider 要求写驱动、而这个进程写不了 —— 必须在写入之前就停下。**
+        //
+        // MFG 必然带 `ProfileSettings`（`MfgSmoothProvider.cs:310`），而写 Profile 需要管理员权限
+        // （第四轮已在提权下真实证明：非提权返回 `-137`；三个能力门是 `internal static`、默认 false、
+        // 每次启动重置、生产路径不跑 smoke ⇒ **运行时 `CanWrite` 恒为 false**）。
+        //
+        // 曾经这里什么都不查 ⇒ 一路走到下面**先装文件、再配 Profile** ⇒ 写被拒 ⇒ **Failed + 整体回滚**。
+        // 用户看到的是「下载 15 MB → 装 → 删 → 报失败」，游戏目录被折腾了一遍却什么都没留下 ——
+        // 而这次运行**从一开始就不可能成功**。
+        //
+        // 红线「计划未放行前不写任何东西」的直接含义就是：**知道自己做不到的事，别先去动磁盘。**
+        // `_profile.Adapter.CanWrite` 就是 `NvApiDrsAdapter` 上那个门：`CanRead && WriteCallsProven
+        // && CanDelete && CanSave`。它在普通权限下恒为 false（写 Profile 需要管理员），
+        // 而**那正是预期状态而不是故障** —— 所以文案要给出「以管理员身份重新运行」这一步。
+        if (request.ProfileSettings is { Count: > 0 } && !_profile.Adapter.CanWrite)
+        {
+            var why = "本次安装需要修改 NVIDIA 驱动配置（Profile），而当前进程不具备完整写入能力" +
+                      "（需要 read + delete + save）。请以管理员身份重新运行后重试。";
+            errors.Add(why);
+            steps.Add(new WorkflowStep("配置 NVIDIA Profile", false, why));
+
+            return Finish(WorkflowOutcome.Blocked, SmoothMotionEvidence.None, steps, plan, request,
+                errors, filesWritten: false, profileWritten: false, journal: profileJournal);
+        }
+
         var needsConfirmation = plan.Status == PlanStatus.NeedsConfirmation || apiChoice.Conflicts;
 
         // A preview stops here, on purpose. The plan and the confirmation reasons are exactly what a caller needs
