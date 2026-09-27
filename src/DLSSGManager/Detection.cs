@@ -135,7 +135,18 @@ public static class Detection
             ct.ThrowIfCancellationRequested();
             var hit = ResolveFromMarker(dll);
             if (hit is null) continue;
-            hit.Source = Loc.T("Scan.SourceFolder");
+
+            // **`Source` 是数据，不是给人看的句子**（本会话第五处同型缺陷）。
+            //
+            // 它此前是 `Loc.T("Scan.SourceFolder")`（「目录扫描」/「Folder scan」），而这个值会经
+            // `MainWindow.Actions.cs` 的 `Notes = candidate.Source` 进 `GameEntry.Notes` ——
+            // **`Notes` 没有 `[JsonIgnore]`，而 `LibraryStore` 是整体序列化** ⇒ **本地化文案进了 `library.json`**。
+            // 症状很轻（`Notes` 在 UI 里零读取、从不显示），但同一句话还被用来做判定：
+            // `Store = candidate.Source.Contains("Steam") ? Steam : Manual` —— 那依赖
+            // **「这句文案恰好不含 Steam」**这个巧合；一旦有人把 `"Steam"` 也本地化，它就会静默失效。
+            //
+            // 改成与 `Detection.cs:112` 的 `"Steam"` **同构的稳定标识**。**显示时才本地化。**
+            hit.Source = "Folder";
             if (results.Any(x => string.Equals(x.RenderDir, hit.RenderDir, StringComparison.OrdinalIgnoreCase))) continue;
             progress?.Report(Loc.T("Scan.Found", hit.RenderDir));
             results.Add(hit);

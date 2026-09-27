@@ -694,6 +694,11 @@ public partial class MainWindow
                 // The scanner knows where it found this. A Steam discovery and a hand-added folder must not end up
                 // claiming the same provenance, because the store reaches the compatibility query: a result that
                 // says "works on Steam" is not evidence about a manual install.
+                //
+                // **判据读的是稳定标识（`"Steam"` / `"Folder"`），不是本地化文案** —— `Candidate.Source`
+                // 曾经在「目录扫描」那条分支上返回 `Loc.T(...)`，于是这里其实是拿一句中文去 `Contains("Steam")`。
+                // 它当时**碰巧**正确（中文「目录扫描」不含 Steam），但那是巧合而不是设计：
+                // **一旦有人把 `"Steam"` 也本地化，或者换一种语言时文案里出现 Steam，判据就会静默翻转。**
                 Store = (candidate.Source ?? "").Contains("Steam", StringComparison.OrdinalIgnoreCase)
                     ? StoreKind.Steam
                     : StoreKind.Manual,
