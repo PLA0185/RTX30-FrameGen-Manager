@@ -3481,6 +3481,15 @@ public static class Program
         var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
         var published = Path.Combine(repoRoot, "extra-proxies", "d3d12.dll");
 
+        // ⚠️ **这个方法里有【两段】需要那个自备文件的内容，而它们的第二个前置条件不同**：
+        //   · 前半段（识别 / 接管 / 恢复）只需要 `published`；
+        //   · 后半段（手工入口与自带入口并存）**还需要 `mod/`**。
+        // 此前后半段的 `_hasModFiles` 检查排在方法开头「缺 `published` 就 return」**之后**
+        // ⇒ 干净 clone（两者都没有）上**永远到不了它**，那条 `[跳过]` 也永不打印
+        // （Pass K 的 P2-5：本机 10 项「需要 Mod 文件」，干净 clone 只有 9 项）。
+        // **⇒ 把「两样都需要」的判断提到【两个 return 之前】** —— 这样一个跳过点都不会漏报。
+        var conflictPartRunnable = _hasModFiles && File.Exists(published);
+
         // 同 TestCommunityBuildIdentification：这个参考副本故意不入库（`.gitignore` 的
         // `extra-proxies/*.dll`），所以「它存在」不是一条可以要求的断言 —— 在干净 clone 里必然不存在，
         // 而那种失败会连带让打包脚本失败（它会先跑 Harness）。
@@ -3491,6 +3500,13 @@ public static class Program
         // 反而是规范写法 —— **同一族位置，我只改了两组、漏了这两组。**
         if (!File.Exists(published))
         {
+            // **后半段那个跳过点也要在这里报出来**（否则它在干净 clone 上永不出现 —— Pass K 的 P2-5）。
+            if (!conflictPartRunnable)
+            {
+                _skipped++;
+                Console.WriteLine("  [跳过] 手工入口与自带入口并存（需要 Mod 文件与 extra-proxies\\d3d12.dll）");
+            }
+
             _skipped++;
             _skippedNeedingCommunityProxy++;
             Console.WriteLine("  [跳过] 识别手工安装的 d3d12.dll"
@@ -3528,11 +3544,17 @@ public static class Program
         Check("INI 也一并清掉", !File.Exists(Path.Combine(dir, ModSource.IniName)));
 
         // Two proxies at once is still the crash the single-proxy rule exists for, and a hand-copied
-        // extra counts towards that, not just the project-signed ones. Needs the real signed payload.
-        if (!_hasModFiles)
+        // extra counts towards that, not just the project-signed ones.
+        //
+        // ⚠️ **这一段需要【两个】文件：一个可识别的 `d3d12.dll`（上面的 `published`）与 `mod/`。**
+        // 而它此前只检查 `_hasModFiles`，**且这个检查排在方法开头的「缺 `published` 就 return」之后**
+        // ⇒ 干净 clone（两者都没有）上**永远到不了这里**，于是那条 `[跳过]` 也永不打印
+        // （Pass K 的 P2-5：本机 10 项「需要 Mod 文件」，干净 clone 只有 9 项）。
+        // **⇒ 两个前置条件都写出来，并且都排在那两个 `return` 之前** —— 这样一个都不漏报。
+        if (!_hasModFiles || !File.Exists(published))
         {
             _skipped++;
-            Console.WriteLine("  [跳过] 手工入口与自带入口并存（需要 Mod 文件）");
+            Console.WriteLine("  [跳过] 手工入口与自带入口并存（需要 Mod 文件与 extra-proxies\\d3d12.dll）");
             return;
         }
 
