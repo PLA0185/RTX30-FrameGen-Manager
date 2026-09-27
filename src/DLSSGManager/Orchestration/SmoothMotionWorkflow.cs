@@ -158,15 +158,33 @@ public sealed record VerificationReport(
         Signals.Where(s => s.Present).All(s => s.Source.Length > 0 && s.ObservedAt is not null);
 }
 
-/// <summary>Signal names, shared so the report and its tests cannot drift apart.</summary>
+/// <summary>
+/// Signal names, shared so the report and its tests cannot drift apart.
+///
+/// <para><b>这些值是【稳定标识】，不是给人看的句子。</b>（Pass H 报出：它们此前是
+/// 「文件已部署」「驱动已保存设置」这样的**硬编码中文**。）</para>
+///
+/// <para><b>为什么必须改</b>：① 它们被当作**比较键**（`present.Any(s =&gt; s.Name == SignalNames.X)`）；
+/// ② 它们经 `VerificationReport.Reason` 的插值进入 `EvidenceRef.Reference`，
+/// 而那份证据**会写进 `recipe-memory.json`** ⇒ **持久化的是中文**；
+/// ③ 英文界面下用户会读到中文。</para>
+///
+/// <para><b>为什么审计没发现</b>：`LocalizationAudit` 只扫 `Loc.T("…")` 与 `{loc:Tr Key}`，
+/// **硬编码串完全在它的视野之外** —— 这与「死键」是同一种「审计只覆盖一个方向」的形态。</para>
+///
+/// <para><b>改值安全吗</b>：调用点全部是**按常量名**引用（`Program.cs` 二十余处 + 本文件六处），
+/// **没有一处写死字符串字面量**，所以改值不会漏掉任何调用点。
+/// 已存在的 `recipe-memory.json` 里若含旧的中文键，那些记录**不再匹配**（按新记录处理）；
+/// 它是**本地可重建的缓存**，不是用户数据，所以不做迁移。</para>
+/// </summary>
 public static class SignalNames
 {
-    public const string FilesInstalled = "文件已部署";
-    public const string ProxyLoaded = "游戏已加载代理";
-    public const string ProfileRequested = "已请求驱动启用";
-    public const string ProfileApplied = "驱动已保存设置";
-    public const string DebugBars = "Debug Bars 观察";
-    public const string PatchLog = "补丁日志显示生成帧";
+    public const string FilesInstalled = "files-installed";
+    public const string ProxyLoaded = "proxy-loaded";
+    public const string ProfileRequested = "profile-requested";
+    public const string ProfileApplied = "profile-applied";
+    public const string DebugBars = "debug-bars";
+    public const string PatchLog = "patch-log";
 }
 
 /// <summary>
