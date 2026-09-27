@@ -262,9 +262,19 @@ public partial class MainWindow
 
         if (game.Deployment is null)
         {
-            var body = Loc.T("Restore.NoRecord", game.Name);
-            if (MessageBox.Show(body, Loc.T("Restore.NoRecordTitle"), MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
-                return;
+            // **没有部署记录时，「继续」不可能成功，所以不该提供它。**
+            //
+            // 这里原来给的是一个 `OKCancel` 对话框，点 OK 就照常走 `RunRestore` —— 而
+            // `ProviderForRestore` 在**记录里没有 ProviderId** 时会直接拒绝（这是对的：还原必须用
+            // 当初安装它的那个 provider，猜一个就可能删错文件）。两者合起来的效果是：
+            // **对话框请用户确认一次，然后必然给他一行错误。**
+            //
+            // 改成纯告知，并把下一步指清楚 —— 用户需要知道的是「怎么才能有记录」，而不是
+            // 「要不要再试一次那个不会成功的东西」。
+            var why = Loc.T("Restore.NoRecord", game.Name);
+            MessageBox.Show(why, Loc.T("Restore.NoRecordTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
+            _log.Write("· " + why);
+            return;
         }
 
         RunRestore(game);
