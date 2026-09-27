@@ -721,8 +721,14 @@ public sealed class SmoothMotionWorkflow
             var verification = VerificationReport.FromSignals(signals);
             steps.Add(new WorkflowStep("运行验证", true, verification.Reason));
 
+            // **成功路径传真实值，不传 `false`。**（Pass E 报出：「当前无害但是语义谎言」。）
+            //
+            // 之所以此前「无害」，只是因为 `Finish` 在 `outcome != Failed` 时提前返回、从不读这两个参数 ——
+            // **而那正是它危险的地方**：将来有人在成功路径上读它们（例如统计本次写了多少文件），
+            // 会拿到一个恒为假的答案，而**没有任何东西提示他这是假的**。
+            // 与项目「如实回答」的口径一致：**参数说什么，就该是什么。**
             return Finish(WorkflowOutcome.Succeeded, verification.Level, steps, plan, request, errors,
-                filesWritten: false, profileWritten: false, verification);
+                filesWritten, profileWritten, verification);
         }
         catch (OperationCanceledException)
         {
@@ -731,6 +737,19 @@ public sealed class SmoothMotionWorkflow
         catch (Exception ex)
         {
             errors.Add($"编排过程中异常：{ex.Message}");
+
+            // ⚠️ **这里刻意传 `false`，而不是「保守地传 `true`」。**（Pass E 报出后我核对过这个权衡。）
+            //
+            // 异常可能发生在 `Execute` **内部**的任何一步 —— 包括**写文件之前**的那些校验。
+            // 若此时保守传 `true`，`Finish` 会去回滚，而**回滚用的是上一次的部署记录**
+            //（`game.Deployment` 只在成功路径被替换）⇒ **删掉的是用户上一次装好的、正在用的安装**。
+            // **这正是 Pass A 那个 P0 的形态**（零写入失败被当成写过 ⇒ 回滚掉用户的正常安装）。
+            //
+            // 两个方向的代价不对称：
+            //   · 漏回滚 ⇒ 本次的半成品留在游戏目录里（**用户看得见，重装一次即可覆盖**）；
+            //   · 误回滚 ⇒ **用户能用的东西被删掉**（他不知道为什么帧生成没了）。
+            // **⇒ 拿不准时选「不回滚」。** 这与 P2-⑤ 那次「查不到进程路径不拒绝部署」是同一条判据：
+            //   **两边都有代价时，选那个用户能自己纠正的。**
             return Finish(WorkflowOutcome.Failed, SmoothMotionEvidence.None, steps, plan, request, errors,
                 filesWritten, profileWritten, journal: profileJournal);
         }
