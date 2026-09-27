@@ -203,36 +203,87 @@ Get-Content $SumsTmp | ForEach-Object { Write-Host "  $_" }
 #   · **文件**：用 `[System.IO.File]::Replace`（同卷、有备份语义的原子替换）。
 Step "替换正式产物"
 
-# 目录：rename → 放新的 → 删旧的
-$oldStage = "$StageDir.old"
-if (Test-Path $oldStage) { Remove-Item $oldStage -Recurse -Force -ErrorAction SilentlyContinue }
-if (Test-Path $StageDir) { Rename-Item $StageDir $oldStage }
-Move-Item $StageTmp $StageDir
-if (Test-Path $oldStage) { Remove-Item $oldStage -Recurse -Force -ErrorAction SilentlyContinue }
+# ⚠️ **三个替换必须是一个事务**（Pass G 报出：此前只做到了「每个动作内部原子」）。
+#
+# Pass F 修的是「每个 `Rename-Item` 自己不会把目标删一半」；而 Pass G 用失败注入证明**换序仍然有窗口**：
+# 目录先换成新的，随后 ZIP 或 SHA256SUMS 改名失败 ⇒ 落回「**新 EXE 目录 + 旧 ZIP + 旧 SUMS**」，
+# 而 `SHA256SUMS.txt` 正是用户拿来校验发布物的东西。
+#
+# 现在的做法是**两阶段**：
+#   阶段一（只做 rename，都可回退）：把三个旧正式名各自改成 `.old`。
+#     任一步失败 ⇒ **把已经改过名的逐个换回原名**（rename 是原子的，所以换回一定成功）。
+#   阶段二（放新的）：三个 `Move-Item`。同样，失败也要换回。
+# 最后才删 `.old`。
+#
+# **判据**：**「每个动作原子」不等于「一串动作原子」** —— 后者要靠「失败时能回到起点」来保证，
+# 也就是事务。这里的回滚很便宜（rename），所以没有理由不做。
 
-# 文件：**与目录同一个模式**（rename 旧的走 → 放新的 → 删旧的）。
-#
-# ⚠️ 这里换过三种写法，每一种都因为「我以为的 API 语义」与实际不符而失败：
-#   ① `Move-Item $src $dst -Force` —— 实测**不是原子覆盖**，是 delete-then-move：
-#      目标存在且源被锁时抛 IOException，而**目标已经被删掉了**（Pass F 实测）。
-#   ② `foreach ($pair in @(@($a,$b), @($c,$d)))` —— PowerShell **把嵌套数组展平**，
-#      `$pair` 成了单个字符串、`$pair[0]` 是它的第一个字符。
-#   ③ `[System.IO.File]::Replace($src, $dst, $null)` —— 报
-#      「Exception calling "Replace" with "3" argument(s): The path is not of a legal form.」
-#
-# **所以不再依赖任何特殊 API 的语义**，只用最朴素的 `Rename-Item` / `Move-Item`：
-# **任何一步失败时，目标要么还是完整的旧文件、要么已经是完整的新文件**，不会是半个或没有。
-function Replace-Artifact([string]$src, [string]$dst)
+$artifacts = @(
+    @{ Live = $StageDir;  Tmp = $StageTmp;  Old = "$StageDir.old";  Kind = 'dir'  },
+    @{ Live = $ZipPath;   Tmp = $ZipTmp;    Old = "$ZipPath.old";   Kind = 'file' },
+    @{ Live = $SumsPath;  Tmp = $SumsTmp;   Old = "$SumsPath.old";  Kind = 'file' }
+)
+
+# 先清掉上一次可能留下的 .old（**失败时不再静默** —— 上一次那两处 `-ErrorAction SilentlyContinue`
+# 实测会让一次运行 EXIT=0 却留下 .old，而**下一次**以 `Cannot create a file when that file already exists`
+# 失败、真因从不打印。这里显式检查并报告。）
+foreach ($a in $artifacts)
 {
-    $old = "$dst.old"
-    if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
-    if (Test-Path $dst) { Rename-Item $dst $old }
-    Move-Item $src $dst
-    if (Test-Path $old) { Remove-Item $old -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $a.Old)
+    {
+        Remove-Item $a.Old -Recurse -Force -ErrorAction Stop
+    }
 }
 
-Replace-Artifact $ZipTmp $ZipPath
-Replace-Artifact $SumsTmp $SumsPath
+# 阶段一：全部改成 .old（失败的换回来）
+$moved = New-Object System.Collections.ArrayList
+try
+{
+    foreach ($a in $artifacts)
+    {
+        if (Test-Path $a.Live)
+        {
+            Rename-Item $a.Live $a.Old -ErrorAction Stop
+            [void]$moved.Add($a)
+        }
+    }
+
+    # 阶段二：放新的
+    foreach ($a in $artifacts)
+    {
+        Move-Item $a.Tmp $a.Live -ErrorAction Stop
+    }
+}
+catch
+{
+    $reason = $_.Exception.Message
+    Write-Warning "替换失败，正在恢复原状：$reason"
+
+    # 回滚：先撤已经放上去的新产物（它们此刻占着正式名），再把 .old 换回原名。
+    foreach ($a in $artifacts)
+    {
+        if (Test-Path $a.Tmp) { continue }        # Tmp 还在 ⇒ 它还没被放上去
+        if (Test-Path $a.Live)
+        {
+            if ($a.Kind -eq 'dir') { Remove-Item $a.Live -Recurse -Force -ErrorAction SilentlyContinue }
+            else { Remove-Item $a.Live -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    for ($i = $moved.Count - 1; $i -ge 0; $i--)
+    {
+        $a = $moved[$i]
+        if (Test-Path $a.Old) { Rename-Item $a.Old $a.Live -ErrorAction Stop }
+    }
+
+    throw "替换正式产物失败，旧产物已恢复：$reason"
+}
+
+# 到这里三个都换好了 —— 才删 .old
+foreach ($a in $artifacts)
+{
+    if (Test-Path $a.Old) { Remove-Item $a.Old -Recurse -Force -ErrorAction Stop }
+}
 
 # **替换之后要重新指向正式路径** —— 临时目录已经不存在了，汇总段若仍用 `$exe` / `$ZipTmp`
 # 的旧值，`Get-Item` 会找不到文件（本脚本第一次跑新顺序时就踩到）。
