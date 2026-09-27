@@ -413,7 +413,13 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 4. **`--nvapi-write-smoke` 的提权路径无自动测试** —— 需要人工点 UAC，属**外部真实阻塞**（§27 允许的停止理由）。
 5. **运行时 `CanWrite` 仍为 `false`** —— 三个能力门是 `internal static` 进程内状态：默认 `false`、每次启动重置、生产路径不跑 smoke。**提权路径已被真实证明，但生产运行不会自动获得该状态。**（**已由「写入前 Blocked」妥善处理**：做不到就不动磁盘，而不是装完再删。）
 6. **`P2-③` 的「写」那一半未接线** —— 矩阵**不会自动积累**兼容性记录（`Add`/`Persist` 在 `src/` 无调用者）。这是**有意留待产品决策**：它会改变产品行为（用户会因此少看到确认框），且需要先定义**什么算一次可靠的记录**。**「读」那一半已接线并有断言守护。**
-7. **零消费者/零生产者声明**（如实标注，不写成「已生效」）：`NvApiStatus.RequiresElevation` · `IsNameCollision` · `ProviderRegistry.AllHealth()` · `DeploymentFileSource.ExistingReusable` · `ProviderMetadata` 的 8 个字段 · `OpResult.RollbackHandled`（它在 `src/` 只有写入、没有读取 —— 详见该属性的文档）· **`WasProfileCreated`（零生产者）**。
+7. **零消费者/零生产者声明**（如实标注，不写成「已生效」）：`NvApiStatus.RequiresElevation` · `IsNameCollision` · `ProviderRegistry.AllHealth()` · `DeploymentFileSource.ExistingReusable` · `ProviderMetadata` 的 8 个字段 · `OpResult.RollbackHandled`（它在 `src/` 只有写入、没有读取 —— 详见该属性的文档）。
+   **⚠️ 我曾把 `WasProfileCreated` 列在这里说它是「零生产者」，而那是错的**（本轮自查发现）：
+   - 它**有**写入点：`SmoothMotionWorkflow.cs:709`（创建 `ProfileJournal` 时赋 `false`）；
+   - **但 `src/` 里从来没有 `WasProfileCreated = true`**（`= true` 只出现在 `test/Harness/Program.cs:5439/5484` 的测试夹具里）⇒ 消费者 `NvidiaProfileService.cs:659` 的 `if (failed == 0 && journal.WasProfileCreated)` **那一支在生产里永不执行**；
+   - **而这是【有意的保守】**：该处注释写着「**删掉用户原有的 Profile 比留下残留严重得多**」⇒ **永不删 Profile、宁留残留**，方向是安全的那一侧。
+   **⇒ 正确写法是「只有一个写入点、且它使该标志恒为 `false` ⇒ 消费者那一支不可达；这是有意的保守」**，而不是「零生产者」。
+   **★ 方法教训**：**「零 X」这类断言必须看【全部】写入点** —— 我说它是「零生产者」，而它其实**有**生产者，只是那个生产者**从不产出 `true`**。**这是我自己写下过的那条判据（清单必须由全量扫描得出）的又一次反例。**
    **★ 还有一条更值得写的（Pass J 的 P2-⑨）**：**`UI/Presentation.cs` 的 `StatusPresenter` / `LibraryPresenter` / `AdvancedPanel` 在生产里零消费者** —— 全 `src/` grep 只有 `Presentation.cs` 自己引用；三个 WPF 窗口一个都没调（`NavigationModel` 是唯一接线的一处，`MainWindow.xaml.cs:541`）。
    **⇒ 这意味着 `TestPresentationLayer` 那 20+ 条「诚实性」断言，证明的是一个【成品从不执行的模块】，而不是界面。** 这与「矩阵写那一半未接线」同类，但**更值得记**：那条是「有 API 无调用者」，这条是「**有测试、有断言、但被测对象不在成品里**」—— 它让「UI 层有 20+ 条断言」这个印象**在事实上是空的**。
    **「死键」也属于这一类。** Pass J 逐键扫过全部 **416** 个键（排除两个语言表本身）后的准确清单是：**21 个键零引用** —— `Common.Ok` · `Common.Yes` · `Common.No` · `Common.Unknown` · `Deploy.Settings` · `Deploy.AllProxiesTaken` · `Restore.RemoveLogsOption` · `Adopt.ManualVersion` · `Batch.Item` · `Status.DeployedDetail` · `Status.Summary` · `Status.SummaryBackups` · `Gpu.NameWithDriver` · `Fetch.PickerSingleNote` · `Fetch.Confirm` · `Fetch.ConfirmTitle` · `ModSource.IniMissingAt` · `Page.Library.Purpose` · `Page.Dashboard.NoGamesTitle` · `Page.Dashboard.NoGamesBody` · `Error.DirNotFound`；**另有 4 个只在注释里**（`Adopt.AdoptedSuffix` · **`Gpu.NotFound`** · `List.NewGame` · `Scan.SourceFolder`）。
