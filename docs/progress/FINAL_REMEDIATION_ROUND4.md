@@ -1,8 +1,8 @@
-# 第四轮 · 自主闭环整改报告（§28）
+﻿# 第四轮 · 自主闭环整改报告（§28）
 
-> **状态：草稿，等待 Pass F 结果填入。** 标 `[待 Pass F]` 的位置在审查返回后更新。
+> **状态：草稿，等待 Pass G 结果填入。** 标 `[待 Pass G]` 的位置在审查返回后更新。
 >
-> 基线 `4cf3462` · 本文件最近更新时 HEAD `72d77cb` · **104 个提交**（**其中 2 个因网络中断尚未推送**）· 无 force push · 未打 Stable Tag。
+> 基线 `4cf3462` · 本文件最近更新时 HEAD `1dbd2fd` · **110 个提交**（**全部已推送**）· 无 force push · 未打 Stable Tag。
 
 ---
 
@@ -138,7 +138,38 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 1. **「注释声称已修」比缺口本身更危险** —— 审查者原话：「**缺口已自陈，但注释声称已修比缺口本身更危险 —— 下一位读者会信它、不会再去查。**」缺口的代价是行为不对；**错误注释的代价是它永远不会被发现**。
 2. **「写出教训」不等于「执行了教训」** —— 我为 `CanAttemptRestore` 写的文档原文就是「判据只有一份……同一件事在两处各写一遍，迟早只改一处」，**而实际有三处入口，我只改了一处**。**写完这类注释后，必须 grep 该判据的【全部】使用点逐个核对。**
 
-**§18 的状态**：Pass A/B/C/D/E **各报出缺陷 ⇒ 计数已重来五次**；**Pass F 是新周期的第一轮，正在运行。**
+### Pass F
+
+**结论：0 P0 / 1 P1 / 5 P2。** 审查者做了**失败注入实测**（这是前几轮都没做的：此前对打包脚本只有静态阅读）。
+
+**P1-1 —— 打包脚本的产物替换不是原子的，而我的注释声称它已经解决了。** 三个可复现实例：
+
+| 构造 | 结果 |
+|---|---|
+| 目录里锁住一个文件 | `Remove-Item -Recurse -Force` 抛 `IOException`，**其余 3 个（含 `DLSSGManager.exe`）已被删除** ⇒ 旧发布**部分摧毁** |
+| 目标存在 + **源被锁** | `Move-Item -Force` 抛 `IOException`，**目标文件已被删除** ⇒ 正是我声称已消除的状态 |
+| 目标被锁、源自由 | 失败但目标保留 ✅（这个方向安全） |
+
+**⇒ `Move-Item -Force` 是 delete-then-move，不是原子覆盖。** 而目录那一路**本身就是显式的「先删后移」**，我却在注释里写「替换本身不能先删后移」。审查者还纠正：注释写「四个正式名」，实际列了三个。
+**这一处我改了三遍才成**：① `Move-Item -Force`（非原子）→ ② `foreach ($pair in @(@($a,$b), …))`（**PowerShell 展平嵌套数组**，`$pair[0]` 成了字符串首字符）→ ③ `[IO.File]::Replace`（报 `The path is not of a legal form.`）→ ④ **`Rename-Item` 旧的走 → 放新的 → 删旧的**（跑通）。
+**判据**：**需要「全有或全无」时，不要找「本来就原子」的 API，而是用最朴素的 rename 序列自己构造** —— 那三个 API 的原子性各不相同且文档不承诺，而 `Rename-Item` 的语义没有歧义。**而这个正确样板在项目里一直就有**（`Store.cs` 保存库文件用的就是「临时名 + 改名」）。
+
+**它同时报出我修复中的四条残留，其中两条是「我自己写的错注释」**：
+- **P2-2**：我上一轮的注释写着「这里刻意传 `false`」，而**那一行一直传的是变量 `filesWritten`**（`git log -L` 证明该实参自 `af7af4b` 起从未变过）——**我改的是成功路径，却在异常路径写了一段论证「为什么不保守传 true」的注释，而那一行根本没动。** 危险在于：**若下一位读者照注释把实参改成字面 `false`，会永久禁用 `filesWritten == true` 时的回滚。**
+- **P2-3**：我的注释称 `ProviderForRestore` 有「三个失败分支」，实际**只有两个**（`ProviderRegistry.Get` 是一次字典查找，**不构造、不 I/O、不抛**）。
+- **P2-1**：`Adopt` 的 `DeployedAt` **也拼本地化后缀**（`Loc.T("Adopt.AdoptedSuffix")`）⇒ 同样进 `library.json` —— **就在我刚修好的 `ModVersion` 下面两行**。危害限于显示（无解析/排序/键依赖）。
+- **P2-4**：`MainWindow.Protection.cs:31` `game.Name == Loc.T("List.NewGame")` —— **恒假**（`List.NewGame` 全仓无写入点）**且跨语言敏感**。它比前三处更能说明根源：**不只是「把文案写进了数据」，而是拿显示文案去做判定**（中文下命中、切英文后失效），而它本来要判的是「名字是不是空的」。
+
+**★ 由此固化了本条判据（本项目第四次修它，所以写清）**：
+> **本地化文案永远不参与数据、比较与持久化，只参与显示。**
+
+**P2-5（覆盖缺口）与它的处置**：搬迁后的 4 条守护是**条件覆盖** —— 它们依赖 `extra-proxies\d3d12.dll`（`.gitignore` 排除）。实测对照：**导出副本 946 通过 / 0 失败 / 10 跳过**（4 条整段显式跳过）· **补上该文件后 973 / 0 / 10**（4 条全部通过）。
+**评估后判定不改**：减负的两条出路分别是「给 `KnownCommunityBuildHashes` 加可写入口（**改生产**）」与「把断言搬离 `Adopt`（**降覆盖** —— 把『有条件但真实』换成『无条件但无关』，那比现状更糟，因为它同样给人『已覆盖』的印象，却连在有 `extra-proxies` 的机器上都不再检查 `Adopt`）」。
+**⇒ 保留现状，在 §3b 里把「本机跑、干净 clone 跳过」写明。这不是「没做」，而是评估后判定不该做。**
+
+**★ 另一条判据**：**不为了覆盖率数字而做「净损失为正的交换」。** 覆盖率一旦成为目标就会被优化成数字 —— 本会话已见过两种形式（**恒真断言** / **把缺陷写成期望**），而这条出路会是第三种（**把断言搬到一个总会跑但检查别的东西的位置**）。
+
+**§18 的状态**：Pass A–F **各报出缺陷 ⇒ 计数已重来六次**；**Pass G 是新周期的第一轮，正在运行。**
 
 **基线**：审查者开工时 HEAD `a0c0247`，收尾时已被推进 —— **这是本会话第三次基准漂移**，也是为什么后来要求审查者一律用 `git archive` 导出。
 
@@ -240,14 +271,14 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 | Harness PASS | ✅ 本地 **955**/0/10 · **干净 clone 932**/0/10（**均实测于 `77ff788`**，差 **23** 全部来自 `extra-proxies/d3d12.dll`） |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
-| **Independent Code Review PASS** | **[待 Pass F]** |
+| **Independent Code Review PASS** | **[待 Pass G]** |
 | No Known P0 | ✅ Pass A 的 P0 已修 + 回归断言 |
 | No Known P1 | ✅ Pass A 的 4 条 P1 已修 + 回归断言 |
 | Documentation Claims Match Code | ✅ §22 审计的 5 条过时陈述已在白板与报告中更正 |
 | Packaging PASS | ✅ 两次全新 clone 各跑一次打包：`exit=0`、EXE 63.0 MB + ZIP 57.7 MB |
 
-**DRS + Transaction Remediation: [待 Pass F 结果后填写]**
+**DRS + Transaction Remediation: [待 Pass G 结果后填写]**
 
-**Ready for User Ground Branch E2E: [待 Pass F 结果后填写]**
+**Ready for User Ground Branch E2E: [待 Pass G 结果后填写]**
 
 > 若为 `NO` 且不存在外部阻塞，则继续整改，不停。
