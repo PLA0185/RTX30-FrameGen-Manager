@@ -1,8 +1,8 @@
-# 第四轮 · 自主闭环整改报告（§28）
+﻿# 第四轮 · 自主闭环整改报告（§28）
 
-> **状态：草稿，等待 Pass E 结果填入。** 标 `[待 Pass E]` 的位置在审查返回后更新。
+> **状态：草稿，等待 Pass F 结果填入。** 标 `[待 Pass F]` 的位置在审查返回后更新。
 >
-> 基线 `4cf3462` · 本文件最近更新时 HEAD `22b2695` · **97 个提交**（**其中 6 个因网络中断尚未推送**）· 无 force push · 未打 Stable Tag。
+> 基线 `4cf3462` · 本文件最近更新时 HEAD `72d77cb` · **104 个提交**（**其中 2 个因网络中断尚未推送**）· 无 force push · 未打 Stable Tag。
 
 ---
 
@@ -109,7 +109,36 @@
 
 **9 条 P2 已全部处理**：`HasAnyKey` 判据与替换循环**同宽**（模板含认不出的键时不再静默丢设置）· 打包脚本 leak 名单与 `forbidden` 同宽 · **多产物发布改为「先全部生成、再一次性替换」**（此前会留下「新 EXE + 旧 ZIP + 旧 SHA256SUMS」）· `RecordOutcome` 的三重排除补上「**碰过磁盘**」· `CanAttemptRestore` 抽出**共用判据**（此前入口与执行两处**宽度不同**，老记录绕过了「不提供必然失败的操作」）· `Rollback` 在 `Save()` 失败时不再标记「已完成」· **库损坏时明确告知用户**（此前界面把「库损坏」显示成与「首次运行」无异的空列表）· MFG 正规化失败的裸 `catch` 现在记日志 · `RollbackHandled` 零读取者**如实标注**（而非硬接一个读取者）。
 
-**§18 的状态**：Pass A/B/C/D **各报出缺陷 ⇒ 计数已重来四次**；**Pass E 是新周期的第一轮，正在运行。**
+### Pass E
+
+**结论：0 P0 / 2 P1 / 6 P2。** 本轮**跑了两次**（第一次运行在返回结论前中断，我什么都没拿到；重跑后返回）。
+
+**两个审查者独立指向同一条缺陷** —— `DeploymentService.cs:1138` 的 `Adopt` 仍把 `Loc.T("ModSource.UnknownVersion")` 写进 `ModVersion`：
+> **Pass D 那条 P1 的唯一残留产生点。** 我把「来源」修在了**读取端**（`ModSource.Version` 返回空串），**写入端漏了**。
+
+**后果链**（审查者逐环验证）：`Adopt` 写「未知」→ `GetInstalledVersion` 非空白即返回 → 回灌成 `ProviderVersion` → `ResolveProviderVersionAsync` 因非空白而**跳过真实版本解析** → payload 目录落到 `_unknown`，而**未接管**的游戏落真实版本目录 ⇒ **同一份 payload 被下载两次**；矩阵键永不匹配 ⇒ 每次配置多一次确认框；**而配方记忆是真写盘的**，切语言后 `recipe-memory.json` 里会留下「未知」与 `Unknown` **两条互不相认的记录**。
+**`Segment` 的值匹配兜底拦住了「目录名分裂」，但拦不住「解析被短路」** —— 这一点由回退验证精确证实（见 §3b）。
+
+**★ 为什么 Harness 全绿没发现 —— 一条全新的失效形态**：`Program.cs:2198` 的期望值取自**实现里的同一个表达式**：
+```csharp
+game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersion"))
+```
+**⇒ 把缺陷行为写成了期望。** 任何正确的修复都会让这条断言**失败**，而失败信息还会**把修复说成回归**。
+**这比恒真断言更隐蔽**：恒真断言是「永远绿」，这一条是「**把错误的行为钉死**」—— 它只在**正确修复之后**才暴露，而在那之前它看起来是一条正常工作的回归守护。**这正是我上一轮只修了读取端的原因之一：读取端没有这样的断言挡路，写入端有。**
+**第二层原因**：那条断言所在的 `TestAdopt` **首行就是 `SkipWithoutModFiles`** ⇒ 默认套件整段 return ⇒ 它**永不执行**。
+
+**修复**：① 写入端改空串；② 把守护**搬到 `TestAdoptRecordsProvider`**（用自造文件、非静默跳过），新增 4 条断言，**期望值全部独立于实现**；③ **跳过数仍为 10 而通过数 +4** —— 这是「它们真的在跑」的证据。
+
+**第二条 P1**：打包脚本的 `SHA256SUMS` 在**替换正式产物之前**写正式路径 ⇒ 替换失败会留下「旧 EXE + 旧 ZIP + **新** SUMS」⇒ 用户校验必然失败。**这是上一轮修复引入的新窗口**（为了让哈希从临时产物算而把写入提前了）。**已修**：写临时名，与产物一起最后替换。
+
+**6 条 P2**（**5 条已修**）：`DeploymentService.cs:1225` 拼出 `Mod  · …`（同一概念在 `MainWindow.xaml.cs` 有判空、这里没有）· `Segment` 用字典**索引器**读语言表（缺键会抛 `KeyNotFoundException` ⇒ **把「少一句翻译」升级成「所有 payload 路径崩溃」**）· leak 名单漏 `*.xml` · `FallbackTemplate` 缺 `Preset=`（用户选的 A/B 预设静默丢弃，**与已修的 P2-⑫ 后果同型**）· **`SmoothMotionWorkflow.cs:315` 的注释声称矩阵两端都接好了**。
+**剩 P2-5**（`SmoothMotionWorkflow.cs:726` 异常路径传 `filesWritten: false`）：审查者判定「理论成立、**生产可达性低**」，修它涉及控制流改动 —— **记入待办，不写成已修**。
+
+**★★ 两条判据（本项目应当长期保留）**：
+1. **「注释声称已修」比缺口本身更危险** —— 审查者原话：「**缺口已自陈，但注释声称已修比缺口本身更危险 —— 下一位读者会信它、不会再去查。**」缺口的代价是行为不对；**错误注释的代价是它永远不会被发现**。
+2. **「写出教训」不等于「执行了教训」** —— 我为 `CanAttemptRestore` 写的文档原文就是「判据只有一份……同一件事在两处各写一遍，迟早只改一处」，**而实际有三处入口，我只改了一处**。**写完这类注释后，必须 grep 该判据的【全部】使用点逐个核对。**
+
+**§18 的状态**：Pass A/B/C/D/E **各报出缺陷 ⇒ 计数已重来五次**；**Pass F 是新周期的第一轮，正在运行。**
 
 **基线**：审查者开工时 HEAD `a0c0247`，收尾时已被推进 —— **这是本会话第三次基准漂移**，也是为什么后来要求审查者一律用 `git archive` 导出。
 
@@ -194,14 +223,14 @@
 | Harness PASS | ✅ 本地 **955**/0/10 · **干净 clone 932**/0/10（**均实测于 `77ff788`**，差 **23** 全部来自 `extra-proxies/d3d12.dll`） |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
-| **Independent Code Review PASS** | **[待 Pass E]** |
+| **Independent Code Review PASS** | **[待 Pass F]** |
 | No Known P0 | ✅ Pass A 的 P0 已修 + 回归断言 |
 | No Known P1 | ✅ Pass A 的 4 条 P1 已修 + 回归断言 |
 | Documentation Claims Match Code | ✅ §22 审计的 5 条过时陈述已在白板与报告中更正 |
 | Packaging PASS | ✅ 两次全新 clone 各跑一次打包：`exit=0`、EXE 63.0 MB + ZIP 57.7 MB |
 
-**DRS + Transaction Remediation: [待 Pass E 结果后填写]**
+**DRS + Transaction Remediation: [待 Pass F 结果后填写]**
 
-**Ready for User Ground Branch E2E: [待 Pass E 结果后填写]**
+**Ready for User Ground Branch E2E: [待 Pass F 结果后填写]**
 
 > 若为 `NO` 且不存在外部阻塞，则继续整改，不停。
