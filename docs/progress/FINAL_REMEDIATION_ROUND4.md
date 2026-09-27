@@ -1,8 +1,8 @@
-# 第四轮 · 自主闭环整改报告（§28）
+﻿# 第四轮 · 自主闭环整改报告（§28）
 
-> **状态：草稿，等待 Pass D 结果填入。** 标 `[待 Pass D]` 的位置在审查返回后更新。
+> **状态：草稿，等待 Pass E 结果填入。** 标 `[待 Pass E]` 的位置在审查返回后更新。
 >
-> 基线 `4cf3462` · 本文件写作时 HEAD `ab6dff8` · **55 个已推送提交** · 无 force push · 未打 Stable Tag。
+> 基线 `4cf3462` · 本文件最近更新时 HEAD `22b2695` · **97 个提交**（**其中 6 个因网络中断尚未推送**）· 无 force push · 未打 Stable Tag。
 
 ---
 
@@ -72,7 +72,7 @@
 
 **审查者的方法论提醒（已采纳）**：**注入式反例必须建在 `git archive` 导出的 HEAD 上** —— 实现者会边审边改，工作树可能正处于变异态。
 
-**§18 的状态**：Pass A 报出缺陷 ⇒ 计数重来；Pass B 报出 1 个 P1 ⇒ **计数再次重来**；**Pass C 是新周期的第一轮，尚未运行。**
+**§18 的状态（截至 Pass B）**：Pass A 报出缺陷 ⇒ 计数重来；Pass B 报出 1 个 P1 ⇒ **计数再次重来**。（后续各轮的状态见每节末尾；**当前状态见 Pass D 那一节**。）
 
 ### Pass C
 
@@ -193,14 +193,14 @@
 | Harness PASS | ✅ 本地 **955**/0/10 · **干净 clone 932**/0/10（**均实测于 `77ff788`**，差 **23** 全部来自 `extra-proxies/d3d12.dll`） |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
-| **Independent Code Review PASS** | **[待 Pass D]** |
+| **Independent Code Review PASS** | **[待 Pass E]** |
 | No Known P0 | ✅ Pass A 的 P0 已修 + 回归断言 |
 | No Known P1 | ✅ Pass A 的 4 条 P1 已修 + 回归断言 |
 | Documentation Claims Match Code | ✅ §22 审计的 5 条过时陈述已在白板与报告中更正 |
 | Packaging PASS | ✅ 两次全新 clone 各跑一次打包：`exit=0`、EXE 63.0 MB + ZIP 57.7 MB |
 
-**DRS + Transaction Remediation: [待 Pass D 结果后填写]**
+**DRS + Transaction Remediation: [待 Pass E 结果后填写]**
 
-**Ready for User Ground Branch E2E: [待 Pass D 结果后填写]**
+**Ready for User Ground Branch E2E: [待 Pass E 结果后填写]**
 
 > 若为 `NO` 且不存在外部阻塞，则继续整改，不停。
