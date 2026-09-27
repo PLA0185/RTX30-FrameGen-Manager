@@ -130,9 +130,11 @@ public partial class MainWindow
     private static bool CanAttemptRestore(GameEntry game) =>
         game.Deployment is not null
         && !string.IsNullOrWhiteSpace(game.Deployment.ProviderId)
-        // **注册表里没有这个 id 也不行。** `ProviderForRestore` 有三个失败分支（没有 `ProviderId` ·
-        // id 不在注册表 · provider 构造失败），而入口此前只覆盖了第一个 ⇒ **放行之后只得到一行错误**。
-        // （Pass E 报出：这是「判据必须与执行一样宽」的又一处。）
+        // **注册表里没有这个 id 也不行。** `ProviderForRestore` 有两个失败分支（没有 `ProviderId` ·
+        // id 不在注册表），而入口此前只覆盖了第一个 ⇒ **放行之后只得到一行错误**。
+        // （Pass F 报出：我此前写的是「三个失败分支」，把「provider 构造失败」也算上了 ——
+        //  而 `ProviderRegistry.Get` 只是一次字典查找，**不构造、不 I/O、不抛**，那个分支不存在。
+        //  **判据本身不变，错的是我描述它的那句话** —— 而错误的注释会让下一位读者去找一个不存在的东西。）
         && Providers.AppProviders.Registry.Get(game.Deployment.ProviderId) is not null;
 
     private (Providers.IPatchProvider? Provider, string Error) ProviderForRestore(GameEntry game)

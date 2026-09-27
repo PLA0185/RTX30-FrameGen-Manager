@@ -28,7 +28,16 @@ public partial class MainWindow
         game.RenderDir = renderDir;
         if (exe is not null) game.ExePath = exe;
 
-        if (string.IsNullOrWhiteSpace(game.Name) || game.Name == Loc.T("List.NewGame"))
+        // **只判「名字是不是空的」，不判「它是不是那句本地化文案」。**（Pass F 报出。）
+        //
+        // 这里曾经是 `game.Name == Loc.T("List.NewGame")`，而全仓 `List.NewGame` **只有这一处比较
+        // 加两个语言表，没有任何写入点** ⇒ **恒假**（`AddGame_Click` 用的是 `Detection.FriendlyName`）。
+        // 更糟的是拿**本地化后的值**做比较：用户若真把游戏命名成「新游戏」，切到英文后这个比较就失效了
+        //（而中文下会命中）。
+        // **两个问题都是同一个根源：把「给人看的文案」当成「数据里的值」。**
+        // 与 `ModSource.Version` / `Adopt.ModVersion` / `Adopt.DeployedAt` 是同一条判据 —— 这是本会话
+        // 第四次修它，所以这里写清：**本地化文案永远不参与比较，只参与显示。**
+        if (string.IsNullOrWhiteSpace(game.Name))
         {
             var friendly = Detection.FriendlyName(renderDir);
             if (!string.IsNullOrWhiteSpace(friendly)) game.Name = friendly;

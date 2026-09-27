@@ -1146,7 +1146,18 @@ public static class DeploymentService
             // `recipe-memory.json` 里会留下「未知」与「Unknown」**两条互不相认的记录**。
             // （Pass D 那条 P1 的**唯一残留产生点**就在这里 —— 我把「来源」修在了读取端，写入端漏了。）
             ModVersion = (iniExists ? ModSource.ReadVersion(iniPath) : null) ?? "",
-            DeployedAt = File.GetLastWriteTime(proxyPath).ToString("yyyy-MM-dd HH:mm:ss") + Loc.T("Adopt.AdoptedSuffix"),
+
+            // **`DeployedAt` 也不拼本地化文案**（Pass F 报出 —— 就在上面那行的下面两行）。
+            //
+            // 它此前是 `… + Loc.T("Adopt.AdoptedSuffix")`（「（接管）」/「 (adopted)」），而
+            // `DeploymentInfo.DeployedAt` **没有 `[JsonIgnore]`** ⇒ **同样进 `library.json`**。
+            // 与 `ModVersion` 的区别只是危害更小：它没有解析、没有排序、没有键依赖，只用于显示
+            //（`MainWindow.xaml.cs` 的状态卡与 `DeploymentService` 的状态行）。
+            //
+            // **判据与 `ModVersion` 完全一致：给数据用的字段不写给人看的句子。**
+            // 「这是接管来的」这件事由 `ProviderId`（以及它是否等于某个「手工接管」的来源）表达 ——
+            // 显示层要加后缀，由显示层自己加。
+            DeployedAt = File.GetLastWriteTime(proxyPath).ToString("yyyy-MM-dd HH:mm:ss"),
             ProxySha256 = Sha256(proxyPath),
             IniSha256 = iniExists ? Sha256(iniPath) : "",
             RestoreFolder = "",
