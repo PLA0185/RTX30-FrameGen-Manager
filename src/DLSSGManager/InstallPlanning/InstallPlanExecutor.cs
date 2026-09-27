@@ -303,7 +303,24 @@ public static class InstallPlanExecutor
         var unexpected = deployed.Where(f => !planned.Contains(Leaf(f.FileName)))
             .Select(f => f.FileName).ToList();
 
-        var notDeployed = planned.Where(f => !deployed.Any(d => Leaf(d.FileName) == f)).ToList();
+        // **「计划中未部署」只对本次真正要写的文件成立。**
+        //
+        // `FilesToDeploy` 里含有 payload 提供的**每一个**可部署入口名（真实 MFG 是 3 个）—— 那是计划的
+        // **「可用入口」视图**。而 `Deploy` 每次**只写选定的那一个** + INI（其余待机代理只在游戏目录里
+        // 本来就存在时才留）。把两者直接对比，就会把「本次没选它」误判成「计划说了要写却没写」：
+        // 真实 MFG 的**第二次及以后**的运行必现 `计划中未部署的文件：dxgi.dll` ⇒ Failed + 回滚，
+        // **而那次回滚会把刚写的文件全部删掉**（用户原有的安装也一并没了）。
+        //
+        // 判据：**计划选定的那个入口是「要写」，同属 `ProxyCandidates` 的其它名字是「可选」。**
+        // 若计划没有选定入口（`ProxyChoice` 为 null，由 `Deploy` 自己 `PickFreeProxy` 决定），
+        // 则所有代理入口都算可选 —— 计划确实不知道会写哪个。
+        var optionalEntries = ModSource.ProxyCandidates.ToList();
+
+        var notDeployed = planned
+            .Where(f => !deployed.Any(d => Leaf(d.FileName) == f))
+            .Where(f => string.Equals(f, plan.ProxyChoice, StringComparison.OrdinalIgnoreCase)
+                        || !optionalEntries.Contains(f, StringComparer.OrdinalIgnoreCase))
+            .ToList();
 
         if (unexpected.Count > 0 || notDeployed.Count > 0)
         {
