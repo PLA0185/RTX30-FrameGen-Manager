@@ -138,15 +138,28 @@ New-Item -ItemType Directory -Force -Path $StageTmp | Out-Null
 #
 # ⇒ 启动时清掉。**注意这是「清陈旧」，不是「清本次」** —— 本次失败时**不删**它们，
 # 因为回滚不完整时那个 `.tmp` 可能是唯一的新产物（见 `catch` 里的报告）。
-$ZipTmpPre = Join-Path $ArtifactsDir "RTX30-FrameGen-Manager-win-x64-$Version.zip.tmp.zip"
 $SumsTmpPre = Join-Path $ArtifactsDir 'SHA256SUMS.txt.tmp'
-foreach ($stale in @($ZipTmpPre, $SumsTmpPre))
+foreach ($stale in @($SumsTmpPre))
 {
     if (Test-Path $stale)
     {
         Write-Host ("  清掉上一次留下的临时产物：" + (Split-Path $stale -Leaf))
         Remove-Item $stale -Force
     }
+}
+
+# ⚠️ **ZIP 那条必须用通配符，不能内嵌 `$Version`**（Pass J 的 P2-⑧）：
+# 我第一版写的是 `"RTX30-FrameGen-Manager-win-x64-$Version.zip.tmp.zip"` —— 它只清**本版本**的残留。
+# 于是「上一次失败发生在 1.9.2、这次跑 1.9.3」时，那个**几十 MB、名字看起来就是发布物的 ZIP**
+# **永远不会被清掉**，正是 Pass I 报的「累积上百 MB」。**而版本号每次发布都会变。**
+# ⇒ 用通配符清掉**所有版本**的 `*.zip.tmp.zip`。
+# **不会误删本次的**：这一步跑在本次产物创建之前（ZIP 在「生成 ZIP」那一步才写），
+# 所以此刻磁盘上任何 `*.zip.tmp.zip` 都只可能是上一次失败留下的。
+$staleZips = @(Get-ChildItem -Path $ArtifactsDir -Filter 'RTX30-FrameGen-Manager-win-x64-*.zip.tmp.zip' -File -ErrorAction SilentlyContinue)
+foreach ($stale in $staleZips)
+{
+    Write-Host ("  清掉上一次留下的临时产物：" + $stale.Name)
+    Remove-Item $stale.FullName -Force
 }
 
 # ── 2. 构建 ───────────────────────────────────────────────────────────────

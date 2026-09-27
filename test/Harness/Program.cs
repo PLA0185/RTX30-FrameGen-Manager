@@ -1958,7 +1958,10 @@ public static class Program
 
     private static void TestProxyOccupation(string modRoot, string work)
     {
-        Section("五个入口名全被占用");
+        // ⚠️ **标题里不要写死数量**（Pass J 的 P2-⑥）：这里此前写「五个入口名全被占用」，
+        // 而下面 `foreach (var name in ModSource.ProxyCandidates)` 占用的是**全部**（现在是六个），
+        // 同方法下一行的注释自己还写着 "six"。**凡是「数量」出现在散文里，它就是一个会漂的副本。**
+        Section("全部入口名都被占用");
 
         var dir = MakeGameDir(work, "GameBlocked");
         foreach (var name in ModSource.ProxyCandidates)
