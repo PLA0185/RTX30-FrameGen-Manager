@@ -115,6 +115,22 @@ public partial class MainWindow
     /// someone else — and either way the user is told nothing they can act on. Saying "the record does not name a
     /// provider" is the honest outcome, and it is what an older deployment will hit.</para>
     /// </summary>
+    /// <summary>
+    /// 这个游戏现在**能不能**尝试还原 —— 与 <see cref="ProviderForRestore"/> **共用同一个判据**。
+    ///
+    /// <para><b>为什么要抽出来。</b>判据此前写在两处，而两处**宽度不同**：入口只拦
+    /// <c>Deployment is null</c>，而 <see cref="ProviderForRestore"/> 拦的是 <c>ProviderId</c> 为空。
+    /// **Pass A 之前的部署记录恰好没有 <c>ProviderId</c>** ⇒ 升级上来的用户仍然会
+    /// 「点恢复 → 得到一行错误」，只是少了确认框 —— 也就是说「不再提供必然失败的操作」那一条修复
+    /// 对**老记录**没有生效。</para>
+    ///
+    /// <para><b>判据只有一份，入口与执行都问它。</b>这是本会话反复出现的教训：
+    /// 同一件事在两处各写一遍，迟早会在某一次改动后**只改了一处**（或像这里，一开始就不同宽）。</para>
+    /// </summary>
+    private static bool CanAttemptRestore(GameEntry game) =>
+        game.Deployment is not null
+        && !string.IsNullOrWhiteSpace(game.Deployment.ProviderId);
+
     private (Providers.IPatchProvider? Provider, string Error) ProviderForRestore(GameEntry game)
     {
         var id = game.Deployment?.ProviderId;
@@ -260,17 +276,16 @@ public partial class MainWindow
         var game = Selected;
         if (game is null) return;
 
-        if (game.Deployment is null)
+        if (!CanAttemptRestore(game))
         {
-            // **没有部署记录时，「继续」不可能成功，所以不该提供它。**
+            // **没有可用的部署记录时，「继续」不可能成功，所以不该提供它。**
             //
-            // 这里原来给的是一个 `OKCancel` 对话框，点 OK 就照常走 `RunRestore` —— 而
-            // `ProviderForRestore` 在**记录里没有 ProviderId** 时会直接拒绝（这是对的：还原必须用
-            // 当初安装它的那个 provider，猜一个就可能删错文件）。两者合起来的效果是：
-            // **对话框请用户确认一次，然后必然给他一行错误。**
+            // 这里原来只判 `game.Deployment is null`，而**执行**那一步（`ProviderForRestore`）判的是
+            // `ProviderId` 为空 —— 两处**宽度不同**：`Pass A` 之前的部署记录**没有 `ProviderId`**，
+            // 于是升级上来的用户仍然会「点 OK → 得到一行错误」。现在两边共用 `CanAttemptRestore`。
             //
-            // 改成纯告知，并把下一步指清楚 —— 用户需要知道的是「怎么才能有记录」，而不是
-            // 「要不要再试一次那个不会成功的东西」。
+            // 只告知、并把下一步指清楚 —— 用户需要知道的是「怎么才能有记录」，
+            // 而不是「要不要再试一次那个不会成功的东西」。
             var why = Loc.T("Restore.NoRecord", game.Name);
             MessageBox.Show(why, Loc.T("Restore.NoRecordTitle"), MessageBoxButton.OK, MessageBoxImage.Information);
             _log.Write("· " + why);
