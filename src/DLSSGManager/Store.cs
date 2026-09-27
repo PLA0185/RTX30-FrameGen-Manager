@@ -319,6 +319,14 @@ public static class IniTemplate
         "",
         "[FrameGeneration]",
         "Optimized=1",
+        // **`Preset` 必须有**（Pass E 报出）：`Values(p)` 里有它（0.3.0 schema 的 A/B 预设），
+        // 而这份 fallback 此前漏了 ⇒ 走 fallback 时**用户选的预设被静默丢弃**，而界面说「部署成功」。
+        // 本轮把 fallback 的触发条件放宽到 `HasAnyFillableKey` 之后，这条路径从「几乎不用」变成
+        // **真的会用**（`MfgSmoothProvider` 的桩 INI 正是它要处理的场景）—— 键集没跟着核对。
+        // **与已修的 P2-⑫ 后果同型：路径生效了，但键集不完整。**
+        // （0.2.x 的 `Router` / `KernelImage` / `HardwareBilinear` 故意不放 —— 它们只对旧 payload 有意义，
+        //   而模板只在**读不到可用模板**时用，那时没有旧 payload 可迁就。）
+        $"Preset={p.Preset}",
         $"MaxGeneratedFrames={Math.Clamp(p.MaxGeneratedFrames, 1, 5)}",
         "",
         "[Logging]",

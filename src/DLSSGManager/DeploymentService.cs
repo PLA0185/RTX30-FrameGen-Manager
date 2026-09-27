@@ -1230,9 +1230,17 @@ public static class DeploymentService
             var proxyMatch = string.Equals(Sha256(proxyPath), prev.ProxySha256, StringComparison.OrdinalIgnoreCase);
             var iniMatch = string.Equals(Sha256(iniPath), prev.IniSha256, StringComparison.OrdinalIgnoreCase);
 
+            // **版本读不到时不要拼出 `Mod  · version.dll`**（Pass E 报出）。
+            // `ModVersion` 现在可以是空串（读不到标签时），而这里此前无条件拼接 —— 于是新语义下
+            // 状态行会显示一个**悬空的 `Mod `**。与 `MainWindow.xaml.cs` 的状态卡同源问题，
+            // 而那处（`:936-938`）有判空、这里没有 —— **同一概念两处不同宽**，正是本项目反复出现的形态。
+            var versionLabel = string.IsNullOrWhiteSpace(prev.ModVersion)
+                ? Loc.T("ModSource.UnknownVersion")
+                : prev.ModVersion;
+
             return proxyMatch && iniMatch
                 ? new GameCheck(GameStatus.Deployed,
-                    $"Mod {prev.ModVersion} · {prev.ProxyName} · {prev.DeployedAt}" + standby, protection)
+                    $"Mod {versionLabel} · {prev.ProxyName} · {prev.DeployedAt}" + standby, protection)
                 : new GameCheck(GameStatus.Modified,
                     proxyMatch ? Loc.T("Status.IniModified") : Loc.T("Status.ProxyMismatch"),
                     protection);

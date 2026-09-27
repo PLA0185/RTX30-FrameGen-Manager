@@ -131,7 +131,7 @@ foreach ($pattern in $forbidden) {
 # `_research`/`test`/`obj` —— 上面那些是**尽力删除**（`-ErrorAction SilentlyContinue`），
 # **删不掉就静默放行打包**，其中 `*.dll` 正是注释写着「绝不随包分发」的那一类。
 # **「删掉了」与「确认不在了」是两件事**：删除是动作，这道检查才是判据。
-$leakExtensions = @('.cs', '.csproj', '.sln', '.pdb', '.dll', '.json', '.log', '.user', '.suo')
+$leakExtensions = @('.cs', '.csproj', '.sln', '.pdb', '.dll', '.json', '.log', '.user', '.suo', '.xml')
 $leak = Get-ChildItem -Path $StageTmp -Recurse -Force -ErrorAction SilentlyContinue | Where-Object {
     ($_.Extension -in $leakExtensions) -or ($_.Name -match '^\.git') -or ($_.Name -match 'credentials') -or ($_.Name -match '^test$') -or ($_.Name -match '^obj$') -or ($_.Name -match '^_research$')
 }
@@ -169,30 +169,37 @@ finally { $zip.Dispose() }
 if ($zipEntries.Count -lt 3) { throw "ZIP 条目数异常（$($zipEntries.Count)），可能是残缺包" }
 if (-not ($zipEntries | Where-Object { $_ -like '*DLSSGManager.exe' })) { throw "ZIP 中缺少 DLSSGManager.exe" }
 
-# ── 8. SHA256SUMS（**也从临时产物算，保证与将要发布的字节一致**）───────────
+# ── 8. SHA256SUMS（**从临时产物算，但先写成临时名**）──────────────────────
+#
+# ⚠️ **哈希要在这里算，但文件不能在这里落地为正式名**（Pass E 报出 —— 这是上一轮修复引入的新窗口）：
+# 把 `Out-File $SumsPath` 放在替换之前，会让**替换阶段失败**时留下
+# 「**旧 EXE + 旧 ZIP + 新 SHA256SUMS**」，与下面注释声称的「仍然是一份自洽的旧发布」恰好相反。
+# **哈希值必须在临时产物上算**（那样才与将要发布的字节一致），**而写入正式名必须和产物一起做**。
 Step "生成 SHA256SUMS"
+$SumsTmp = "$SumsPath.tmp"
 $lines = @()
 foreach ($f in @($exe, $ZipTmp)) {
     $hash = (Get-FileHash $f -Algorithm SHA256).Hash
     $lines += "{0}  {1}" -f $hash, (Split-Path $f -Leaf).Replace('.tmp.zip', '')
 }
-$lines | Out-File -FilePath $SumsPath -Encoding ascii
-Get-Content $SumsPath | ForEach-Object { Write-Host "  $_" }
+$lines | Out-File -FilePath $SumsTmp -Encoding ascii
+Get-Content $SumsTmp | ForEach-Object { Write-Host "  $_" }
 
 # ── 8b. 到这里才替换正式产物（**前面任何一步失败都没有动过旧产物**）──────
 #
 # **顺序本身就是保证**：先把全部产物做出来并核对完（EXE 在 `$StageTmp`、ZIP 在 `$ZipTmp`、
-# 哈希已经算过），**最后**才一次性替换三个正式名。这样任何一步失败时，用户手上仍然是
-# **一份自洽的旧发布**（旧 EXE + 旧 ZIP + 与它们对应的旧 SHA256SUMS）。
+# 哈希已经算过），**最后**才一次性替换**四个**正式名（目录 / ZIP / SHA256SUMS）。
+# 这样任何一步失败时，用户手上仍然是**一份自洽的旧发布**（旧 EXE + 旧 ZIP + 与它们对应的旧 SHA256SUMS）。
 #
-# 这也是 Pass D 报出的那条修复：此前是先替换 `$StageDir`，于是 ZIP 或哈希任何一步失败都会留下
-# 「新 EXE + 旧 ZIP + 旧 SHA256SUMS」—— **而 SHA256SUMS 正是用户拿来校验发布物的东西。**
+# ⚠️ **替换本身不能「先删后移」**（Pass E 报出）：`Remove-Item` 之后再 `Move-Item`，若移动失败
+#（被占用、杀软刚锁上刚生成的 EXE），用户手上**既没有旧的也没有新的**。
+# `Move-Item -Force` 会直接覆盖目标，没有那个中间状态。
 Step "替换正式产物"
 if (Test-Path $StageDir) { Remove-Item $StageDir -Recurse -Force }
 Move-Item $StageTmp $StageDir
 
-if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
-Move-Item $ZipTmp $ZipPath
+Move-Item $ZipTmp $ZipPath -Force
+Move-Item $SumsTmp $SumsPath -Force
 
 # **替换之后要重新指向正式路径** —— 临时目录已经不存在了，汇总段若仍用 `$exe` / `$ZipTmp`
 # 的旧值，`Get-Item` 会找不到文件（本脚本第一次跑新顺序时就踩到）。

@@ -192,8 +192,12 @@ public static class PayloadPaths
         // 而硬编码的名单会在那时静默漏掉。这正是「形状判据」当初想解决的问题，只是它解决不了 ASCII。
         foreach (var language in Languages.All)
         {
-            if (string.Equals(value, Strings.For(language)["ModSource.UnknownVersion"],
-                    StringComparison.OrdinalIgnoreCase))
+            // **用 `TryGetValue` 而不是索引器**（Pass E 报出）：`Strings.For` 返回普通字典，某语言表
+            // 若是缺了这个 key，索引器会抛 `KeyNotFoundException` —— 而**这是 `PayloadPaths.For` 内部**，
+            // 在 workflow 的主路径上 ⇒ **把「少一句翻译」升级成「所有 payload 路径崩溃」**。
+            // `Loc.T` 本身用的就是 `TryGetValue` + 兜底，这里与它保持一致。
+            if (Strings.For(language).TryGetValue("ModSource.UnknownVersion", out var placeholder)
+                && string.Equals(value, placeholder, StringComparison.OrdinalIgnoreCase))
                 return "_unknown";
         }
 
