@@ -167,7 +167,7 @@
 | 完成条件 | 状态 |
 |---|---|
 | Build PASS | ✅ 0 错误 / 0 警告 |
-| Harness PASS | ✅ 本地 **928**/0 · **干净环境 905**/0（均实测于 `ab6dff8`） |
+| Harness PASS | ✅ 本地 **955**/0/10（`bfd2fe4`）· **干净环境 905**/0/10（`ab6dff8`，**§23 会复测**） |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
 | **Independent Code Review PASS** | **[待 Pass D]** |
