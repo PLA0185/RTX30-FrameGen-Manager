@@ -179,15 +179,25 @@ public static class PayloadPaths
     {
         if (string.IsNullOrWhiteSpace(value)) return "_unknown";
 
-        // **本地化占位符不是版本名。**
+        // **本地化占位符不是版本名 —— 两道防线，缺一不可。**
         //
-        // ⚠️ **这条形状判据只挡住非 ASCII 的那一半，而且它守的不是根因。** 根因已修在来源处：
-        // `ModSource.Version` 读不到标签时现在返回**空串**（而不是 `Loc.T(...)`），于是这里走
-        // `IsNullOrWhiteSpace` 分支落到 `_unknown`，**两种语言收敛到同一个表示**。
+        // ① **来源**（根因，已修）：`ModSource.Version` 读不到标签时返回**空串**而不是 `Loc.T(...)`
+        //    ⇒ 新写入的数据干净，两种语言收敛到同一个 `_unknown`。
+        // ② **这里**（兜底，本次补上）：**旧记录里已经存着占位符**。修复只影响新写入 ——
+        //    英文环境装过的用户，`DeploymentInfo.ModVersion` 里就是 `"Unknown"`；它非空白，
+        //    `GetInstalledVersion` 原样返回，于是**仍然**会落到 `payloads/mfg-smooth/Unknown`。
+        //    **纯 ASCII 的 `"Unknown"` 在形状上完全正常**，只有值匹配才拦得住（Pass D 报出）。
         //
-        // 形状判据作为**第二道防线**保留：任何别的调用方若把本地化文本喂进来（中文含非 ASCII），
-        // 它仍然挡得住。但**不要再把「挡住中文」当成修好了** —— 英文的 `"Unknown"` 全是 ASCII，
-        // 这道judge拦不住它（Pass D 报出）。
+        // **值匹配的名单从语言表取，而不是硬编码** —— 加一种语言就自动覆盖一种，
+        // 而硬编码的名单会在那时静默漏掉。这正是「形状判据」当初想解决的问题，只是它解决不了 ASCII。
+        foreach (var language in Languages.All)
+        {
+            if (string.Equals(value, Strings.For(language)["ModSource.UnknownVersion"],
+                    StringComparison.OrdinalIgnoreCase))
+                return "_unknown";
+        }
+
+        // 形状判据作为**第三道防线**：任何别处混进来的本地化文本（含非 ASCII 的）仍然挡得住。
         if (value.Any(c => c > 127)) return "_unknown";
 
         var invalid = Path.GetInvalidFileNameChars();

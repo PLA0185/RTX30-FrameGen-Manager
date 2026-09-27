@@ -592,7 +592,11 @@ public partial class MainWindow : Window
             ? $"当前版本 {AppVersion.Label}。还没有游戏安装过补丁，因此没有可显示的补丁版本。"
             : $"当前版本 {AppVersion.Label}。本软件与第三方补丁的更新是两套独立流程。\n已安装的补丁版本：\n" +
               string.Join("\n", deployed.Select(g =>
-                  $"· {g.Name} — {g.Deployment!.ModVersion ?? "(未记录版本)"}" +
+                  // **`ModVersion` 是非 nullable 的 `string`（默认 `""`），所以 `?? "…"` 永远不会触发。**
+                  // 而版本读不到时它现在就是空串（`ModSource.Version` 不再回落到本地化文案）
+                  // ⇒ 直接拼出来会显示成 `· 游戏名 — `（一个悬空的破折号）。
+                  // 用 `IsNullOrWhiteSpace` 才是真的兜底。
+                  $"· {g.Name} — {(string.IsNullOrWhiteSpace(g.Deployment!.ModVersion) ? "(未记录版本)" : g.Deployment.ModVersion)}" +
                   (string.IsNullOrEmpty(g.Deployment.ProviderId)
                       ? "（未记录来源 Provider）"
                       : $"（{g.Deployment.ProviderId}）")));
@@ -913,7 +917,10 @@ public partial class MainWindow : Window
         var parts = new List<string>
         {
             game.Deployment.ProxyName,
-            "Mod " + game.Deployment.ModVersion,
+            // 同上：空版本不能让这里拼出 `Mod `（尾随空格）。
+            string.IsNullOrWhiteSpace(game.Deployment.ModVersion)
+                ? Loc.T("ModSource.UnknownVersion")
+                : "Mod " + game.Deployment.ModVersion,
             game.Deployment.DeployedAt,
         };
 

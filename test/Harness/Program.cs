@@ -6306,6 +6306,24 @@ public static class Program
             distinctDirs.Count == 1 && distinctDirs[0].EndsWith("_unknown", StringComparison.OrdinalIgnoreCase),
             string.Join(" · ", distinctDirs));
 
+        // **迁移缺口**：来源处的修复只影响**新写入**的记录 —— 老记录里已经存着占位符（Pass D 报出）。
+        // 英文环境装过的用户，`DeploymentInfo.ModVersion` 里就是 `"Unknown"`；它非空白，
+        // `GetInstalledVersion` 会原样返回，于是**仍然**落到 `payloads/mfg-smooth/Unknown`。
+        // **纯 ASCII 的 `"Unknown"` 在形状上完全正常**，只有值匹配才拦得住。
+        //
+        // 断言的名单**从语言表取**（遍历 `Languages.All`），所以加一种语言就自动多覆盖一种
+        // —— 这比在断言里手写两种语言更难漏。
+        foreach (var language in Languages.All)
+        {
+            Loc.SetLanguage(language);
+            var stale = Loc.T("ModSource.UnknownVersion");
+            Loc.SetLanguage(Languages.ChineseSimplified);
+
+            Check($"旧记录里的 {language} 占位符会被归为 _unknown（§17 P2-⑫ · 迁移缺口）",
+                PayloadPaths.For("p", stale).EndsWith("_unknown", StringComparison.OrdinalIgnoreCase),
+                $"{language}: \"{stale}\" → {PayloadPaths.For("p", stale)}");
+        }
+
         // **反向配对**：真实的版本号必须原样保留 —— 否则「把所有东西都归成 _unknown」也能通过上面那些。
         Check("真实的版本号仍然原样保留（§17 P2-⑫ · 反向配对）",
             PayloadPaths.For("p", "2.9.0-R1").EndsWith("2.9.0-R1", StringComparison.Ordinal),
