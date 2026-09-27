@@ -223,7 +223,16 @@ public static class IniTemplate
 
     public static string Render(string templateText, GameProfile p)
     {
-        var text = string.IsNullOrWhiteSpace(templateText) ? FallbackTemplate(p) : templateText;
+        // **「有模板但一个可填的键都没有」也必须走 fallback。**
+        //
+        // 这里原来只判「空」：模板非空就用它。而 `MfgSmoothProvider` 的正规化会写出一个**只有段头、
+        // 没有任何 `Key=` 行**的桩（`[DLSSG SM86]`）—— 那份桩非空 ⇒ 用它 ⇒ 下面的替换循环
+        // **一个键都匹配不到** ⇒ **部署出去的 INI 里没有任何设置**：界面上的 Optimized / Preset /
+        // MaxGeneratedFrames / Level 全部落空，而用户看到的是「部署成功」。
+        // （那个 provider 的注释写着「真实部署会覆盖它」—— **那句话是错的**，覆盖只发生在模板已有的键上。）
+        //
+        // 判据改成**「模板里有没有可填的键」**，而不是「模板是不是空的」。
+        var text = HasAnyKey(templateText) ? templateText : FallbackTemplate(p);
         var lines = text.Replace("\r\n", "\n").Split('\n').ToList();
 
         var values = Values(p);
@@ -250,7 +259,19 @@ public static class IniTemplate
     }
 
     /// <summary>
-    /// Used only when no template could be read at all, so it mirrors the current upstream schema.
+    /// 模板里有没有**至少一个可填的键**（`Key=` 形式的行）。
+    ///
+    /// <para>判据与下面替换循环用的正则**必须是同一个** —— 用两个判据判断「能不能填」，
+    /// 迟早会出现「这个函数说有、替换循环说没有」的分歧，而那次分歧的表现就是**静默丢失用户的设置**。</para>
+    /// </summary>
+    private static bool HasAnyKey(string? templateText) =>
+        !string.IsNullOrWhiteSpace(templateText)
+        && templateText.Replace("\r\n", "\n").Split('\n')
+            .Any(line => Regex.IsMatch(line, @"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*="));
+
+    /// <summary>
+    /// Used when no usable template exists — either none could be read, or what was read has no keys to fill.
+    /// It mirrors the current upstream schema.
     /// </summary>
     private static string FallbackTemplate(GameProfile p) => string.Join("\r\n", new[]
     {

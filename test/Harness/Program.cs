@@ -1148,7 +1148,44 @@ public static class Program
     private static void TestIniRendering(string modRoot)
     {
         Section("INI 渲染");
-        if (SkipWithoutModFiles("INI 渲染")) return;
+
+        // ---- P2-⑫（Pass C 报出）：**「有模板但一个可填的键都没有」不能静默丢掉用户的设置** ----
+        //
+        // ⚠️ **这三条必须放在 `SkipWithoutModFiles` **之前**。** 它们只依赖 `IniTemplate` 与自造模板，
+        // 与真实 mod 文件无关 —— 而放在跳过之后，它们会**永不执行**（套件只会多一行「[跳过]」，
+        // 通过数一个都不动，看起来一切正常）。项目的既有判据正是这条，而这次实际撞上了它。
+        //
+        // 缺陷本身：`MfgSmoothProvider` 的正规化会写出一个**只有段头、没有任何 `Key=` 行**的桩
+        // （`[DLSSG SM86]`）。它非空，于是旧判据（只判「空」）会用它 —— 而替换循环只在**模板已有的键**
+        // 上填值 ⇒ **部署出去的 INI 里没有任何设置**：界面上的 Optimized / Preset / MaxGeneratedFrames /
+        // Level 全部落空，用户却看到「部署成功」。（那个 provider 的注释写着「真实部署会覆盖它」——
+        // **那句话是错的**。）
+        var stub = "[DLSSG SM86]" + Environment.NewLine;
+        var fromStub = IniTemplate.Render(stub, new GameProfile
+        {
+            Enabled = true, OptimizedTier = 2, MaxGeneratedFrames = 3, LogLevel = 1,
+        });
+
+        Check("只有段头的模板不会让设置落空（§17 P2-⑫）",
+            fromStub.Contains("MaxGeneratedFrames=3") && fromStub.Contains("Level=1"),
+            fromStub.Replace("\r\n", " / "));
+
+        Check("只有段头的模板会得到一份可用的配置（§17 P2-⑫）",
+            fromStub.Contains("[General]") || fromStub.Contains("[FrameGeneration]"),
+            fromStub.Replace("\r\n", " / "));
+
+        // **反向配对**：真实模板必须**原样使用** —— 否则「任何模板都换成 fallback」也能通过上面两条，
+        // 而那会让用户自己编辑过的模板（例如他加了注释）被丢弃。
+        var ownTemplate = "[General]" + Environment.NewLine + "Enabled=1" + Environment.NewLine
+            + "; 用户自己的注释" + Environment.NewLine;
+        var fromOwn = IniTemplate.Render(ownTemplate, new GameProfile { Enabled = true });
+
+        Check("用户自己的模板仍被原样使用（§17 P2-⑫ · 反向配对）",
+            fromOwn.Contains("; 用户自己的注释") && !fromOwn.Contains("[FrameGeneration]"),
+            fromOwn.Replace("\r\n", " / "));
+
+        // 下面这些需要**真实的 mod 模板**，所以它们的跳过检查放在这里而不是方法开头。
+        if (SkipWithoutModFiles("INI 渲染（真实模板相关）")) return;
 
         var template = File.ReadAllText(Path.Combine(modRoot, "dlssg_sm86.ini"), Encoding.UTF8);
 
