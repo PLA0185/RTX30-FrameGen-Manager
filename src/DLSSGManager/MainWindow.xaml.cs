@@ -53,6 +53,21 @@ public partial class MainWindow : Window
         // and the rest of the setup needs the same data.
         _data = LibraryStore.Load();
 
+        // **库损坏时必须告诉用户**，否则界面会把「库读不出来」显示成**和「首次运行」一模一样**的空列表
+        // —— 用户会以为游戏列表被删了，而它其实就在旁边那个 `.corrupt-<时间戳>` 文件里。
+        // （Pass D 报出：字节保留只是这条缺陷的一半。）
+        if (LibraryStore.LastLoadWasDegraded)
+        {
+            var detail = LibraryStore.LastLoadSalvagePath is { } saved
+                ? $"原文件已保留为：\n{saved}"
+                : "原文件无法保留，它可能在下一次保存时被覆盖。";
+
+            MessageBox.Show(
+                "游戏列表读不出来（文件可能已损坏），本次以空列表启动。\n\n"
+                + detail + "\n\n你可以先退出本工具，用那个文件恢复。",
+                "游戏列表读取失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
         Loc.SetLanguage(_data.InterfaceLanguage);
         Theme.Apply(_data.InterfaceTheme);
 

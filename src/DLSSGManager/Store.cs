@@ -78,8 +78,25 @@ public static class LibraryStore
     /// Reads the library. <paramref name="path"/> exists so tests can round-trip against a scratch file
     /// instead of the user's real library.
     /// </summary>
+    /// <summary>
+    /// 上一次 <see cref="Load"/> 是否**降级**过 —— 即库文件读不出来、本次以空库继续。
+    ///
+    /// <para><b>为什么需要它。</b>字节保留（改名成 <c>.corrupt-&lt;时间戳&gt;</c>）只是这条缺陷的一半：
+    /// **另一半是「用户应当知道」**。不给信号的话，界面会把「库损坏」显示成**和「首次运行」一模一样**
+    /// 的空列表 —— 用户会以为自己的游戏列表被删了，而实际上它就在旁边那个文件里。</para>
+    ///
+    /// <para>它是静态的、只反映**最近一次** <c>Load</c>：调用方（启动路径）在 `Load` 之后立即读取它。</para>
+    /// </summary>
+    public static bool LastLoadWasDegraded { get; private set; }
+
+    /// <summary>损坏文件被改名后的路径；无法保留时为 null（那时它接下来可能被覆盖）。</summary>
+    public static string? LastLoadSalvagePath { get; private set; }
+
     public static AppData Load(string? path = null)
     {
+        LastLoadWasDegraded = false;
+        LastLoadSalvagePath = null;
+
         var file = path ?? AppPaths.LibraryFile;
         try
         {
@@ -105,10 +122,13 @@ public static class LibraryStore
             // 现在把它改名成 `.corrupt-<时间戳>` 保留现场，并在日志里写出位置 ——
             // 这样「读不出来」这件事**不消耗掉原始的字节**，需要时还能人工看一眼或抢救。
             AppPaths.Log($"读取库文件失败: {ex.Message}");
+            LastLoadWasDegraded = true;
+            LastLoadSalvagePath = null;
             try
             {
                 var salvage = $"{file}.corrupt-{DateTime.Now:yyyyMMdd_HHmmss}";
                 File.Move(file, salvage, overwrite: true);
+                LastLoadSalvagePath = salvage;
                 AppPaths.Log($"损坏的库文件已保留为: {salvage}（本次以空库继续，原文件未被覆盖）");
             }
             catch (Exception moveEx)

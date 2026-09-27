@@ -2732,6 +2732,25 @@ public static class Program
             salvaged is not null && File.ReadAllText(salvaged) == "{ this is not json",
             salvaged is null ? "(没有保留副本)" : File.ReadAllText(salvaged));
 
+        // ---- P2-8（Pass D 报出）：**字节保留只是这条缺陷的一半** ----
+        //
+        // 另一半是**用户应当知道**。不给信号的话，界面会把「库损坏」显示成**和「首次运行」一模一样**
+        // 的空列表 —— 用户会以为自己的游戏列表被删了，而它其实就在旁边那个 `.corrupt-<时间戳>` 文件里。
+        Check("降级读取会立起信号，让界面能说出「库损坏」而不是装作首次运行（§17 P2-8）",
+            LibraryStore.LastLoadWasDegraded,
+            "LastLoadWasDegraded=" + LibraryStore.LastLoadWasDegraded);
+
+        Check("信号里带着保留副本的路径（§17 P2-8 · 用户据此恢复）",
+            LibraryStore.LastLoadSalvagePath is { Length: > 0 } p && File.Exists(p),
+            LibraryStore.LastLoadSalvagePath ?? "(null)");
+
+        // **反向配对**：正常读取必须**清掉**这个信号 —— 否则一次降级之后的**任何**启动都会再弹一次
+        // 「库损坏」，而那本身是一种误报。
+        _ = LibraryStore.Load(Path.Combine(work, "healthy-library.json"));
+        Check("正常读取不留下降级信号（§17 P2-8 · 反向配对）",
+            !LibraryStore.LastLoadWasDegraded && LibraryStore.LastLoadSalvagePath is null,
+            $"degraded={LibraryStore.LastLoadWasDegraded} salvage={LibraryStore.LastLoadSalvagePath ?? "(null)"}");
+
         // Out-of-range values from a hand-edited file get clamped on load.
         File.WriteAllText(Path.Combine(work, "outofrange.json"),
             "{\"Games\":[{\"Name\":\"x\",\"Profile\":{\"MaxGeneratedFrames\":99,\"LogLevel\":-3,\"Router\":\"bogus\",\"KernelImage\":\"weird\"}}]}");
