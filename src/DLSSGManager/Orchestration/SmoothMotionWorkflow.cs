@@ -316,8 +316,16 @@ public sealed class SmoothMotionWorkflow
         //
         // ⚠️ **而矩阵只接了「读」这一端。**（Pass E 报出：上面这段注释曾经写成「与矩阵不同的是」，
         // 让读者以为矩阵两端都接好了 —— **而 `_matrix.Add` / `_matrix.Persist` 在全仓零调用者**。）
-        // 后果是具体的：**成品不含 `compatibility.json`**（打包脚本剔 json）⇒ 矩阵恒空 ⇒
-        // `InstallPlanner` 恒 `NeedsConfirmation` ⇒ **每次单游戏配置都会弹一次「兼容性未知，是否继续」**。
+        // 后果是具体的：矩阵恒空 ⇒ `InstallPlanner` 恒 `NeedsConfirmation` ⇒
+        // **每次单游戏配置都会弹一次「兼容性未知，是否继续」**。
+        //
+        // ⚠️ **这里曾经写着一个假的因**（Pass G 报出）：「成品不含 `compatibility.json`（打包脚本剔 json）」。
+        // **那是错的** —— store 读的是 **`%APPDATA%\DLSSGManager\compatibility.json`**（用户数据目录，
+        // 见 `Store.cs` 的 `AppPaths` 与 `CompatibilityMatrixStore` 的默认路径），**打包脚本根本碰不到它**。
+        // 真因有两条：① `Add` / `Persist` 零调用；② **没有任何种子文件**（发行版不带初始矩阵）。
+        // **危险在于它会把人引向错误的方向**：照那句去改打包脚本的黑名单，改完矩阵仍然恒空 ——
+        // **一个错误的因比没有因更糟，因为它会让读者以为自己已经理解了问题。**
+        //
         // **这是有意留待产品决策的**（「要不要让本工具自动积累兼容性记录」会改变产品行为，且需先定义
         // 「什么算一次可靠的记录」），但它**不是「已接线」** —— 缺口写在报告 §5 第 6 条。
         // **注释声称已修比缺口本身更危险：下一个读者会信它、不会再去查。**

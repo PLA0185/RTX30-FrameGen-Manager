@@ -1155,8 +1155,17 @@ public static class DeploymentService
             //（`MainWindow.xaml.cs` 的状态卡与 `DeploymentService` 的状态行）。
             //
             // **判据与 `ModVersion` 完全一致：给数据用的字段不写给人看的句子。**
-            // 「这是接管来的」这件事由 `ProviderId`（以及它是否等于某个「手工接管」的来源）表达 ——
-            // 显示层要加后缀，由显示层自己加。
+            //
+            // ⚠️ **但「显示层自己加后缀」这件事现在还做不到**（Pass G 报出，我核实后确认）：
+            // 我曾在这里写「『这是接管来的』由 `ProviderId` 表达」—— **那是不成立的**。
+            // `InstallPlanExecutor.cs:263` 的普通部署写的是 `game.Deployment.ProviderId = plan.ProviderId`，
+            // 与本方法写的是**同一个字段、同一个来源**（都是 provider 的 id）⇒ **两者在数据上无法区分**。
+            //
+            // **⇒ 现状是：去掉那个后缀之后，UI 里再也没有任何标记说明这份安装是接管来的。**
+            // 这不是「换个地方表达」，而是**这个信息目前在数据模型里不存在**。
+            // 要恢复它需要**加一个字段**（例如 `AdoptedFrom`）—— 那会改 `library.json` 的结构，
+            // 属于**产品决策**（要不要给用户区分「本工具装的」与「接管来的」），
+            // 与矩阵的「写」那一半同类，**留待决定**；在此之前如实写明，而不是声称它已被表达。
             DeployedAt = File.GetLastWriteTime(proxyPath).ToString("yyyy-MM-dd HH:mm:ss"),
             ProxySha256 = Sha256(proxyPath),
             IniSha256 = iniExists ? Sha256(iniPath) : "",
