@@ -1,6 +1,6 @@
 # 第四轮 · 自主闭环整改报告（§28）
 
-> **状态：草稿，等待 Pass C 结果填入。** 标 `[待 Pass C]` 的位置在审查返回后更新。
+> **状态：草稿，等待 Pass D 结果填入。** 标 `[待 Pass D]` 的位置在审查返回后更新。
 >
 > 基线 `4cf3462` · 本文件写作时 HEAD `ab6dff8` · **55 个已推送提交** · 无 force push · 未打 Stable Tag。
 
@@ -135,15 +135,19 @@
 
 ---
 
-## 5. 已知缺口与未核验项（不写成 PASS）
+## 5. 已知缺口与未核验项（**不写成 PASS**）
 
-1. **`Adopt` 的 `ProviderId` 断言在无 Mod 文件环境下不可达** —— 有 Mod 文件时由 `TestAdopt` 覆盖；该断言**未被默认套件执行**。
-2. **`--nvapi-write-smoke` 的提权路径无自动测试** —— 需要人工点 UAC，属外部真实阻塞。
-3. **UI 行为无自动断言** —— `MainWindow.Actions.cs` / `MainWindow.xaml.cs` 不在 Harness 编译白名单，只能靠代码守住。
-4. **Rollback 失败侧断言** 仍受静态方法夹具限制（§22 审计已列）。
-5. **「日志干净」未核验** —— 未定位到日志文件。
-6. **运行时 `CanWrite` 仍为 `false`** —— 三个能力门是 `internal static` 进程内状态：默认 `false`、每次启动重置、生产路径不跑 smoke。**提权路径已被证明，但生产运行不会自动获得该状态。**
+1. **`FakeDrsAdapter` 的默认值与生产不同** —— 生产 `WriteCallsProven` 默认 false（⇒ `CanWrite` 恒 false），而替身让写门默认 true ⇒ **整片编排测试跑在生产不存在的状态下**。**已量化：对齐生产会让 16 项（955 的 1.7%）失败，全部集中在 Profile 相关用例。** 详见 §3b 第 1 条。
+2. **P2-⑤ 的「查不到」提示无断言守护** —— 触发条件是「系统里有读不到映像路径的进程」，难以在测试里稳定构造。详见 §3b 第 2 条。
+3. **UI 行为无自动断言** —— `MainWindow.Actions.cs` / `MainWindow.xaml.cs` 不在 Harness 编译白名单。**本轮修的「不再提供必然失败的恢复」属于这一类**：它的**必然失败是静态可判断的**（读 `ProviderForRestore` 的拒绝条件即可），所以**修它是必须的**；只有**修完之后的界面观感**需要人工看。
+4. **`--nvapi-write-smoke` 的提权路径无自动测试** —— 需要人工点 UAC，属**外部真实阻塞**（§27 允许的停止理由）。
+5. **运行时 `CanWrite` 仍为 `false`** —— 三个能力门是 `internal static` 进程内状态：默认 `false`、每次启动重置、生产路径不跑 smoke。**提权路径已被真实证明，但生产运行不会自动获得该状态。**（**已由「写入前 Blocked」妥善处理**：做不到就不动磁盘，而不是装完再删。）
+6. **`P2-③` 的「写」那一半未接线** —— 矩阵**不会自动积累**兼容性记录（`Add`/`Persist` 在 `src/` 无调用者）。这是**有意留待产品决策**：它会改变产品行为（用户会因此少看到确认框），且需要先定义**什么算一次可靠的记录**。**「读」那一半已接线并有断言守护。**
 7. **零消费者/零生产者声明**（如实标注，不写成「已生效」）：`NvApiStatus.RequiresElevation` · `IsNameCollision` · `ProviderRegistry.AllHealth()` · `DeploymentFileSource.ExistingReusable` · `ProviderMetadata` 的 8 个字段。
+8. **「日志干净」未核验** —— 未定位到日志文件。
+9. **真实游戏 / 视觉人工验证** —— 属 `Pending User Validation`（**§26 允许的唯一类别**）：实机 `Applied`/`Verified`、深色主题提示字色、Provider 下拉、Plan Preview、七页导航、高级折叠；以及 Ground Branch 的第一次真实 E2E。
+
+> **第 1、2、3 条是「测试覆盖的缺口」，第 4、8、9 条是「未核验」，第 5、6、7 条是「有意保持的现状」。** 三类都不写成 PASS，但**处置不同**：缺口要缩小，未核验要补证据，现状要在改动前先做决定。
 
 ---
 
@@ -163,14 +167,14 @@
 | Harness PASS | ✅ 本地 **928**/0 · **干净环境 905**/0（均实测于 `ab6dff8`） |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
-| **Independent Code Review PASS** | **[待 Pass C]** |
+| **Independent Code Review PASS** | **[待 Pass D]** |
 | No Known P0 | ✅ Pass A 的 P0 已修 + 回归断言 |
 | No Known P1 | ✅ Pass A 的 4 条 P1 已修 + 回归断言 |
 | Documentation Claims Match Code | ✅ §22 审计的 5 条过时陈述已在白板与报告中更正 |
 | Packaging PASS | ✅ 两次全新 clone 各跑一次打包：`exit=0`、EXE 63.0 MB + ZIP 57.7 MB |
 
-**DRS + Transaction Remediation: [待 Pass C 结果后填写]**
+**DRS + Transaction Remediation: [待 Pass D 结果后填写]**
 
-**Ready for User Ground Branch E2E: [待 Pass C 结果后填写]**
+**Ready for User Ground Branch E2E: [待 Pass D 结果后填写]**
 
 > 若为 `NO` 且不存在外部阻塞，则继续整改，不停。
