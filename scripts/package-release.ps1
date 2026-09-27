@@ -125,8 +125,15 @@ foreach ($pattern in $forbidden) {
 }
 
 # 防呆：源码/凭据/研究资料一旦混入即中止，而不是默默打包
+#
+# ⚠️ **名单必须与上面 `$forbidden` 同宽**（Pass D 报出）：这里原来只查 `.git*`/`credentials`/
+# `.cs/.csproj/.sln/.pdb`，而 `$forbidden` 还含 `*.dll`/`*.json`/`*.log`/`*.user`/`*.suo`/
+# `_research`/`test`/`obj` —— 上面那些是**尽力删除**（`-ErrorAction SilentlyContinue`），
+# **删不掉就静默放行打包**，其中 `*.dll` 正是注释写着「绝不随包分发」的那一类。
+# **「删掉了」与「确认不在了」是两件事**：删除是动作，这道检查才是判据。
+$leakExtensions = @('.cs', '.csproj', '.sln', '.pdb', '.dll', '.json', '.log', '.user', '.suo')
 $leak = Get-ChildItem -Path $StageTmp -Recurse -Force -ErrorAction SilentlyContinue | Where-Object {
-    $_.Name -match '^\.git' -or $_.Name -match 'credentials' -or $_.Extension -in @('.cs', '.csproj', '.sln', '.pdb')
+    ($_.Extension -in $leakExtensions) -or ($_.Name -match '^\.git') -or ($_.Name -match 'credentials') -or ($_.Name -match '^test$') -or ($_.Name -match '^obj$') -or ($_.Name -match '^_research$')
 }
 if ($leak) {
     $leak | ForEach-Object { Write-Host "  混入: $($_.FullName)" -ForegroundColor Red }
@@ -135,12 +142,13 @@ if ($leak) {
 
 if (-not (Test-Path (Join-Path $StageTmp 'DLSSGManager.exe'))) { throw "发布目录中没有 DLSSGManager.exe" }
 
-# ── 6b. 到这里才替换正式产物（旧产物一直完好）────────────────────────────
-Step "替换正式产物"
-if (Test-Path $StageDir) { Remove-Item $StageDir -Recurse -Force }
-Move-Item $StageTmp $StageDir
-
-$exe = Join-Path $StageDir 'DLSSGManager.exe'
+# ── 6b. ZIP 与 SHA256SUMS —— **都从临时目录做，正式产物此刻还没动** ────────
+#
+# ⚠️ **替换 `$StageDir` 必须推迟到全部产物都成功之后**（Pass D 报出）。
+# 这里原来先把 `$StageTmp` 换成 `$StageDir`，于是**后面任何一步失败**都会留下
+# 「**新 EXE + 旧 ZIP + 旧 SHA256SUMS**」——`SHA256SUMS.txt` 里那只 EXE 的哈希与目录里实际的
+# EXE **不再对应**，而这正是用户拿来校验发布物的东西。**「旧产物完好」当时只对 ZIP 成立。**
+$exe = Join-Path $StageTmp 'DLSSGManager.exe'
 
 # ── 7. ZIP ────────────────────────────────────────────────────────────────
 Step "生成 ZIP"
@@ -148,7 +156,7 @@ Step "生成 ZIP"
 # 「不是支持的存档文件格式」——**而且它是在生成阶段才报，所以整个脚本会在最后一步失败。**
 $ZipTmp = "$ZipPath.tmp.zip"
 if (Test-Path $ZipTmp) { Remove-Item $ZipTmp -Force }
-Compress-Archive -Path (Join-Path $StageDir '*') -DestinationPath $ZipTmp -CompressionLevel Optimal -Force
+Compress-Archive -Path (Join-Path $StageTmp '*') -DestinationPath $ZipTmp -CompressionLevel Optimal -Force
 if (-not (Test-Path $ZipTmp)) { throw "ZIP 未生成" }
 
 # **只查「存在」不够**：`Compress-Archive` 中途失败（磁盘满、被中断）会留下一个**残缺 ZIP**，
@@ -161,18 +169,34 @@ finally { $zip.Dispose() }
 if ($zipEntries.Count -lt 3) { throw "ZIP 条目数异常（$($zipEntries.Count)），可能是残缺包" }
 if (-not ($zipEntries | Where-Object { $_ -like '*DLSSGManager.exe' })) { throw "ZIP 中缺少 DLSSGManager.exe" }
 
-if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
-Move-Item $ZipTmp $ZipPath
-
-# ── 8. SHA256SUMS ─────────────────────────────────────────────────────────
+# ── 8. SHA256SUMS（**也从临时产物算，保证与将要发布的字节一致**）───────────
 Step "生成 SHA256SUMS"
 $lines = @()
-foreach ($f in @($exe, $ZipPath)) {
+foreach ($f in @($exe, $ZipTmp)) {
     $hash = (Get-FileHash $f -Algorithm SHA256).Hash
-    $lines += "{0}  {1}" -f $hash, (Split-Path $f -Leaf)
+    $lines += "{0}  {1}" -f $hash, (Split-Path $f -Leaf).Replace('.tmp.zip', '')
 }
 $lines | Out-File -FilePath $SumsPath -Encoding ascii
 Get-Content $SumsPath | ForEach-Object { Write-Host "  $_" }
+
+# ── 8b. 到这里才替换正式产物（**前面任何一步失败都没有动过旧产物**）──────
+#
+# **顺序本身就是保证**：先把全部产物做出来并核对完（EXE 在 `$StageTmp`、ZIP 在 `$ZipTmp`、
+# 哈希已经算过），**最后**才一次性替换三个正式名。这样任何一步失败时，用户手上仍然是
+# **一份自洽的旧发布**（旧 EXE + 旧 ZIP + 与它们对应的旧 SHA256SUMS）。
+#
+# 这也是 Pass D 报出的那条修复：此前是先替换 `$StageDir`，于是 ZIP 或哈希任何一步失败都会留下
+# 「新 EXE + 旧 ZIP + 旧 SHA256SUMS」—— **而 SHA256SUMS 正是用户拿来校验发布物的东西。**
+Step "替换正式产物"
+if (Test-Path $StageDir) { Remove-Item $StageDir -Recurse -Force }
+Move-Item $StageTmp $StageDir
+
+if (Test-Path $ZipPath) { Remove-Item $ZipPath -Force }
+Move-Item $ZipTmp $ZipPath
+
+# **替换之后要重新指向正式路径** —— 临时目录已经不存在了，汇总段若仍用 `$exe` / `$ZipTmp`
+# 的旧值，`Get-Item` 会找不到文件（本脚本第一次跑新顺序时就踩到）。
+$exe = Join-Path $StageDir 'DLSSGManager.exe'
 
 # ── 9. 汇总 ───────────────────────────────────────────────────────────────
 Step "完成"
