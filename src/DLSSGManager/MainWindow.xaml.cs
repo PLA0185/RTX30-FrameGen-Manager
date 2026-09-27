@@ -928,13 +928,17 @@ public partial class MainWindow : Window
         // 所以「已添加、未部署、目录里没有可识别代理」这个**最常见的初始状态**下，按钮此前是可点的：
         // 用户点它 → 弹一个承诺「之后恢复只能按记录里的 SHA256 删除这些文件」的确认框 → **然后才失败**。
         //
-        // 判据来自 `GameCheck.CanAdopt`（由 `Evaluate` 在它**本来就要做**的那次检查里顺带记下），
-        // 所以这里**不再重查**（重查会让窗口冻结数秒）。
-        // `game.Status != NotDeployed` 的情形（有记录、或已被改动的安装）仍然可用 —— 那对应
-        // 原来的 `!deployed || Modified` 语义。
-        AdoptButton.IsEnabled = game.Status == GameStatus.NotDeployed
-            ? game.CanAdopt
-            : !deployed || game.Status == GameStatus.Modified;
+        // ⚠️ **判据只有一份，UI 只读它**（Pass J 的 P1-B：我上一次只修了 `NotDeployed` 那一支，
+        // 而第三支仍用 `!deployed || Modified` ⇒ 另外两种状态仍然不同宽）：
+        //   · `Modified`（代理被换成无法识别的 DLL）⇒ 旧判据**可点**而 `Adopt` 必 `NotFound`；
+        //   · `Missing`（INI 被删、签名代理仍在）⇒ 旧判据**禁用**而 `Adopt` 本可成功。
+        // 现在 `Evaluate` **在所有分支**都算 `CanAdopt`（用的就是 `Adopt` 自己那道门
+        // `FindInstalledProxy(renderDir, prev: null)`），所以这里**直接读它**、不做任何回退判断。
+        // **回退判断 = 第二份判据 = 迟早与第一份不同宽** —— 这正是本会话修过三次的那个形态。
+        //
+        // 它由 `Evaluate` 在**本来就要做**那次检查的层里算出，所以这里**不再重查**
+        // （重查会让窗口冻结数秒）。
+        AdoptButton.IsEnabled = game.CanAdopt;
         OpenLogButton.IsEnabled = game.RenderDir is not null &&
                                   Directory.Exists(Path.Combine(game.RenderDir, ModSource.LogDirName));
 

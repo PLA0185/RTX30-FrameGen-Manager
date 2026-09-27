@@ -1254,6 +1254,19 @@ public static class DeploymentService
         var proxyOk = File.Exists(proxyPath);
         var iniOk = File.Exists(iniPath);
 
+        // ⚠️ **`CanAdopt` 必须在【所有】分支都算对**（Pass J 的 P1-B）。
+        //
+        // 我上一次只修了 `NotDeployed` 那一支，而 UI 的第三支（`Status != NotDeployed`）仍用旧判据
+        // ⇒ 两种方向都错：
+        //   · **`Modified`（代理被换成无法识别的 DLL）**：按钮**可点**，而 `Adopt` 的
+        //     `FindInstalledProxy(renderDir)` 对这个名字返回 null ⇒ **必 `Adopt.NotFound`** ——
+        //     用户又经历一次「先弹一个承诺按 SHA256 恢复的确认框，然后失败」。
+        //   · **`Missing`（INI 被删、签名代理仍在）**：按钮**禁用**，而 `Adopt` **本可成功**。
+        //
+        // 判据就是 `Adopt` 的第一道门本身：`FindInstalledProxy(root)`，**`prev` 传默认 null**
+        // （`Adopt` 也正是这么调的）—— 所以这里算出来的值**与 `Adopt` 能否成功同宽**。
+        var canAdoptNow = FindInstalledProxy(root) is not null;
+
         if (!proxyOk || !iniOk)
         {
             // A kernel anti-cheat renames the proxy rather than deleting it, so a vanished DLL with
@@ -1264,7 +1277,7 @@ public static class DeploymentService
                 ? Loc.T("Status.Quarantined", prev.ProxyName, quarantined.Count, protection.Summary)
                 : !proxyOk ? Loc.T("Status.MissingProxy", prev.ProxyName) : Loc.T("Status.MissingIni", ModSource.IniName);
 
-            return new GameCheck(GameStatus.Missing, detail, protection);
+            return new GameCheck(GameStatus.Missing, detail, protection, CanAdopt: canAdoptNow);
         }
 
         try
@@ -1282,10 +1295,12 @@ public static class DeploymentService
 
             return proxyMatch && iniMatch
                 ? new GameCheck(GameStatus.Deployed,
-                    $"Mod {versionLabel} · {prev.ProxyName} · {prev.DeployedAt}" + standby, protection)
+                    $"Mod {versionLabel} · {prev.ProxyName} · {prev.DeployedAt}" + standby, protection,
+                    CanAdopt: canAdoptNow)
                 : new GameCheck(GameStatus.Modified,
                     proxyMatch ? Loc.T("Status.IniModified") : Loc.T("Status.ProxyMismatch"),
-                    protection);
+                    protection,
+                    CanAdopt: canAdoptNow);
         }
         catch (Exception ex)
         {
