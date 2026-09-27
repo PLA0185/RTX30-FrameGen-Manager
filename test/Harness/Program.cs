@@ -131,7 +131,7 @@ public static class Program
             TestIniRendering(modRoot);
             TestGpuProbe();
             TestCanAdoptIsWideEnough(work);
-            TestVersionLabel();
+            TestVersionLabel(work);
             TestDownloadProgress();
             TestLocalization();
             TestDeployRestore(modRoot, work);
@@ -1276,33 +1276,16 @@ public static class Program
         // is re-fetched from the network and moves on, and a stale expectation here would fail the
         // suite for a reason that has nothing to do with the manager.
         //
-        // ⚠️ **期望值必须【不取自实现】。** 这条断言有过两次失败（都由独立审查者报出）：
-        //   ① 最初写 `source.Version != Loc.T("ModSource.UnknownVersion")` —— `Version` 的值域是
-        //      `""` ∪ {真实标签}，与那句文案**永不可能相等** ⇒ **恒真**。
-        //   ② 我第一次修它时写 `source.Version == (ModSource.ReadVersion(ini) ?? "")` ——
-        //      而 `ReadVersion(ini)` **就是** `ReadReleaseLabel` 的**第一分支**（`ModSource.cs:132`）
-        //      ⇒ **同一个静态方法、同一个输入**，不独立：
-        //        · 横幅存在 ⇒ **恒真**
-        //        · **横幅缺失而 `.manager-version` 存在 ⇒ 必失败**（期望 `""`，实际 marker 内容）
-        //      而后者**正是真实生产环境** —— 0.3.0 起发布不再带横幅，改由下载器写 marker
-        //      （`ModFetcher.TryWriteVersionMarker`，`ModSource.cs:127-128` 的注释明说这件事）。
+        // ⚠️ **这段断言已经搬走了**（Pass J 的 P2-⑤）：它此前写在这里，而**这个方法首行是
+        // `SkipWithoutModFiles`** ⇒ 本机与干净 clone 都没有 `mod/` ⇒ **它在两次测量里一次都没跑过**
+        // （是被跳过的 10 项之一）。**一条永不执行的断言，其效果与没有断言相同。**
         //
-        // 现在用**两条独立的观察**拼出期望：测试自己读 marker 文件，自己正则解析 INI 前 6 行的横幅。
-        // 解析规则与实现各写一遍 —— **这是刻意的重复**：测试的期望必须来自"我以为它该是什么"，
-        // 而不是"它现在算出来是什么"。
-        var markerPath = Path.Combine(modRoot, ModFetcher.VersionMarkerName);
-        var markerText = File.Exists(markerPath) ? File.ReadAllText(markerPath).Trim() : "";
-        var bannerText = "";
-        foreach (var line in File.ReadLines(Path.Combine(modRoot, ModSource.IniName)).Take(6))
-        {
-            var m = System.Text.RegularExpressions.Regex.Match(line, @"(\d+\.\d+(?:\.\d+)?)");
-            if (m.Success) { bannerText = m.Groups[1].Value; break; }
-        }
-
-        var expectedVersion = bannerText.Length > 0 ? bannerText : markerText;
-        Check("版本号来自 INI 横幅或下载器写的 marker（两者都没有时为空）",
-            source.Version == expectedVersion,
-            $"source=\"{source.Version}\" / 横幅=\"{bannerText}\" / marker=\"{markerText}\" / 期望=\"{expectedVersion}\"");
+        // 现在同样的规则在 `TestVersionLabel` 里用**合成夹具**测（造带横幅的 INI / 只带 marker 的 INI /
+        // 两者都没有的 INI），**不依赖 `mod/`、不依赖网络**。那里还顺带修了一个真实的宽度问题：
+        // 我在这里写的测试正则是 `(\d+\.\d+(?:\.\d+)?)`，而实现是
+        // `Native\s+([0-9]+(?:\.[0-9]+)+)` —— **缺 `Native` 锚点、且三段封顶**
+        //（实现允许 `1.2.3.4`，而本项目自己的 `ReadVersionFromText` 断言就把四段当合法）。
+        // **测试的语法必须与实现的语法同宽**，否则它会在真实 payload 上误报、并把责任推给管理器。
         Check("自带的入口全部识别", source.Proxies.Count == ModSource.ProxyCandidates.Length,
             "实际: " + string.Join(",", source.Proxies));
         Check("version.dll 在根目录", File.Exists(Path.Combine(modRoot, "version.dll")));
@@ -1585,12 +1568,62 @@ public static class Program
     /// SDK appends is stripped; the app's real number is pinned in its csproj. Not gated on mod
     /// files — it must run on a fresh clone too.
     /// </summary>
-    private static void TestVersionLabel()
+    private static void TestVersionLabel(string work)
     {
         Section("版本号");
         Check("版本号格式正确且剥离提交哈希",
             System.Text.RegularExpressions.Regex.IsMatch(AppVersion.Label, @"^v\d+\.\d+\.\d+$"),
             AppVersion.Label);
+
+        // ── `ModSource.Version` 的取值规则（Pass J 的 P2-⑤：**这一族断言此前从未执行过**）──
+        //
+        // 那条「版本号来自 INI 横幅或下载器写的 marker」的断言写在 `TestModSource` 里，
+        // 而该方法首行是 `SkipWithoutModFiles` ⇒ **本机与干净 clone 都没有 `mod/`**
+        // ⇒ 它**在两次测量里一次都没跑过**（它是被跳过的 10 项之一）。
+        // **一条永不执行的断言，与没有断言在效果上相同** —— 这正是本会话反复修的形态。
+        //
+        // ⇒ 用**合成夹具**在这里测：造一个带横幅的 `dlssg_sm86.ini`，不依赖 `mod/`、不依赖网络。
+        // **期望值独立于实现**：横幅文本由测试自己给出，`hash` 也自己写。
+        var bannerDir = MakeGameDir(work, "GameVersionBanner", withMarker: false);
+        File.WriteAllBytes(Path.Combine(bannerDir, "version.dll"), RandomNumberGenerator.GetBytes(4096));
+        File.WriteAllText(Path.Combine(bannerDir, ModSource.IniName),
+            "; Native 0.2.4. Restart the game after changing this file.\r\n[General]\r\nEnabled=1\r\n");
+
+        var withBanner = new ModSource(bannerDir);
+        Check("INI 有效（合成夹具的前置）", withBanner.IsValid, withBanner.ValidationMessage);
+        Check("横幅里的版本被读进 `Version`（Pass J P2-⑤：这一族此前从不执行）",
+            withBanner.Version == "0.2.4",
+            $"Version=\"{withBanner.Version}\"（INI 横幅写的是 0.2.4）");
+
+        // 横幅缺失时**必须是空串**（不是本地化文案）—— 这是 Pass D/E 那两条 P1 的语义。
+        var markerDir = MakeGameDir(work, "GameVersionMarker", withMarker: false);
+        File.WriteAllBytes(Path.Combine(markerDir, "version.dll"), RandomNumberGenerator.GetBytes(4096));
+        File.WriteAllText(Path.Combine(markerDir, ModSource.IniName), "[General]\r\nEnabled=1\r\n");
+        File.WriteAllText(Path.Combine(markerDir, ModFetcher.VersionMarkerName), "0.3.7");
+
+        var withMarker = new ModSource(markerDir);
+        Check("无横幅时用下载器写的 marker（0.3.0 起发布不再带横幅）",
+            withMarker.Version == "0.3.7",
+            $"Version=\"{withMarker.Version}\"（marker 写的是 0.3.7）");
+
+        // 两者都没有 ⇒ 空串。**不是任何语言的占位符。**
+        var bareDir = MakeGameDir(work, "GameVersionNone", withMarker: false);
+        File.WriteAllBytes(Path.Combine(bareDir, "version.dll"), RandomNumberGenerator.GetBytes(4096));
+        File.WriteAllText(Path.Combine(bareDir, ModSource.IniName), "[General]\r\nEnabled=1\r\n");
+
+        var bare = new ModSource(bareDir);
+        Check("横幅与 marker 都没有时 `Version` 是空串",
+            bare.Version == "",
+            $"Version=\"{bare.Version}\"");
+        Check("且它不是任何语言的占位符（§17 P1-1 的语义）",
+            !Languages.All.Any(language =>
+            {
+                Loc.SetLanguage(language);
+                var sentence = Loc.T("ModSource.UnknownVersion");
+                Loc.SetLanguage(Languages.ChineseSimplified);
+                return string.Equals(bare.Version, sentence, StringComparison.Ordinal);
+            }),
+            $"Version=\"{bare.Version}\"");
     }
 
     /// <summary>
