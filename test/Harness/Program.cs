@@ -2191,12 +2191,32 @@ public static class Program
         // 写在这里等于永不执行（而套件只多一行「[跳过]」，看起来一切正常）。
         // 对应的守护在 TestAdoptRecordsProvider 里，用自造文件构造同样场景，默认套件真的会跑。
         // The adopted release is read from the game folder's INI, which 0.3.0 no longer marks with a
-        // version banner — so "unknown" is a legitimate answer there, and the point is that adopting
+        // version banner — so **空** is a legitimate answer there, and the point is that adopting
         // succeeds and records something rather than throwing the version away.
+        //
+        // ⚠️ **这条断言曾经把缺陷行为写成了期望**（Pass E 报出）：期望值用的是**实现里的同一个表达式**
+        // `adoptedVersion ?? Loc.T("ModSource.UnknownVersion")` ⇒ **任何把 `Adopt` 改成写空串的修复
+        // 都会让这条断言失败**，而失败信息还会把修复说成回归。**这正是我上一轮只修了读取端、
+        // 漏掉写入端的原因之一：读取端没有这样的断言挡路，写入端有。**
+        //
+        // 现在的期望值**独立于实现**：读不到横幅就是**空串**（与 `ModSource.Version` 同口径）。
         var adoptedVersion = ModSource.ReadVersion(Path.Combine(dir, ModSource.IniName));
-        Check("接管后记录版本号",
-            game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersion")),
-            $"INI 横幅 {adoptedVersion ?? "(无)"}，记录 {game.Deployment?.ModVersion}");
+        var expectedVersion = adoptedVersion ?? "";
+        Check("接管后记录的版本号与 INI 横幅一致（读不到就是空串，不是本地化文案）",
+            game.Deployment?.ModVersion == expectedVersion,
+            $"INI 横幅 {adoptedVersion ?? "(无)"}，记录 «{game.Deployment?.ModVersion}»");
+
+        // **独立的第二条**：记录里**不得**出现任何语言的占位符 —— 它会被回灌成「已知版本」，
+        // 从而跳过版本探测、分裂 payload 目录、并让矩阵键永不匹配。
+        Check("接管记录的版本号不是任何语言的占位符（§17 P1-1）",
+            !Languages.All.Any(l =>
+            {
+                Loc.SetLanguage(l);
+                var placeholder = Loc.T("ModSource.UnknownVersion");
+                Loc.SetLanguage(Languages.ChineseSimplified);
+                return string.Equals(game.Deployment?.ModVersion, placeholder, StringComparison.Ordinal);
+            }),
+            $"记录 «{game.Deployment?.ModVersion}»");
 
         DeploymentService.Check(game);
         Check("接管后状态为已部署", game.Status == GameStatus.Deployed, game.StatusText + " / " + game.StatusDetail);

@@ -1135,7 +1135,17 @@ public static class DeploymentService
             // 「之后恢复只能按记录里的 SHA256 删除这些文件」。
             // **一个承诺了却必然失败的按钮，比没有按钮更糟：用户会以为接管之后还能撤销。**
             ProviderId = providerId,
-            ModVersion = (iniExists ? ModSource.ReadVersion(iniPath) : null) ?? Loc.T("ModSource.UnknownVersion"),
+
+            // **读不到版本就留空 —— 与 `ModSource.Version` 同一口径，绝不写本地化文案。**
+            //
+            // 这里曾经是 `?? Loc.T("ModSource.UnknownVersion")`：一句**给用户看的中文/英文**被写进
+            // `library.json` 的 `ModVersion`，随后被 `GetInstalledVersion` 当成「已知版本」回灌成
+            // `ProviderVersion` ⇒ `ResolveProviderVersionAsync` 因非空白而**跳过版本探测** ⇒ payload 目录
+            // 落到 `_unknown`（与未接管路径的真实版本目录不同，**同一份 payload 被下载两次**）+ 矩阵键
+            // 永不匹配 ⇒ 每次配置多一次确认框；而**配方记忆是真写盘的**，切语言后
+            // `recipe-memory.json` 里会留下「未知」与「Unknown」**两条互不相认的记录**。
+            // （Pass D 那条 P1 的**唯一残留产生点**就在这里 —— 我把「来源」修在了读取端，写入端漏了。）
+            ModVersion = (iniExists ? ModSource.ReadVersion(iniPath) : null) ?? "",
             DeployedAt = File.GetLastWriteTime(proxyPath).ToString("yyyy-MM-dd HH:mm:ss") + Loc.T("Adopt.AdoptedSuffix"),
             ProxySha256 = Sha256(proxyPath),
             IniSha256 = iniExists ? Sha256(iniPath) : "",
