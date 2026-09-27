@@ -164,7 +164,9 @@ public static partial class Strings
         ["Deploy.NoPermission"] = "No write permission. Restart the manager as administrator.",
         ["Deploy.ProxyTaken"] = "Entry name {0} is used by another mod. Pick one manually in the game's settings, or remove the mod occupying it.",
         ["Deploy.BlockedKernel"] = "Deployment blocked: {0} ({1}).\n     Kernel-level anti-cheat may block or quarantine the proxy DLL, and a detection may put your account at risk, so an explicit confirmation is required first.\n     The interface asks for that confirmation before deploying; once given, deployment proceeds.",
-        ["Deploy.ConfirmTitle"] = "Confirm deployment",
+        // Duplicate definition removed — see the note in Strings.zh.cs. The live value is at the
+        // "configuration confirmation" group below ("Confirmation needed"), which matches the only
+        // call site's body text (`Deploy.ConfirmBody`).
         ["Deploy.BlockedTooltip"] = "This game uses kernel-level anti-cheat: the proxy may be blocked or quarantined, and a detection may be recorded. Deployment asks for confirmation first.",
 
         ["Restore.Starting"] = "— Restoring {0}",

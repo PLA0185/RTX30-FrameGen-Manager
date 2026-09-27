@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace DLSSGManager;
 
@@ -164,7 +164,13 @@ public static partial class Strings
         ["Deploy.NoPermission"] = "没有写入权限。请用管理员身份重新启动本管理器。",
         ["Deploy.ProxyTaken"] = "入口名 {0} 已被其他 Mod 使用。请在该游戏的设置里手动指定一个入口名，或先移除占用它的 Mod。",
         ["Deploy.BlockedKernel"] = "已阻止部署：{0}（{1}）。\n     内核级反作弊可能拦截并隔离代理 DLL，检测记录也可能危及账号，所以需要明确确认后才能部署。\n     在界面上确认部署时程序会先弹出风险提示；确认后即可继续。",
-        ["Deploy.ConfirmTitle"] = "确认部署",
+        // ⚠️ **这里曾有一行 `["Deploy.ConfirmTitle"] = "确认部署"`** —— 它与 L443 的同名键**重复定义**，
+        // 而字典初始化器里**后者覆盖前者** ⇒ 这一行**永远不可达**，实测生效值一直是 L443 的
+        // 「需要你确认」（英文 `Confirmation needed`）。（Pass L 报出：全表**只有这一个**重复键，
+        // 而 `Strings.AllKeys.Count()` = **415** 与「416 个定义行」的差就是它。）
+        // **判据依据**：唯一调用点 `MainWindow.Actions.cs:214` 用的是 `Deploy.ConfirmBody`
+        // （「「{0}」的配置需要你确认后才能继续」）⇒ 与 L443 的标题**语义相配**，而这一行的
+        // 「确认部署」属于 `BlockedKernel` 的语义、**没有任何调用点**。
         ["Deploy.BlockedTooltip"] = "该游戏带有内核级反作弊：反作弊可能拦截并隔离代理 DLL，也可能记录检测信息。部署前会要求你确认。",
 
         ["Restore.Starting"] = "— 恢复 {0}",

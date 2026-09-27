@@ -86,6 +86,35 @@ public static class LocalizationAudit
         return problems;
     }
 
+    /// <summary>
+    /// 某个语言表里 <c>["Key"] =</c> 形式的**定义行**数（**不去重**）。
+    ///
+    /// <para><b>为什么要这个方法</b>：字典初始化器里同一个键写两次时，**后者覆盖前者**（C# 对重复键
+    /// 在集合初始化器里不报错），于是前一处**永远不可达**。而既有审计查的是「用到但未定义」与
+    /// 「两表键集是否一致」—— **都看不见「定义了一次 vs 定义了两次」**。
+    /// 所以判据是：**定义行数 == <see cref="Strings.AllKeys"/>.Count()**（后者是去重后的键数）。</para>
+    ///
+    /// <para>它读的是磁盘上的 <c>Strings.zh.cs</c> / <c>Strings.en.cs</c>（源码是唯一真源；
+    /// 运行时字典已经把重复项吃掉了，**查不出来**）。</para>
+    /// </summary>
+    public static int DefinitionLineCount(string language)
+    {
+        var fileName = language == Languages.English ? "Strings.en.cs" : "Strings.zh.cs";
+        var root = ModSourceLocator.FindRepositoryRoot();
+        if (root is null) return -1;
+
+        var path = Path.Combine(root, "src", "DLSSGManager", fileName);
+        if (!File.Exists(path)) return -1;
+
+        var count = 0;
+        foreach (var line in File.ReadLines(path))
+        {
+            if (Regex.IsMatch(line, @"^\s*\[""[^""]+""\]\s*=")) count++;
+        }
+
+        return count;
+    }
+
     private static HashSet<int> Slots(string template) =>
         Regex.Matches(template, @"\{(\d+)(?:[:}])")
             .Select(m => int.Parse(m.Groups[1].Value))

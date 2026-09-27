@@ -1448,6 +1448,22 @@ public static class Program
 
         Console.WriteLine($"      键总数: {Strings.AllKeys.Count()}");
 
+        // ⚠️ **同一个键被定义两次**（Pass L 报出）：字典初始化器里**后者覆盖前者** ⇒ 前一处
+        // **永远不可达**，而 `AllKeys.Count()`（去重后）与「定义行数」的**差就是重复数**。
+        // 实测：`Deploy.ConfirmTitle` 在两张表各定义两次（L167 与 L443，**值不同**）⇒
+        // `AllKeys.Count()` = **415** 而定义行 = **416**。
+        // **为什么上面的「键一致」断言放行**：重复定义在两张表里**对称存在** ⇒
+        // 那个断言只比较**键集**，奇偶校验看不见它。**这是「审计的盲区是另一个方向」的第四个同型实例**
+        // —— 既有审计查「用到但未定义」「两表不一致」，**都查不到「定义了一次 vs 定义了两次」**。
+        var zhDefs = LocalizationAudit.DefinitionLineCount(Languages.ChineseSimplified);
+        var enDefs = LocalizationAudit.DefinitionLineCount(Languages.English);
+        Check("中文表没有重复定义的键（定义行数 == 去重后键数）",
+            zhDefs == Strings.AllKeys.Count(),
+            $"定义行 {zhDefs} vs 去重键 {Strings.AllKeys.Count()}");
+        Check("英文表没有重复定义的键",
+            enDefs == Strings.AllKeys.Count(),
+            $"定义行 {enDefs} vs 去重键 {Strings.AllKeys.Count()}");
+
         // Placeholder mismatch means string.Format throws or silently drops a value in one language.
         var placeholderIssues = LocalizationAudit.PlaceholderMismatches();
         Check("两种语言的占位符一致",
