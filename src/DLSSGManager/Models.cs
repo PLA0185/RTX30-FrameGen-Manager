@@ -195,7 +195,12 @@ public sealed class GameEntry : Observable
     /// <summary>Optional executable used by the launch button.</summary>
     public string ExePath { get => _exePath; set => Set(ref _exePath, value); }
 
-    /// <summary>"自动" or one of the five proxy entry names.</summary>
+    /// <summary>
+    /// <c>"自动"</c> (see <c>AutoProxy</c>) or one of the entry names the current mod source can
+    /// actually deploy — i.e. a member of <c>ModSource.AvailableProxies</c>, which is derived from
+    /// <c>ProxyCandidates</c> filtered by what the payload contains. <b>不要在注释里写那个数量</b>：
+    /// 它的构成改过（现在 `ProxyCandidates` 是六个，`KnownProxyNames` 是七个）。
+    /// </summary>
     public string PreferredProxy { get => _preferredProxy; set => Set(ref _preferredProxy, value); }
 
     public string Notes { get => _notes; set => Set(ref _notes, value); }

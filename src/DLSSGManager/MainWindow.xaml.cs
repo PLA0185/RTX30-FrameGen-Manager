@@ -162,8 +162,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Fills the entry-name picker from the current mod source: the project's own five, then any proxy
-    /// DLLs the user has added.
+    /// Fills the entry-name picker from the current mod source: the project's own candidates, then any
+    /// proxy DLLs the user has added. <b>数量不要写在这里</b> —— 读 <c>ModSource.AvailableProxies</c>。
     ///
     /// Rebuilt rather than declared in XAML because the list changes when a file is added, and because
     /// an imported entry carries a suffix that has to follow the interface language. The value written

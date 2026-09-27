@@ -78,8 +78,13 @@ public sealed class ModSource
     public IReadOnlyList<string> ImportedProxies { get; private set; } = Array.Empty<string>();
 
     /// <summary>
-    /// Entry names this source can deploy: the project's own five first, then imported ones. Auto-pick
-    /// walks this order, so a game only lands on an imported entry when the classic names are taken.
+    /// Entry names this source can deploy: the project's own <c>ProxyCandidates</c> first, then imported
+    /// ones. Auto-pick walks this order, so a game only lands on an imported entry when the classic
+    /// names are taken.
+    ///
+    /// <para>（这里此前写「the project's own <b>five</b>」—— 而 `ProxyCandidates` 是 **六个**。
+    /// **不要再在注释里写这个数字**：它的构成改过一次，而没有任何机制会把注释和数组绑在一起。
+    /// 要看数量就读数组。）</para>
     /// </summary>
     public IReadOnlyList<string> AvailableProxies { get; private set; } = ProxyCandidates;
 
@@ -211,7 +216,8 @@ public sealed class ModSource
     }
 
     /// <summary>
-    /// Proxy DLLs under <c>altnative\</c> beyond the five the project ships, i.e. files the user added.
+    /// Proxy DLLs under <c>altnative\</c> beyond the ones the project ships (<c>ProxyCandidates</c>,
+    /// minus <c>version.dll</c> which lives at the root), i.e. files the user added.
     /// The file name is the entry name — it is the DLL name the game resolves — so it is the whole
     /// contract, and nothing else about the file is assumed here.
     /// </summary>
