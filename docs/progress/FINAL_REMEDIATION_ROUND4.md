@@ -1,4 +1,4 @@
-# 第四轮 · 自主闭环整改报告（§28）
+﻿# 第四轮 · 自主闭环整改报告（§28）
 
 > **状态：草稿，等待 Pass H 结果填入。** 标 `[待 Pass H]` 的位置在审查返回后更新。
 >
@@ -43,7 +43,7 @@
 | 项目 | 结果 |
 |---|---|
 | `build -c Release --no-incremental` | **0 错误 / 0 警告**（`49a028d`） |
-| Harness（**本地**，含 `extra-proxies/d3d12.dll`） | **973 通过 / 0 失败 / 10 跳过**（`1dbd2fd`） |
+| Harness（**本地**，含 `extra-proxies/d3d12.dll`） | **977 通过 / 0 失败 / 10 跳过**（`0f12de1`） |
 | Harness（**干净 clone**，无 `d3d12.dll`） | **946 通过 / 0 失败 / 10 跳过**（`54ef370`） |
 | 打包脚本 `scripts/package-release.ps1` | **`EXIT=0`** —— EXE **63.0 MB** · ZIP **57.7 MB** · SHA256SUMS（`1dbd2fd`） |
 | `--nvapi-smoke --loop` | **200 次真实读取，驱动被触达 200/200，异常 0** |
@@ -209,7 +209,52 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 1. **「注释声称已修」比缺口本身更危险** —— 缺口的代价是行为不对；**错误注释的代价是它永远不会被发现**。本会话已见四种同型：**声称已修** · **描述不存在的实现** · **给一个假的因** · **声称信息在别处**。
 2. **审计的盲区永远是「另一个方向」，漏掉的总是「看起来正常的那一侧」** —— 多语言审计查「用到但未定义」不查「定义了但没用」（死键）· 覆盖率统计查数量不查「是否真在跑」· 产物校验查存在不查完整。
 
-**§18 的状态**：Pass A–G **各报出缺陷 ⇒ 计数已重来七次**；**Pass H 是新周期的第一轮，正在运行。**
+### Pass H（3 条 P1 —— **两条都指向我上一轮的处理**）
+
+**结论：0 P0 / 3 P1 / 7 P2。** 它的检查方法是 **7 场景注入模型 + 2 次真实脚本注入** + 干净导出跑套件 + `git log -S` 溯源 + 全仓 grep。
+
+**★ 三条 P1 都是「我修过的那一处」的邻居** —— 这是本轮最有价值的观察：
+
+| # | 缺陷 | 与我上一轮的关系 |
+|---|---|---|
+| **P1-1** | `Program.cs:1189` 的 `source.Version != Loc.T("ModSource.UnknownVersion")` **恒真**（`Version` 值域是 `""` ∪ 真实标签，与「未知」永不可能相等） | **我改 `Version` 语义时没有同步更新的守护** —— 旧语义下它读不到会回落到那句文案，所以当时**有效** |
+| **P1-2** | 打包事务的**回滚路径**仍是静默失败（`:268`/`:269` 的 `Remove-Item` 仍是 `-ErrorAction SilentlyContinue`） | **我把「清理遗留 `.old`」的两处改成了 `-ErrorAction Stop`，却漏了回滚里的同类两处** ⇒「脚本里已无静默删除」这个说法比实际宽 |
+| **P1-3** | `AdoptButton.IsEnabled` 与 `Adopt` 的成败条件**不同宽** | **我上一轮明确写了「刻意不改」**，而那个「刻意」建立在一条**错误的前提**上（我把 `deployed` 说成「这份安装已被本工具接管过」，它只是「有部署记录」） |
+
+**★ 判据**：**改一处判据或语义时，必须把【同类位置的清单】拉出来逐个判断**，而不是只改被报出来的那一处。P1-1 是「语义变了、守它的断言没跟着变」；P1-2 是「同一族写法改了一处漏两处」；P1-3 是「同一屏上一行改对了、下一行没跟」。
+
+**P1-2 的端到端证据**（真实脚本注入，副本上做）：阶段二失败 + 锁住刚放上去的新目录 ⇒ 终止错误是 `Rename-Item : Cannot create a file when that file already exists.`（**与本因无关**）、`.old` 残留、`$StageDir` 是新目录而 ZIP/SUMS 是旧的一代 ⇒ **＝Pass G 报的形态本身**。原因：那个 `throw` 写在 `catch` 块里 ⇒ **它一抛，后面的语句永不执行** ⇒ 原始 `$reason` 丢失、部分回滚不报告、用户不知道旧产物是否已恢复。
+**已修**：回滚两步各自 try/catch 并记录结果；`throw` **移到 `catch` 之外**，且**必须排在删 `.old` 之前**（否则会先把唯一恢复材料删掉再报告失败）；消息同时带原始原因与恢复结果。**已实测**（锁旧 `win-x64\DLSSGManager.exe`）：`WARNING: 替换失败，正在恢复原状：…` + `旧产物已全部恢复。` + `EXIT=1` + `.old` 计数 0 + 正式三项保持旧版本、**自洽**。
+**审查者未能构造**：阶段二失败 / 部分回滚（三项目标在阶段一都已被改名走，同卷 `Move-Item` 不会失败）—— **那是附了尝试记录的有效「构造不出」结论**。
+
+**P1-3 的结构性原因**（这才是修复的真正难点）：`Evaluate` 发现的「可接管的手工安装」**只被编码进一句本地化文案**（`Status.ManualInstall`），`GameCheck` 没有承载它的字段。**而 `Evaluate` 本来就要做那次检查**（否则无法决定状态文案）⇒ 修法是**让本来就要做它的那一层把结果带出来**（`GameCheck.CanAdopt` → `Apply` → `GameEntry.CanAdopt`），**而不是让 UI 重查**（那会冻结窗口数秒，`DeploymentService` 的注释有记录）**也不能用 `StatusDetail.Contains("接管")`**（那是 `List.NewGame` 的错误形态）。
+
+### Pass I（8 组全部实查；**推翻了我对 Pass H 的一处判断**）
+
+**结论：0 P0 / 2 P1 / 4 P2。** 它指出：**「Pass H 第一轮只做基准核对、8 组一项没查」与实际证据不符** —— `eb0090e` 与 `5351d86` 的提交注释明确写着「Pass H 报出」，且 `eb0090e` 记录了 Pass H 的注入实测结果。**⇒ 更正：Pass H 报了真缺陷，它那一轮是有效的；我不该用审查者的【阶段性自述】去否定它的【最终结论】。**
+
+**P1-A**：`_hasModFiles` 判据**仍与用例真正需要的不同宽**。我第一版只加了 `altnative\d3d12.dll`，于是**「INI + 那一个 DLL」的目录被判为齐了** ⇒ 用例真跑 ⇒ 撞上缺失的 `version.dll` ⇒ **119 通过 / 18 失败 + 未处理异常中止 + 仍打印总结**，**精确复现了我声称已经修好的那个形态**。
+**实测对照**：T0 无 `mod/` ⇒ 946/0/10 · T1 只有 INI ⇒ 946/0/10 + 警告 · **T2′ INI + 那一个 DLL ⇒ 119/18 + 中止** · T4 七入口齐全 ⇒ 套件真跑。
+**已修**：判据改成 **`ModSource.ProxyCandidates` 的每一个入口都要在**（`version.dll` 在根，其余按 `ModSource.ResolveDllPath` 在 `altnative\`）+ INI，**缺哪个就报出哪个**。
+**★ 判据**：**前置条件要按「用例需要什么」推导，而不是按「上一次报缺陷时提到的那个文件」** —— 那是**按缺陷记录修，不是按需求修**；报缺陷时提到的文件只是**碰巧第一个撞上的那个**。
+**我自己构造夹具时两次漏了 `dinput8.dll`**（`ProxyCandidates` 实际是 **7 个**），而**判据两次都精确报出了「缺的是：dinput8.dll」**。
+
+**P1-B**：**我新加的断言期望值写错了**（同一处断言的**第二次**失败，而同因）：
+| 版本 | 写法 | 失效方式 |
+|---|---|---|
+| ① | `source.Version != Loc.T("ModSource.UnknownVersion")` | **恒真** |
+| ② | `source.Version == (ModSource.ReadVersion(ini) ?? "")` | **仍取自实现** —— `ReadVersion(ini)` **就是** `ReadReleaseLabel` 的**第一分支** ⇒ 横幅在 ⇒ 恒真；**横幅缺失而 marker 在 ⇒ 必失败**（而那是**真实生产环境**：0.3.0 起发布不再带横幅，改由下载器写 marker） |
+| ③ | 测试自己读 marker + 自己正则解析横幅，拼出期望 | ✅ |
+**实测**（T3：INI 无横幅 + `.manager-version`=0.3.0 + 7 入口）：旧期望 `[失败] → source="0.3.0" / INI 横幅="(null)"`；新期望通过。
+**★ 判据**：**测试的期望必须来自「我以为它该是什么」，而不是「它现在算出来是什么」**。**在测试里「重复实现」不是坏味道，而是必要条件** —— 一旦复用实现的函数算期望，断言就变成「实现与自己一致」的检查。**检查式：期望值的表达式里有没有出现被测的那个函数？**
+
+**4 条 P2 全部已处理**：
+- **P2-1 第六处「文案当数据」（推翻「五处全清」）**：`Gpu.cs:493` 无 N 卡时 `GpuInfo.Name = Loc.T("Gpu.NotFound")` → `MainWindow.xaml.cs:435` → `Models.cs:346`（**无 `[JsonIgnore]`**）→ `library.json` → `MainWindow.Actions.cs:58/418` → `SmoothMotionWorkflow.cs:389` → **`CompatibilityMatrix.cs:257` 参与比较** ⇒ 两种语言产出两个矩阵键。**触发路径比「没有 N 卡」宽**：`Adapters()` 只保留 `AttachedToDesktop` 且跳过 Basic Render ⇒ **RDP / headless / 驱动替换中途**都会走到。**已修**（`Name` 改空串；显示不受影响 —— UI 显示的是 `Advice`，而 `BuildAdvice` 在 `mismatch` 为假时不读 `name`）。
+- **P2-2 陈旧临时产物看起来像发布物**：`*.tmp.zip`（**一个完整可用的 60MB ZIP**）+ `SHA256SUMS.txt.tmp` + `.win-x64-staging/`，失败时全留（~126MB）、**失败消息一个字不提**。**已修两层**：**启动时**删上一次的（那时删不可能损失任何东西）· **本次失败时只报告**（回滚不完整时它们可能是唯一的新产物）。**★ 判据：删除有风险时「报告」比「删」更安全，按时机分开。**
+- **P2-3 文案写死数字，而那个「或」也是错的**：`ProxyCandidates` = **6 个**、`KnownProxyNames` = **7 个**，而文案说「本项目的 **5 个**入口，**或**随附加入口分发的 `d3d12.dll`」—— 数字错，且 **`d3d12.dll` 就在那 6 个里**（子集不是并列项）。**已修**：改成不写数字，并在四处注释里写明「要数量就读数组」。**★ 判据：凡是「数量」出现在散文里，它就是一个会漂的副本。**
+- **P2-4 无条件删 `.old`**：需连续两次失败才丢发布 ⇒ **设计取舍，记录备查**。
+
+**§18 的状态**：Pass A–I **各报出缺陷 ⇒ 计数已重来九次**；**Pass H 与 Pass I 的 5 条 P1 已全部修复**（H 3 + I 2），**下一轮审查是新周期的第一轮**。
 
 **基线**：审查者开工时 HEAD `a0c0247`，收尾时已被推进 —— **这是本会话第三次基准漂移**，也是为什么后来要求审查者一律用 `git archive` 导出。
 
@@ -288,7 +333,7 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 5. **运行时 `CanWrite` 仍为 `false`** —— 三个能力门是 `internal static` 进程内状态：默认 `false`、每次启动重置、生产路径不跑 smoke。**提权路径已被真实证明，但生产运行不会自动获得该状态。**（**已由「写入前 Blocked」妥善处理**：做不到就不动磁盘，而不是装完再删。）
 6. **`P2-③` 的「写」那一半未接线** —— 矩阵**不会自动积累**兼容性记录（`Add`/`Persist` 在 `src/` 无调用者）。这是**有意留待产品决策**：它会改变产品行为（用户会因此少看到确认框），且需要先定义**什么算一次可靠的记录**。**「读」那一半已接线并有断言守护。**
 7. **零消费者/零生产者声明**（如实标注，不写成「已生效」）：`NvApiStatus.RequiresElevation` · `IsNameCollision` · `ProviderRegistry.AllHealth()` · `DeploymentFileSource.ExistingReusable` · `ProviderMetadata` 的 8 个字段 · `OpResult.RollbackHandled`（它在 `src/` 只有写入、没有读取 —— 详见该属性的文档）。
-   **「死键」也属于这一类**：`Adopt.AdoptedSuffix` · `List.NewGame` · `Scan.SourceFolder` —— **各有 2 处语言表定义（zh + en）+ 1 处代码引用，而那 1 处全都在注释里**（我修它们时留下的解释文字）。**多语言审计（`LocalizationAudit`）只查「用到但未定义」，不查「定义了但没用」** ⇒ 它们会一直留着，且**看起来像在用**（grep 有命中）。**无害，保留**（删掉要同时改两个语言表，而审计要求两种语言的键集完全一致），但**必须记在这里**，否则下一位读者会以为它们是被使用的。
+   **「死键」也属于这一类**：`Adopt.AdoptedSuffix` · `List.NewGame` · `Scan.SourceFolder` · **`Gpu.NotFound`**（P2-1 之后没有消费者）· **`Adopt.ManualVersion`**（Pass H 报出：全仓零引用、连注释都没有） —— **各有 2 处语言表定义（zh + en）+ 1 处代码引用，而那 1 处全都在注释里**（我修它们时留下的解释文字）。**多语言审计（`LocalizationAudit`）只查「用到但未定义」，不查「定义了但没用」** ⇒ 它们会一直留着，且**看起来像在用**（grep 有命中）。**无害，保留**（删掉要同时改两个语言表，而审计要求两种语言的键集完全一致），但**必须记在这里**，否则下一位读者会以为它们是被使用的。
 8. **「日志干净」未核验** —— 未定位到日志文件。
 9. **真实游戏 / 视觉人工验证** —— 属 `Pending User Validation`（**§26 允许的唯一类别**）：实机 `Applied`/`Verified`、深色主题提示字色、Provider 下拉、Plan Preview、七页导航、高级折叠；以及 Ground Branch 的第一次真实 E2E。
 
@@ -317,7 +362,7 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 | 完成条件 | 状态 |
 |---|---|
 | Build PASS | ✅ 0 错误 / 0 警告 |
-| Harness PASS | ✅ 本地 **973**/0/10（`1dbd2fd`）· **干净 clone 946**/0/10（`54ef370`），差 **27** —— 那 27 项**恰好**是只在有 `extra-proxies/d3d12.dll` 时才跑的断言 |
+| Harness PASS | ✅ 本地 **977**/0/10（`0f12de1`）· **干净 clone 待重测**（本轮 +4 条断言中有 1 条依赖 `extra-proxies`，差值必然变化 —— **收官时必须重测**，不能沿用旧的 946/27）|
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
 | **Independent Code Review PASS** | **[待 Pass H]** |
