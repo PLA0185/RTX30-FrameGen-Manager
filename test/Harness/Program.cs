@@ -4121,6 +4121,10 @@ public static class Program
         Directory.CreateDirectory(execAlt);
         File.WriteAllText(Path.Combine(execAlt, "winmm.dll"), "payload");
 
+        // **第二个入口。** P0-1(b) 的断言需要一个「计划列了两个可部署入口、实际只写一个」的 payload ——
+        // 而真实 MFG 的 payload 里就是多个（3 个），`Deploy` 每次只写选定的那一个。
+        File.WriteAllText(Path.Combine(execAlt, "dxgi.dll"), "payload");
+
         var planSource = new ModSource(execDir);
         var execPlan = plan with { Status = PlanStatus.Ready, ProxyChoice = "winmm.dll" };
         var execGame = new GameEntry { Name = "ExecGame", RenderDir = MakeGameDir(work, "execGame") };
@@ -4266,6 +4270,36 @@ public static class Program
         Check("没有部署记录时要求回滚（Install 已返回 Ok，文件可能已在盘上）",
             none.FilesWereWritten && none.RollbackRequired,
             $"written={none.FilesWereWritten} rollback={none.RollbackRequired}");
+
+        // **P0-1(b)（Pass C 报出）：计划「提供」的入口不等于它「承诺要写」的入口。**
+        //
+        // `FilesToDeploy` 含 payload 提供的**每一个**可部署入口名（真实 MFG 是 3 个），而 `Deploy` 每次
+        // **只写选定的那一个** + INI（其余待机代理仅在游戏目录里本来就存在时才留）。把两者直接对比，
+        // 就会把「本次没选它」误判成「计划说了要写却没写」：真实 MFG 的**第二次及以后**的运行必现
+        // `计划中未部署的文件：dxgi.dll` ⇒ Failed + 回滚，**而那次回滚会把刚写的文件全部删掉**。
+        //
+        // 结论：`InstallPlanExecutor.Execute(unexpectedRunner, …)` 这类「计划外文件」的用例一直都在，
+        // 但**反方向（计划里有、实际没写）此前没有任何断言** —— 而真正的缺陷正好长在反方向上。
+        //
+        // **修复前这条会红**：旧代码把 `dxgi.dll` 判成「计划中未部署」并返回失败。
+        var optPlan = execPlan with
+        {
+            FilesToDeploy = new[] { "version.dll", "dxgi.dll" },
+            ProxyChoice = "version.dll",
+        };
+
+        var optGame = new GameEntry { Name = "OptionalEntry", RenderDir = MakeGameDir(work, "optional") };
+        var optRunner = new RecordingProvider { RecordsDeployed = new List<string> { "version.dll" } };
+        var opt = InstallPlanExecutor.Execute(optRunner, optPlan, optGame, planSource);
+
+        Check("计划提供但本次不写的入口，不算「计划中未部署」（§17 P0-1(b)）",
+            opt.Ok, opt.Message);
+
+        Check("计划选定的入口如果真没写，仍然要判不一致（§17 P0-1(b) · 反向配对）",
+            !InstallPlanExecutor.Execute(
+                new RecordingProvider { RecordsDeployed = new List<string>() },
+                optPlan, new GameEntry { Name = "OptionalEntry2", RenderDir = MakeGameDir(work, "optional2") },
+                planSource).Ok);
 
         // ---- payload manifest: the plan's file list comes from what is actually there (整改 F) ----
         var manifestDir = Path.Combine(work, "payload-manifest");
