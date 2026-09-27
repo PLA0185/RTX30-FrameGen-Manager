@@ -84,19 +84,33 @@ public static class Program
         // ⇒ **以未处理异常中止整套**，而套件**仍然打印一个看起来正常的总结**（Pass G 实测：
         // 「通过 123 · 失败 14」）。**那比跳过糟得多** —— 跳过是诚实的，中途炸掉再印个总结是误导。
         //
-        // ⇒ 这里用一个**自己的、更严的判据**：标记文件**和**它必须提供的那个代理都要在。
+        // ⇒ 这里用一个**自己的、更严的判据**：**用例真正需要的每一个文件都要在**。
         // **这与 P1-2 是同一族：前置条件的判据必须与「用例真正需要什么」同宽**，而不是与
         // 「生产代码怎么粗判一个目录像不像源」同宽 —— 后者是**为另一个目的写的**（选择下载目标）。
+        //
+        // ⚠️ **这个判据我自己修窄过一次，而审查者立刻证明了它仍不够**（Pass I 的 T2′）：
+        // 我第一版只加了 `altnative\d3d12.dll`，于是「INI + 那一个 DLL」的目录被判为「齐了」⇒
+        // 依赖真实 Mod 的用例真的跑起来 ⇒ 撞上**缺失的 `version.dll`** ⇒
+        // **119 通过 / 18 失败 + 未处理异常中止 + 仍然打印总结** ——
+        // **精确复现了我声称已经修好的那个形态**（而且我写的那句「修复：…或补回缺失的文件」
+        // 恰好会引导用户只补那一个、直接掉进去）。
+        //
+        // **⇒ 判据必须按「用例需要什么」推导，而不是按「上一次报缺陷时提到的那一个文件」。**
+        // 需要的是：`ModSource.ProxyCandidates` 的**全部**入口（`version.dll` 在根，
+        // 其余按 `ModSource.ResolveDllPath` 在 `altnative\`）**加上** INI。
         var markerOnly = ModSourceLocator.LooksLikeSource(modRoot);
-        var proxyPresent = File.Exists(Path.Combine(modRoot, "altnative", "d3d12.dll"));
-        _hasModFiles = markerOnly && proxyPresent;
+        var missing = ModSource.ProxyCandidates
+            .Where(n => !File.Exists(ModSource.ResolveDllPath(modRoot, n)))
+            .ToArray();
+        _hasModFiles = markerOnly && missing.Length == 0;
 
-        if (markerOnly && !proxyPresent)
+        if (markerOnly && missing.Length > 0)
         {
-            Console.WriteLine("⚠️ Mod 源目录里有标记文件，但缺少 altnative\\d3d12.dll —— 这是一个半套目录。");
+            Console.WriteLine($"⚠️ Mod 源目录里有标记文件，但缺少 {missing.Length} 个入口 —— 这是一个半套目录。");
+            Console.WriteLine("   缺的是：" + string.Join("、", missing));
             Console.WriteLine("   按「尚未获取」处理（否则依赖真实 Mod 的用例会中途抛异常，"
                               + "而总结仍会打印成正常）。");
-            Console.WriteLine("   修复：删掉该目录后重新运行 --fetch，或补回缺失的文件。");
+            Console.WriteLine("   修复：删掉该目录后重新运行 --fetch，让它整套重新下载。");
             Console.WriteLine();
         }
 
