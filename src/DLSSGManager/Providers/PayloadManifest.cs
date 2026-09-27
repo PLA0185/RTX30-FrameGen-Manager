@@ -179,6 +179,17 @@ public static class PayloadPaths
     {
         if (string.IsNullOrWhiteSpace(value)) return "_unknown";
 
+        // **本地化占位符不是版本名。** `ModSource.Version` 在 payload 读不到版本标签时会回落到
+        // `Loc.T("ModSource.UnknownVersion")` —— 那是一句**给用户看的中文**。它被当成版本回传后，
+        // payload 目录就变成了 `payloads/mfg-smooth/未知`：**一个中文目录名，而且它会随界面语言变化**
+        // （换到英文就变成另一个目录，于是同一个游戏在两个语言下用两份 payload）。
+        //
+        // 判据用**形状**而不是**值匹配**：版本号不会含非 ASCII 字符。
+        //   · 值匹配要跟着语言表走，加一种语言就漏一次；
+        //   · 形状判据与语言无关，而且顺带挡住了任何被本地化的字符串。
+        // 真正含非 ASCII 的版本号不存在于这个生态（上游用的是 `2.9.0-R1` 这类形式）。
+        if (value.Any(c => c > 127)) return "_unknown";
+
         var invalid = Path.GetInvalidFileNameChars();
         var cleaned = new string(value.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim('.', ' ');
 

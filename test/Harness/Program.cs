@@ -6098,6 +6098,25 @@ public static class Program
         Check("空版本落到明确的 _unknown 段，而不是根目录本身",
             PayloadPaths.For("p", "").EndsWith("_unknown", StringComparison.OrdinalIgnoreCase));
 
+        // **本地化占位符不是版本名**（P2-⑫ · Pass C 报出）。
+        //
+        // `ModSource.Version` 在读不到版本标签时会回落到 `Loc.T("ModSource.UnknownVersion")` ——
+        // 那是一句**给用户看的中文**。它被当成版本传下来后，payload 目录就变成了
+        // `payloads/mfg-smooth/未知`：**一个中文目录名，而且它会随界面语言变化**
+        // （切到英文就换成另一个目录 ⇒ 同一个游戏在两个语言下用两份 payload）。
+        //
+        // 判据用**形状**（版本号不含非 ASCII）而不是**值匹配**：后者要跟着语言表走，加一种语言就漏一次。
+        var localized = Loc.T("ModSource.UnknownVersion");
+
+        Check("本地化占位符被归为 _unknown，不会变成目录名（§17 P2-⑫）",
+            PayloadPaths.For("p", localized).EndsWith("_unknown", StringComparison.OrdinalIgnoreCase),
+            $"\"{localized}\" → {PayloadPaths.For("p", localized)}");
+
+        // **反向配对**：真实的版本号必须原样保留 —— 否则「把所有东西都归成 _unknown」也能通过上面那条。
+        Check("真实的版本号仍然原样保留（§17 P2-⑫ · 反向配对）",
+            PayloadPaths.For("p", "2.9.0-R1").EndsWith("2.9.0-R1", StringComparison.Ordinal),
+            PayloadPaths.For("p", "2.9.0-R1"));
+
         // ---- payload 旧版本清理（P0-07 的第三项：旧版本可清理）----
         //
         // 用唯一的 providerId，确保不会碰到任何真实 provider 的目录；测完把整个目录删掉。
