@@ -130,6 +130,7 @@ public static class Program
             TestModSource(modRoot);
             TestIniRendering(modRoot);
             TestGpuProbe();
+            TestCanAdoptIsWideEnough(work);
             TestVersionLabel();
             TestDownloadProgress();
             TestLocalization();
@@ -1172,6 +1173,80 @@ public static class Program
     }
 
     /// <summary>Builds a fake game folder: a large exe plus the marker DLL a real game would ship.</summary>
+    /// <summary>
+    /// 「接管按钮能点」与「接管能成功」必须**同宽**（Pass I 的 P1-3）。
+    ///
+    /// <para>判据是 <c>GameCheck.CanAdopt</c> —— 由 <c>DeploymentService.Evaluate</c> 在它**本来就要做**
+    /// 的那次检查里算出（那一次检查是昂贵的：每个候选入口名一次签名/哈希验证），
+    /// 经 <c>Apply</c> 带到 <c>GameEntry.CanAdopt</c>。这里断言的是**服务层的事实，与 UI 无关**。</para>
+    ///
+    /// <para><b>为什么这里只能测「不能」那一半</b>：<c>CanAdopt</c> 为真的前提是目录里有一个
+    /// **可识别来源**的代理（本项目签名，或内容哈希等于已分发的 <c>d3d12.dll</c>）。
+    /// 两者都需要真实文件，而**它们都不在 git 里** —— 与 `TestAdoptRecordsProvider` 的夹具同源。
+    /// 所以「为真」那一半由那个条件夹具覆盖（它在有 `extra-proxies\d3d12.dll` 或有真实 Mod 文件时跑），
+    /// **这里只保证「为假」这一半不会假阳性**，并如实标注这个边界。</para>
+    /// </summary>
+    private static void TestCanAdoptIsWideEnough(string work)
+    {
+        Section("接管判据与服务成败同宽（§17 P1-3）");
+
+        // 空目录：没有可识别代理 ⇒ 不能接管。
+        var emptyDir = MakeGameDir(work, "GameCanAdoptEmpty", withMarker: false);
+        var emptyGame = new GameEntry { Name = "CanAdoptEmpty", RenderDir = emptyDir };
+        DeploymentService.Check(emptyGame);
+
+        Check("空目录判为未部署", emptyGame.Status == GameStatus.NotDeployed, emptyGame.Status.ToString());
+        Check("空目录不能接管（CanAdopt 为假）—— 按钮此前是可点的",
+            !emptyGame.CanAdopt,
+            $"CanAdopt={emptyGame.CanAdopt}");
+
+        // 只有一个**不是**本项目来源的 DLL：与空目录同结论。
+        // （这正是 `Adopt` 的第一道门 `FindInstalledProxy(...) is null ⇒ Adopt.NotFound` 的判据。）
+        var foreignDir = MakeGameDir(work, "GameCanAdoptForeign", withMarker: false);
+        File.WriteAllBytes(Path.Combine(foreignDir, "version.dll"), RandomNumberGenerator.GetBytes(4096));
+        var foreignGame = new GameEntry { Name = "CanAdoptForeign", RenderDir = foreignDir };
+        DeploymentService.Check(foreignGame);
+
+        Check("目录里只有陌生 DLL 时也不能接管",
+            !foreignGame.CanAdopt,
+            $"status={foreignGame.Status} · CanAdopt={foreignGame.CanAdopt}");
+
+        // **反向配对**（防止「恒为 false」的实现蒙混过关）：这两个用例的 `CanAdopt` 都是 false，
+        // 所以上面两条断言本身**不能区分「判据正确」与「CanAdopt 恒为 false」**。
+        // 下一条断言把「为真」那一半的责任**明确交出去**，并在缺夹具时**如实计入跳过**
+        // （而不是静默 return —— 那是本项目已经吃过大亏的形态）。
+        var community = FindCommunityProxyForAdopt();
+        if (community is null)
+        {
+            _skipped++;
+            _skippedNeedingCommunityProxy++;
+            Console.WriteLine("  [跳过] 有可识别代理时 CanAdopt 为真"
+                              + "（需要在仓库根放置 extra-proxies\\d3d12.dll；--fetch 不提供它）");
+            return;
+        }
+
+        var probeDir = MakeGameDir(work, "GameCanAdoptReal", withMarker: false);
+        File.Copy(community, Path.Combine(probeDir, "version.dll"), overwrite: true);
+        var probeGame = new GameEntry { Name = "CanAdoptReal", RenderDir = probeDir };
+        DeploymentService.Check(probeGame);
+
+        Check("有可识别代理时 CanAdopt 为真（这一半才排除「恒为假」的实现）",
+            probeGame.CanAdopt,
+            $"status={probeGame.Status} · CanAdopt={probeGame.CanAdopt}");
+    }
+
+    /// <summary>与 <c>TestAdoptRecordsProvider</c> 用同一处自备文件（被 `.gitignore` 排除）。</summary>
+    private static string? FindCommunityProxyForAdopt()
+    {
+        for (var d = new DirectoryInfo(AppContext.BaseDirectory); d is not null; d = d.Parent)
+        {
+            var candidate = Path.Combine(d.FullName, "extra-proxies", "d3d12.dll");
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        return null;
+    }
+
     private static string MakeGameDir(string work, string name, bool withMarker = true)
     {
         var dir = Path.Combine(work, name);
