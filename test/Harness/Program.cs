@@ -23,6 +23,9 @@ public static class Program
     private static int _pass;
     private static int _fail;
     private static int _skipped;
+
+    /// <summary>其中有多少项是因为缺 <c>extra-proxies\d3d12.dll</c> 跳过的（页脚据此给不同的补救）。</summary>
+    private static int _skippedNeedingCommunityProxy;
     private static bool _hasModFiles;
 
     public static int Main(string[] args)
@@ -140,7 +143,18 @@ public static class Program
         var skipped = _skipped > 0 ? $" · 跳过 {_skipped}" : "";
         Console.WriteLine($"===== 通过 {_pass} · 失败 {_fail}{skipped} =====");
         if (_skipped > 0)
-            Console.WriteLine($"（跳过的 {_skipped} 项需要 Mod 文件，运行 Harness.exe --fetch 获取后重试）");
+        {
+            // **两类跳过的补救不同**（Pass G 报出：此前一律印「运行 --fetch」，而其中有几项
+            // `--fetch` 根本帮不上 —— 它写的是 `mod\altnative\d3d12.dll`，不是仓库根的
+            // `extra-proxies\d3d12.dll`。**给错补救比不给更糟：用户会照做、然后发现没用。**）
+            var needsMod = _skipped - _skippedNeedingCommunityProxy;
+            if (needsMod > 0)
+                Console.WriteLine($"（跳过的 {needsMod} 项需要 Mod 文件，运行 Harness.exe --fetch 获取后重试）");
+            if (_skippedNeedingCommunityProxy > 0)
+                Console.WriteLine($"（另有 {_skippedNeedingCommunityProxy} 项需要在仓库根放置 extra-proxies\\d3d12.dll —— "
+                                  + "它是使用者自备的文件，--fetch 不提供它）");
+        }
+
         return _fail == 0 ? 0 : 1;
     }
 
@@ -1059,6 +1073,28 @@ public static class Program
 
         _skipped++;
         Console.WriteLine($"  [跳过] {section}（需要 Mod 文件，尚未获取）");
+        return true;
+    }
+
+    /// <summary>
+    /// 给**需要 <c>extra-proxies\d3d12.dll</c>**（使用者自备、被 `.gitignore` 排除）的用例用的跳过助手。
+    ///
+    /// <para><b>为什么不能复用 <see cref="SkipWithoutModFiles"/>。</b>它的判据是 <c>_hasModFiles</c>，
+    /// 而那与「仓库根有没有 `d3d12.dll`」是**两件不相干的事**（Pass G 报出）：
+    ///   · 干净 clone：`_hasModFiles=false` ⇒ 会跳过，但**理由字符串是错的** —— 它印「需要 Mod 文件」，
+    ///     而真正缺的是 `d3d12.dll`；用户按那句去跑 `--fetch` 也没用（`--fetch` 写的是
+    ///     `mod\altnative\d3d12.dll`，不是仓库根的 `extra-proxies\`）。
+    ///   · **跑过 `--fetch` 之后**：`_hasModFiles=true` ⇒ 那个助手**返回 false、不跳过** ⇒
+    ///     夹具于是没有任何代理文件 ⇒ `Adopt` 必然 `NotFound` ⇒ **那几条断言直接失败**。
+    /// 也就是说：**借用一个讲别的事的跳过助手，会让这条用例在「有 Mod 文件」的环境里从「跳过」变成「失败」。**</para>
+    ///
+    /// <para><b>所以给它一个自己的判据与自己的理由字符串。</b>页脚也据此对两类跳过给不同的补救提示。</para>
+    /// </summary>
+    private static bool SkipWithoutCommunityProxy(string section)
+    {
+        _skipped++;
+        _skippedNeedingCommunityProxy++;
+        Console.WriteLine($"  [跳过] {section}（需要在仓库根放置 extra-proxies\\d3d12.dll；--fetch 不提供它）");
         return true;
     }
 
@@ -2140,7 +2176,7 @@ public static class Program
         var community = FindCommunityProxy();
         if (community is not null)
             File.Copy(community, target, overwrite: true);
-        else if (SkipWithoutModFiles("接管记录必须标注 Provider（§17 P1-3）"))
+        else if (SkipWithoutCommunityProxy("接管记录必须标注 Provider（§17 P1-3）"))
             return;
 
         File.WriteAllText(Path.Combine(dir, ModSource.IniName), "[DLSSG SM86]" + Environment.NewLine);
