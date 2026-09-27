@@ -1,4 +1,4 @@
-﻿# 第四轮 · 自主闭环整改报告（§28）
+# 第四轮 · 自主闭环整改报告（§28）
 
 > **状态：草稿，等待 Pass G 结果填入。** 标 `[待 Pass G]` 的位置在审查返回后更新。
 >
@@ -254,9 +254,18 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 4. **`--nvapi-write-smoke` 的提权路径无自动测试** —— 需要人工点 UAC，属**外部真实阻塞**（§27 允许的停止理由）。
 5. **运行时 `CanWrite` 仍为 `false`** —— 三个能力门是 `internal static` 进程内状态：默认 `false`、每次启动重置、生产路径不跑 smoke。**提权路径已被真实证明，但生产运行不会自动获得该状态。**（**已由「写入前 Blocked」妥善处理**：做不到就不动磁盘，而不是装完再删。）
 6. **`P2-③` 的「写」那一半未接线** —— 矩阵**不会自动积累**兼容性记录（`Add`/`Persist` 在 `src/` 无调用者）。这是**有意留待产品决策**：它会改变产品行为（用户会因此少看到确认框），且需要先定义**什么算一次可靠的记录**。**「读」那一半已接线并有断言守护。**
-7. **零消费者/零生产者声明**（如实标注，不写成「已生效」）：`NvApiStatus.RequiresElevation` · `IsNameCollision` · `ProviderRegistry.AllHealth()` · `DeploymentFileSource.ExistingReusable` · `ProviderMetadata` 的 8 个字段。
+7. **零消费者/零生产者声明**（如实标注，不写成「已生效」）：`NvApiStatus.RequiresElevation` · `IsNameCollision` · `ProviderRegistry.AllHealth()` · `DeploymentFileSource.ExistingReusable` · `ProviderMetadata` 的 8 个字段 · `OpResult.RollbackHandled`（它在 `src/` 只有写入、没有读取 —— 详见该属性的文档）。
+   **「死键」也属于这一类**：`Adopt.AdoptedSuffix` · `List.NewGame` · `Scan.SourceFolder` —— **各有 2 处语言表定义（zh + en）+ 1 处代码引用，而那 1 处全都在注释里**（我修它们时留下的解释文字）。**多语言审计（`LocalizationAudit`）只查「用到但未定义」，不查「定义了但没用」** ⇒ 它们会一直留着，且**看起来像在用**（grep 有命中）。**无害，保留**（删掉要同时改两个语言表，而审计要求两种语言的键集完全一致），但**必须记在这里**，否则下一位读者会以为它们是被使用的。
 8. **「日志干净」未核验** —— 未定位到日志文件。
 9. **真实游戏 / 视觉人工验证** —— 属 `Pending User Validation`（**§26 允许的唯一类别**）：实机 `Applied`/`Verified`、深色主题提示字色、Provider 下拉、Plan Preview、七页导航、高级折叠；以及 Ground Branch 的第一次真实 E2E。
+
+> **★ 一条贯穿本节的观察：审计的盲区永远是「另一个方向」，而漏掉的总是「看起来正常的那一侧」。** 本会话见过三种同型：
+> | 审计 | 覆盖的方向 | 漏掉的方向 | 漏掉的东西长什么样 |
+> |---|---|---|---|
+> | **多语言审计** | 用到但未定义 | **定义了但没用** | 死键 —— grep 有命中，看起来在用 |
+> | **覆盖率统计** | 断言数量 | **断言是否真在跑 / 是否检查的是那件事** | 恒真断言 —— 永远通过；或把缺陷写成期望 —— 通过得理直气壮 |
+> | **产物校验** | 文件是否存在 | **文件是否完整 / 是否与哈希对应** | 残缺 ZIP —— `Test-Path` 返回真 |
+> **⇒ 看到任何「检查」时，先问它检查的是哪个方向，然后问相反方向由谁负责。**
 
 > **第 1、2、3 条是「测试覆盖的缺口」，第 4、8、9 条是「未核验」，第 5、6、7 条是「有意保持的现状」。** 三类都不写成 PASS，但**处置不同**：缺口要缩小，未核验要补证据，现状要在改动前先做决定。
 
