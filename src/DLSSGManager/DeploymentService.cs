@@ -1184,7 +1184,26 @@ public static class DeploymentService
     /// <see cref="Apply"/>, which lets the expensive filesystem work run off the UI thread while the
     /// property changes land on it.
     /// </summary>
-    public sealed record GameCheck(GameStatus Status, string Detail, ProtectionReport? Protection);
+    /// <summary>
+    /// <paramref name="CanAdopt"/> 是给 UI 用的**结构化**事实：这份安装现在**真的可以接管**吗。
+    ///
+    /// <para><b>为什么要有这个字段</b>（Pass H 报出）：`AdoptButton.IsEnabled` 此前只看
+    /// 「有没有部署记录」，而 `Adopt` 的第一道门是**目录内容**
+    ///（`FindInstalledProxy(...) is null ⇒ Fail(Adopt.NotFound)`）⇒ 两者**不同宽**：
+    /// 「已添加、未部署、目录里没有可识别代理」这个**最常见的初始状态**下，按钮是可点的、
+    /// 点了先弹一个承诺「之后恢复只能按记录里的 SHA256 删除这些文件」的确认框，**然后才失败**。
+    /// 这与已经修好的 `CanAttemptRestore` 是同一个形状，而且就在同一屏的相邻一行。</para>
+    ///
+    /// <para><b>为什么放在这里而不是让 UI 自己再查一遍</b>：那个查询是**昂贵**的
+    ///（每个候选入口名一次签名/哈希验证，约 15 MB 的读取量）。`DeploymentService` 的
+    /// `Evaluate` **本来就要做这件事**才能决定状态文案，所以把它的结果**顺带记下来**是零额外成本；
+    /// 而让 UI 在 `UpdateStatusCard` 里重查会让窗口**冻结数秒**（该处注释有记录）。</para>
+    /// </summary>
+    public sealed record GameCheck(
+        GameStatus Status,
+        string Detail,
+        ProtectionReport? Protection,
+        bool CanAdopt = false);
 
     /// <summary>
     /// Inspects a game folder and reports its state. Reads the filesystem but modifies nothing, so it
@@ -1224,7 +1243,10 @@ public static class DeploymentService
             var found = FindInstalledProxy(root);
             return new GameCheck(GameStatus.NotDeployed,
                 found is null ? Loc.T("Status.NotDeployedDetail") : Loc.T("Status.ManualInstall", found) + standby,
-                protection);
+                protection,
+                // **顺手把这个事实记下来给 UI 用**（零额外成本：`found` 已经算出来了）。
+                // 这正是 `AdoptButton` 需要的判据，而它此前只能看到「有没有记录」。
+                CanAdopt: found is not null);
         }
 
         var proxyPath = Path.Combine(root, prev.ProxyName);
@@ -1277,6 +1299,9 @@ public static class DeploymentService
         if (check.Protection is not null) game.Protection = check.Protection;
         game.Status = check.Status;
         game.StatusDetail = check.Detail;
+        // **把「现在真的可以接管吗」也带过去**（Pass H 的 P1-3）：UI 的启用条件需要它，
+        // 而它来自 `Evaluate` 那次**本来就要做**的检查；让 UI 自己重查会冻结窗口数秒。
+        game.CanAdopt = check.CanAdopt;
     }
 
     /// <summary>

@@ -184,6 +184,7 @@ public sealed class GameEntry : Observable
     private string _notes = "";
     private GameStatus _status = GameStatus.Unknown;
     private string _statusDetail = "";
+    private bool _canAdopt;
 
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get => _name; set => Set(ref _name, value); }
@@ -256,6 +257,25 @@ public sealed class GameEntry : Observable
     [JsonIgnore] public GameStatus Status { get => _status; set { if (Set(ref _status, value)) { Raise(nameof(StatusText)); Raise(nameof(StatusColor)); } } }
 
     [JsonIgnore] public string StatusDetail { get => _statusDetail; set => Set(ref _statusDetail, value); }
+
+    /// <summary>
+    /// 这份安装**现在真的可以接管**吗 —— 给 UI 的启用条件用的结构化事实。
+    ///
+    /// <para><b>为什么需要它</b>（Pass H 的 P1-3）：`AdoptButton.IsEnabled` 此前只看
+    /// 「有没有部署记录」，而 `Adopt` 的第一道门是**目录内容**
+    ///（`FindInstalledProxy(...) is null ⇒ Fail(Adopt.NotFound)`）⇒ 两者**不同宽**：
+    /// 「已添加、未部署、目录里没有可识别代理」这个最常见的初始状态下，按钮是可点的，
+    /// 点了先弹一个确认框、**然后才失败**。这与已修好的 `CanAttemptRestore` 是同一形状，
+    /// 而且就在同一屏的相邻一行。</para>
+    ///
+    /// <para><b>为什么是字段而不是让 UI 自己算</b>：那个查询很贵（每个候选入口名一次签名/哈希验证）。
+    /// 它由 <c>DeploymentService.Evaluate</c> 在**本来就要做**的那次检查里顺带算出，
+    /// 经 <c>GameCheck.CanAdopt</c> → <c>Apply</c> 带到这里。**UI 重查会让窗口冻结数秒。**</para>
+    ///
+    /// <para>与 <c>Status</c> / <c>StatusDetail</c> 一样是 <see cref="System.Text.Json.Serialization.JsonIgnoreAttribute"/>：
+    /// 它是**当前这一刻的观察结果**，不是要持久化的用户数据。</para>
+    /// </summary>
+    [JsonIgnore] public bool CanAdopt { get => _canAdopt; set => Set(ref _canAdopt, value); }
 
     [JsonIgnore]
     public string StatusText => Status switch

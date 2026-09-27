@@ -920,9 +920,21 @@ public partial class MainWindow : Window
         // （Pass E 报出：这是「判据只有一份」的第三处遗漏。）
         RestoreButton.IsEnabled = CanAttemptRestore(game);
 
-        // **接管按钮仍然只看「有没有记录」** —— 这里 `deployed` 的含义是「这份安装已被本工具接管过」，
-        // 与「能不能恢复」是两个不同的问题，所以它刻意**不**跟着上面改。
-        AdoptButton.IsEnabled = !deployed || game.Status == GameStatus.Modified;
+        // **接管按钮问的也必须是「能不能真的接管」**（Pass H 报出：我上一轮在这里写「刻意不改」，
+        // 而那个「刻意」建立在一条错误的前提上 —— 我说 `deployed` 的含义是「这份安装已被本工具
+        // 接管过」，**它其实只是「有部署记录」**）。
+        //
+        // `Adopt` 的第一道门是**目录内容**（`FindInstalledProxy(...) is null ⇒ Adopt.NotFound`），
+        // 所以「已添加、未部署、目录里没有可识别代理」这个**最常见的初始状态**下，按钮此前是可点的：
+        // 用户点它 → 弹一个承诺「之后恢复只能按记录里的 SHA256 删除这些文件」的确认框 → **然后才失败**。
+        //
+        // 判据来自 `GameCheck.CanAdopt`（由 `Evaluate` 在它**本来就要做**的那次检查里顺带记下），
+        // 所以这里**不再重查**（重查会让窗口冻结数秒）。
+        // `game.Status != NotDeployed` 的情形（有记录、或已被改动的安装）仍然可用 —— 那对应
+        // 原来的 `!deployed || Modified` 语义。
+        AdoptButton.IsEnabled = game.Status == GameStatus.NotDeployed
+            ? game.CanAdopt
+            : !deployed || game.Status == GameStatus.Modified;
         OpenLogButton.IsEnabled = game.RenderDir is not null &&
                                   Directory.Exists(Path.Combine(game.RenderDir, ModSource.LogDirName));
 
