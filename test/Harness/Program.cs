@@ -1738,6 +1738,33 @@ public static class Program
         Check("可用入口初始为自带五个", before.AvailableProxies.Count == ModSource.ProxyCandidates.Length,
             string.Join("、", before.AvailableProxies));
 
+        // ---- P2-⑩（Pass C 报出）：**只有 DLL 真的存在的入口才算「可部署」** ----
+        //
+        // `KnownProxyNames` 的文档一直承诺「a name is only deployable when a DLL for it exists」，
+        // 而实现曾经是 `ProxyCandidates.Concat(ImportedProxies)` ——**把全部 6 个名字都列出来，
+        // 不管 payload 里有没有**。后果：计划与界面下拉会给出 payload 里没有的入口，真实 provider
+        // 随后以「未通过校验」拒绝（**用户看到的是「校验失败」而不是「这个入口不存在」**），
+        // 直接调 `Deploy` 还会抛 `FileNotFoundException`。
+        //
+        // 上面那条「初始为自带五个」能通过，是因为**它的夹具 payload 恰好五个都在** —— 所以它
+        // 对这个缺陷完全不敏感。**要暴露它，需要一个「只装一个入口」的 payload。**
+        var sparseDir = Path.Combine(work, "sparse-payload");
+        Directory.CreateDirectory(Path.Combine(sparseDir, ModSource.AltDirName));
+        File.WriteAllText(Path.Combine(sparseDir, "version.dll"), "payload");
+        File.WriteAllText(Path.Combine(sparseDir, ModSource.IniName), "[DLSSG SM86]" + Environment.NewLine);
+
+        var sparse = new ModSource(sparseDir);
+
+        Check("payload 里只有一个入口时，可部署入口也只有它（§17 P2-⑩）",
+            sparse.AvailableProxies.Count == 1
+                && sparse.AvailableProxies[0] == "version.dll",
+            string.Join("、", sparse.AvailableProxies));
+
+        Check("可部署入口不含 payload 里不存在的名字（§17 P2-⑩）",
+            !sparse.AvailableProxies.Contains("dinput8.dll", StringComparer.OrdinalIgnoreCase)
+                && !sparse.AvailableProxies.Contains("dxgi.dll", StringComparer.OrdinalIgnoreCase),
+            string.Join("、", sparse.AvailableProxies));
+
         // A community build: a plausible entry name, and no signature this project can vouch for. The
         // file name *is* the entry name, so the fixture has to carry the real one.
         var localDir = Path.Combine(work, "LocalBuild");

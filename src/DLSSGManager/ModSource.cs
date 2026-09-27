@@ -78,7 +78,16 @@ public sealed class ModSource
         }
 
         ImportedProxies = ImportedProxyNames(root);
-        AvailableProxies = ProxyCandidates.Concat(ImportedProxies).ToArray();
+
+        // **只有真的存在 DLL 的入口才可部署** —— 这正是上面 `KnownProxyNames` 的文档所承诺的
+        // （「a name is only deployable when a DLL for it exists」），而这里曾经写的是
+        // `ProxyCandidates.Concat(ImportedProxies)`：**把全部 6 个名字都列出来，不管 payload 里有没有。**
+        //
+        // 后果是具体的：计划与界面下拉会给出 payload 里根本没有的入口；真实 provider 随后以
+        // 「未通过校验」拒绝（**用户看到的是「校验失败」，而不是「这个入口在 payload 里不存在」**），
+        // 而直接调用 `Deploy` 时会抛 `FileNotFoundException`。
+        // 上面那个按存在性筛过的 `Proxies` 此前**没有任何读者** —— 它算出来的东西没人用。
+        AvailableProxies = Proxies.Concat(ImportedProxies).ToArray();
 
         if (Proxies.Count == 0 && ImportedProxies.Count == 0)
             ValidationMessage = ValidationMessage.Length > 0
