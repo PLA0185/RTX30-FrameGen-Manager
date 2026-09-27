@@ -5433,10 +5433,16 @@ public static class Program
             }).HasTraceableProvenance);
 
         // ---- shared harness for the runs below ----
-        static (SmoothMotionWorkflow Workflow, FakeWorkflowDetector Detector, FakeDrsAdapter Drs, CompatibilityMatrixStore Matrix, IPatchProvider Provider, FakeAssetFetcher Fetcher) Build(string work, string name)
+        //
+        // `drsCanWrite` 默认 true 是为了不动既有用例；**但它默认 true 这件事本身就是一个隐患**：
+        // `FakeDrsAdapter` 的三个能力默认全 true ⇒ 全部编排测试都跑在「驱动完全可写」这个**生产里
+        // 不存在的状态**下（Pass C 指出：真实情况是运行时 `CanWrite` 恒为 false）。需要走「写不了」
+        // 那条路径的用例显式传 false。
+        static (SmoothMotionWorkflow Workflow, FakeWorkflowDetector Detector, FakeDrsAdapter Drs, CompatibilityMatrixStore Matrix, IPatchProvider Provider, FakeAssetFetcher Fetcher) Build(
+            string work, string name, bool drsCanWrite = true)
         {
             var detector = new FakeWorkflowDetector();
-            var drs = new FakeDrsAdapter();
+            var drs = new FakeDrsAdapter { CanRead = drsCanWrite, CanDelete = drsCanWrite, CanSave = drsCanWrite };
             var matrix = new CompatibilityMatrixStore(Path.Combine(work, name + "-matrix.json"));
 
             matrix.Add(new CompatibilityRecord(
@@ -5509,6 +5515,41 @@ public static class Program
         // 位置，或直接对空目录调 `BuildPlannedFiles`），再断言它给出的 `SourcePath` 是 `null` 而不是入口名。
         // **这条断言本轮没有写出来**（构造它需要先看清 `InstallPlanner.Plan` 的入口签名），如实记为缺口，
         // 而不是留一个恒真的检查。
+
+        // ---- 0b. provider 要求写驱动、而进程写不了 ⇒ 必须在【写入之前】停下（§17 P1-1 · Pass C 报出）----
+        //
+        // MFG **必然**带 `ProfileSettings`（`MfgSmoothProvider.cs:310`），而写 Profile 需要管理员权限
+        // （三个能力门是 `internal static`、默认 false、每次启动重置、生产路径不跑 smoke ⇒ 运行时
+        // `CanWrite` 恒为 false）。曾经的顺序是**先装文件、再配 Profile** ⇒ 写被拒 ⇒ Failed + 整体回滚：
+        // 用户看到「下载 15 MB → 装 → 删 → 报失败」，游戏目录被折腾了一遍却什么都没留下 ——
+        // 而这次运行**从一开始就不可能成功**。
+        //
+        // ⚠️ **这条断言此前无法生效**：`FakeDrsAdapter` 的三个能力默认全 `true`（比生产**宽松**），
+        // 所以全部编排测试都跑在「驱动完全可写」这个生产里不存在的状态下。这里显式关掉。
+        var noWriteParts = Build(work, "wfNoWriteDrs", drsCanWrite: false);
+        var noWriteGame = new GameEntry { Name = "wfNoWriteDrs", RenderDir = MakeGameDir(work, "wfNoWriteDrsGame") };
+
+        var noWriteResult = noWriteParts.Workflow.RunAsync(
+            MakeRequest("wfNoWriteDrs", Path.Combine(work, "wf-nowrite-payload"), noWriteParts.Provider, noWriteGame)
+                with { ProfileSettings = new[] { SmoothMotionSettings.All[0] } },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("写不了驱动时必须在写入之前停下（§17 P1-1）",
+            noWriteResult.Outcome == WorkflowOutcome.Blocked,
+            noWriteResult.Outcome + " / " + string.Join("; ", noWriteResult.Errors));
+
+        // **「一个文件都没写」指的是「没有本次计划会写的东西」（代理入口 + INI），而不是「目录是空的」**
+        // —— 夹具本身会放 `game.exe` 之类的文件，用「目录为空」当判据会得到一个与被测行为无关的失败。
+        var noWriteLeft = Directory.EnumerateFiles(noWriteGame.RenderDir)
+            .Select(Path.GetFileName)
+            .Where(f => f is not null
+                        && (ModSource.KnownProxyNames.Contains(f, StringComparer.OrdinalIgnoreCase)
+                            || string.Equals(f, ModSource.IniName, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        Check("写不了驱动时一个文件都没写（§17 P1-1 · 不得先装后删）",
+            noWriteResult.Outcome == WorkflowOutcome.Blocked && noWriteLeft.Count == 0,
+            $"outcome={noWriteResult.Outcome} 写了={string.Join("、", noWriteLeft)}");
 
         // ---- 1. blocked: unknown API writes nothing ----
         var blockedParts = Build(work, "wfBlocked");
