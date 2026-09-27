@@ -26,6 +26,17 @@ public static class Program
 
     /// <summary>其中有多少项是因为缺 <c>extra-proxies\d3d12.dll</c> 跳过的（页脚据此给不同的补救）。</summary>
     private static int _skippedNeedingCommunityProxy;
+
+    /// <summary>其中有多少项是因为缺 Mod 文件跳过的（<c>--fetch</c> 能解决）。</summary>
+    private static int _skippedNeedingModFiles;
+
+    /// <summary>其中有多少项**两样都需要**（<c>--fetch</c> 解决不了 —— 见 <see cref="SkipNeedingBoth"/>）。</summary>
+    private static int _skippedNeedingBoth;
+
+    /// <summary>既不需要 Mod 文件、也不需要 <c>d3d12.dll</c> 的跳过（本机环境缺东西）。
+    /// **第四个桶**：没有它，这一项会被减法静默算进「运行 <c>--fetch</c> 即可」那一类。</summary>
+    private static int _skippedNeedingOther;
+
     private static bool _hasModFiles;
 
     public static int Main(string[] args)
@@ -183,12 +194,30 @@ public static class Program
             // **两类跳过的补救不同**（Pass G 报出：此前一律印「运行 --fetch」，而其中有几项
             // `--fetch` 根本帮不上 —— 它写的是 `mod\altnative\d3d12.dll`，不是仓库根的
             // `extra-proxies\d3d12.dll`。**给错补救比不给更糟：用户会照做、然后发现没用。**）
-            var needsMod = _skipped - _skippedNeedingCommunityProxy;
-            if (needsMod > 0)
-                Console.WriteLine($"（跳过的 {needsMod} 项需要 Mod 文件，运行 Harness.exe --fetch 获取后重试）");
+            //
+            // ⚠️ **这里此前用减法推断类别**（`needsMod = _skipped - _skippedNeedingCommunityProxy`）——
+            // 那是**错的**（Pass L 的 P2-⑤，**同一个错的形状 Pass G 已经报过一次**）：
+            // 我修 P2-5 加的那处跳过（「手工入口与自带入口并存」）**两样都需要**，
+            // 它只做了 `_skipped++` ⇒ 被减进 `needsMod` ⇒ **页脚说「运行 --fetch 即可」，
+            // 而用户跑完 `--fetch` 仍会跳过**（它还需要 `extra-proxies\d3d12.dll`）。
+            // **⇒ 三个显式计数，不再做减法**（减法会把「我没归类的那一项」静默算进某一类）。
+            if (_skippedNeedingModFiles > 0)
+                Console.WriteLine($"（跳过的 {_skippedNeedingModFiles} 项需要 Mod 文件，运行 Harness.exe --fetch 获取后重试）");
             if (_skippedNeedingCommunityProxy > 0)
                 Console.WriteLine($"（另有 {_skippedNeedingCommunityProxy} 项需要在仓库根放置 extra-proxies\\d3d12.dll —— "
                                   + "它是使用者自备的文件，--fetch 不提供它）");
+            if (_skippedNeedingBoth > 0)
+                Console.WriteLine($"（另有 {_skippedNeedingBoth} 项**两样都需要**：Mod 文件与 extra-proxies\\d3d12.dll）");
+            if (_skippedNeedingOther > 0)
+                Console.WriteLine($"（另有 {_skippedNeedingOther} 项是本机环境缺东西，与 Mod 文件和 d3d12.dll 都无关）");
+
+            // **四个桶必须覆盖全部跳过**（否则页脚与总数不一致 —— 这正是减法时代的症状）。
+            // 这条断言守的是「以后新增跳过点忘了归类」：它会在下一次有人手写 `_skipped++` 时变红。
+            var bucketed = _skippedNeedingModFiles + _skippedNeedingCommunityProxy
+                           + _skippedNeedingBoth + _skippedNeedingOther;
+            Check("每个跳过都被归入了一个类别（页脚的分类与总数一致）",
+                bucketed == _skipped,
+                $"总数 {_skipped} vs 已归类 {bucketed}");
         }
 
         return _fail == 0 ? 0 : 1;
@@ -1108,8 +1137,24 @@ public static class Program
         if (_hasModFiles) return false;
 
         _skipped++;
+        _skippedNeedingModFiles++;
         Console.WriteLine($"  [跳过] {section}（需要 Mod 文件，尚未获取）");
         return true;
+    }
+
+    /// <summary>
+    /// **两样都需要**的跳过（Mod 文件 **与** 仓库根的 <c>extra-proxies\d3d12.dll</c>）。
+    ///
+    /// <para>为什么需要这第三个桶（Pass L 的 P2-⑤）：页脚此前用**减法**推断类别
+    /// （<c>needsMod = _skipped - _skippedNeedingCommunityProxy</c>）⇒ 一个**两样都需要**的跳过点
+    /// 会被静默算进「运行 <c>--fetch</c> 即可」那一类，而用户照做之后**仍会跳过**。
+    /// **减法会把「我没归类的那一项」算进某一类 —— 而它算进的那一类正好是错的。**</para>
+    /// </summary>
+    private static void SkipNeedingBoth(string section)
+    {
+        _skipped++;
+        _skippedNeedingBoth++;
+        Console.WriteLine($"  [跳过] {section}（需要 Mod 文件与 extra-proxies\\d3d12.dll 两样）");
     }
 
     /// <summary>
@@ -2153,12 +2198,11 @@ public static class Program
 
         // An imported proxy next to a project-signed one is still two proxies live at once — the crash
         // the single-proxy invariant exists for. Needs the real signed payload.
-        if (!_hasModFiles)
-        {
-            _skipped++;
-            Console.WriteLine("  [跳过] 本地入口与自带入口冲突（需要 Mod 文件）");
-            return;
-        }
+        //
+        // ⚠️ **这里此前是裸 `_skipped++` + 一句 `Console.WriteLine`** ⇒ 它**进了总数却不进任何一个桶**，
+        // 于是页脚的「需要 Mod 文件」比实际少 1（Pass L 的 P2-⑤ 的余波：实测 9 项 mod 而页脚印 8）。
+        // **⇒ 一律走助手，不要手写计数** —— 手写的那一份必然漏掉某个桶。
+        if (SkipWithoutModFiles("本地入口与自带入口冲突")) return;
 
         var conflictDir = MakeGameDir(work, "GameImportConflict");
         var conflict = new GameEntry { Name = "GameImportConflict", RenderDir = conflictDir, PreferredProxy = "d3d12.dll" };
@@ -3517,10 +3561,11 @@ public static class Program
         if (!File.Exists(published))
         {
             // **后半段那个跳过点也要在这里报出来**（否则它在干净 clone 上永不出现 —— Pass K 的 P2-5）。
+            // ⚠️ 而且它属于**第三个桶**（两样都需要），不能用「需要 Mod 文件」那一类
+            // —— 否则页脚会让用户去跑 `--fetch`，跑完仍然跳过（Pass L 的 P2-⑤）。
             if (!conflictPartRunnable)
             {
-                _skipped++;
-                Console.WriteLine("  [跳过] 手工入口与自带入口并存（需要 Mod 文件与 extra-proxies\\d3d12.dll）");
+                SkipNeedingBoth("手工入口与自带入口并存");
             }
 
             _skipped++;
@@ -3569,8 +3614,7 @@ public static class Program
         // **⇒ 两个前置条件都写出来，并且都排在那两个 `return` 之前** —— 这样一个都不漏报。
         if (!_hasModFiles || !File.Exists(published))
         {
-            _skipped++;
-            Console.WriteLine("  [跳过] 手工入口与自带入口并存（需要 Mod 文件与 extra-proxies\\d3d12.dll）");
+            SkipNeedingBoth("手工入口与自带入口并存");
             return;
         }
 
@@ -3674,7 +3718,10 @@ public static class Program
         var signed = Path.Combine(Environment.SystemDirectory, "kernel32.dll");
         if (!File.Exists(signed))
         {
+            // **第四个桶：「其它」** —— 它既不需要 Mod 文件、也不需要 `d3d12.dll`，
+            // 所以减法时代它被静默算进了「运行 --fetch 即可」那一类（而那是错的）。
             _skipped++;
+            _skippedNeedingOther++;
             Console.WriteLine("  [跳过] 没有可用于比对的系统已签名文件");
             return;
         }

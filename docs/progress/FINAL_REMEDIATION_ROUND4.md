@@ -1,6 +1,6 @@
 # 第四轮 · 自主闭环整改报告（§28）
 
-> **状态：草稿，等待新一轮审查（Pass K）结果填入。** 标 `[待 Pass K]` 的位置在审查返回后更新。
+> **状态：草稿，等待新一轮审查（Pass M）结果填入。** 标 `[待 Pass M]` 的位置在审查返回后更新。
 >
 > 基线 `4cf3462` · 无 force push · 未打 Stable Tag。
 >
@@ -360,7 +360,7 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 
 ### ★ 覆盖率的三种状态（Pass F 报出后补记）
 
-**「跳过数不变而通过数 +N」是一个好判据，但它的适用范围是【本机】。** 项目有两个环境，差额恰好是 23 项 `extra-proxies` 相关：
+**「跳过数不变而通过数 +N」是一个好判据，但它的适用范围是【本机】。** 项目有两个环境，**差额是 17 项** `extra-proxies` 相关（**⚠️ 这里此前写「恰好是 23 项」—— 那是更早的值，Pass L 的 P2-③ 报出它陈旧**；**差额会随条件断言的增减而变，引用时必须注明测量 commit**）：
 
 | 状态 | 本机 | 干净 clone | 评价 |
 |---|---|---|---|
@@ -371,7 +371,12 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 **具体到 P1-1**：`TestAdoptRecordsProvider` 需要「一个真实可识别的代理」，而 `Adopt` 的来源校验（`IsOurProxyAt:1292`）在 `prev` 为 null 时只认两条 —— **「内容哈希在硬编码名单里」**（那个文件是 `extra-proxies/d3d12.dll`，被 `.gitignore` 排除、**不在 git 里**）或 **「本项目签名」**（**需要私钥**）。
 **三条出路都评估过**：造签名代理 ❌（无私钥）· 造社区构建 ❌（名单硬编码）· 给 `IsKnownCommunityBuild` 加测试接缝 ⚠️（**要改生产代码**）。
 **⇒ 结论：这条守护做不到「总会执行」，除非改生产代码。** 而**「为测试改生产」要付利息**（那个接缝是一条生产永远不会走的路）—— 所以**先记清楚，不硬做**。
-**可能的减负方向（未实施）**：那 4 条里 **「是不是空串」与「是不是任何语言的占位符」其实不依赖 `Adopt` 成功**（它们检查的是「写进记录的值」）；**只有落点断言真的需要真实代理**。把前两条搬到总会执行的位置，是可行且不动生产的。
+**⚠️ 这里此前写着「可能的减负方向（未实施）：那 4 条里「是不是空串」与「是不是任何语言的占位符」其实不依赖 `Adopt` 成功……把前两条搬到总会执行的位置，是可行且不动生产的」—— Pass L 在临时树副本上【实验】证伪了这个判断（P2-④）：**
+- **实验 A**：把「空串」那条搬出条件 ⇒ **它变红**（`adoptOk=False deployment=null`，套件 964/1/14）；
+- **实验 B**：把「占位符」那条搬出去 ⇒ **它变恒真**（对 `null` 比较，`!= 占位符` 恒成立）。
+- **根因**：`Adopt` **只在两道早退之后**才写 `game.Deployment`（`DeploymentService.cs:1110-1121`），而**这两条读的正是它** ⇒ 它们**确实依赖 `Adopt` 成功**，只是依赖得**不明显**（读的是它的**产物**而不是它的返回值）。
+**⇒ 这条「减负方向」是错的，且它的错法值得记**：**「这个断言不依赖 X」这句话，要顺着断言的【读取对象】去验证，而不是顺着它的字面措辞** —— 措辞说的是「记录里的值」，而那个记录**只有在 X 成功之后才存在**。
+**★ 这也是本轮唯一一条用【实验】而不是【阅读】推翻报告结论的发现** —— 凡结论形如「这样做是可行的」，**做一次比读一遍更有信息量**。
 
 **仍然没有断言守护的三项（如实记录，并写清需要什么）**：
 
@@ -463,14 +468,14 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 | Harness PASS | ✅ 本地 **980**/0/10 · **干净 clone 963**/0/14，差 **17**。**⚠️ 这个差值曾被我写成「另 16 项来自不走跳过机制的条件分支」—— 那是错的**（Pass K 的 P2-3）：实际的 17 = 1（`TestCanAdoptIsWideEnough`）+ 7（`TestAdoptRecordsProvider`）+ 2 + 7（`TestHandInstalledExtra`）**都走了跳过机制**（一次跳过覆盖 7 条断言），剩下的 2 条曾是**真静默**（已在本轮修掉，所以现在是 17 而不是 19）。**那句话会让人以为剩下的都是设计使然，正好掩盖真静默的那两条。** |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
-| **Independent Code Review PASS** | **[待 Pass K]** |
+| **Independent Code Review PASS** | **[待 Pass M]** |
 | No Known P0 | ✅ Pass A 的 P0 已修 + 回归断言 |
 | No Known P1 | ✅ Pass A 的 4 条 P1 已修 + 回归断言 |
 | Documentation Claims Match Code | ✅ §22 审计的 5 条过时陈述已在白板与报告中更正 |
 | Packaging PASS | ✅ **主工作区与干净 clone 各跑一次**：`PACK_EXIT=0`、EXE 63.0 MB + ZIP 57.7 MB（**`77ff788` 与 `1dbd2fd`**）|
 
-**DRS + Transaction Remediation: [待 Pass K 结果后填写]**
+**DRS + Transaction Remediation: [待 Pass M 结果后填写]**
 
-**Ready for User Ground Branch E2E: [待 Pass K 结果后填写]**
+**Ready for User Ground Branch E2E: [待 Pass M 结果后填写]**
 
 > 若为 `NO` 且不存在外部阻塞，则继续整改，不停。
