@@ -4141,6 +4141,40 @@ public static class Program
         Check("构造 workflow 会把磁盘上的矩阵读进来（§17 P2-③ · 守接线而不是守 Load）",
             wired.Count == 1, "Count=" + wired.Count);
 
+        // ---- P1-2（Pass C 报出）：**回滚前必须先把部署记录取出来** ----
+        //
+        // `Provider.Restore` 成功后会**清空 `game.Deployment`**，而 `ScanForLeftovers` 正需要那份记录
+        // （它靠记录里的哈希判断「这个文件是不是我们写的」）。在 `Restore` **之后**读它，读到的是 null
+        // ⇒ 归属判据退化成「有没有本项目签名」⇒ **未签名的残留（社区 d3d12.dll、上游未签名 DLL）
+        // 就扫不到**，于是「已回滚」在不成立时也说出口。
+        //
+        // Pass C 用反射实测过这个差别：记录仍在时找到 **2 个残留**，真实调用点（`Restore` 之后）→ **0 个**。
+        //
+        // **这条守的是「语句顺序」，所以断言也只能落在顺序上** —— 用一个「`Restore` 之后仍有残留」的
+        // 运行时夹具需要串起三段（快照、还原、扫描），成本远高于它守护的东西。源码断言是这种情况下的
+        // 合适工具：它精确、不会误报，代价是重构时需要跟着改（**而那正是应该被提醒的时刻**）。
+        var repoRootForSource = ModSourceLocator.FindRepositoryRoot();
+        var workflowSourcePath = repoRootForSource is null
+            ? ""
+            : Path.Combine(repoRootForSource, "src", "DLSSGManager", "Orchestration", "SmoothMotionWorkflow.cs");
+        var workflowSource = File.Exists(workflowSourcePath)
+            ? File.ReadAllText(workflowSourcePath, Encoding.UTF8)
+            : "";
+
+        var takeRecord = workflowSource.IndexOf("deploymentBeforeRestore", StringComparison.Ordinal);
+        var doRestore = workflowSource.IndexOf("request.Provider.Restore(", StringComparison.Ordinal);
+
+        Check("（前置）能读到编排源码并找到那两处（§17 P1-2）",
+            takeRecord > 0 && doRestore > 0, $"{workflowSourcePath} 取记录@{takeRecord} 还原@{doRestore}");
+
+        Check("回滚前先取出部署记录，再调用 Restore（§17 P1-2 · 顺序）",
+            takeRecord > 0 && doRestore > 0 && takeRecord < doRestore,
+            $"取记录@{takeRecord} 必须早于 还原@{doRestore}");
+
+        Check("扫描残留时把记录传了进去（§17 P1-2）",
+            workflowSource.Contains("ScanForLeftovers(plan, request.Game, deploymentBeforeRestore)",
+                StringComparison.Ordinal));
+
         var corruptPath = Path.Combine(work, "compat-corrupt.json");
         File.WriteAllText(corruptPath, "{ this is not json");
         var corrupt = new CompatibilityMatrixStore(corruptPath);
