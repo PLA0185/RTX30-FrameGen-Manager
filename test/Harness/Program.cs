@@ -6271,10 +6271,40 @@ public static class Program
             PayloadPaths.For("p", labelLess.Version));
 
         // **两种语言必须收敛到同一个目录** —— 这是本条的真正目的（而不是「挡住中文」）。
-        Check("中英两种语言下，读不到版本的 payload 目录是同一个（§17 P2-⑫）",
-            string.Equals(PayloadPaths.For("p", labelLess.Version), PayloadPaths.For("p", labelLess.Version),
-                StringComparison.Ordinal),
-            PayloadPaths.For("p", labelLess.Version));
+        //
+        // ⚠️ **上一版这里是恒真断言**（Pass D 报出，必须记住）：
+        //     string.Equals(PayloadPaths.For("p", x), PayloadPaths.For("p", x), ...)   // x == x
+        // 左右两边是**同一个表达式**，无论 `Segment` 怎么写都成立；而它的名字却写着「中英两种语言下」，
+        // 实现里**没有任何语言变量**。它是这一组里唯一声称覆盖语言的断言 ⇒ **「语言」实际零覆盖，
+        // 却被写成了已覆盖**。这正是本项目诚信底线禁止的东西（恒真断言比没有断言更糟）。
+        //
+        // 现在**真的枚举全部语言**，并且**比较的是「不同语言算出来的值」之间的差异**
+        //（`Distinct().Count() == 1`）—— 这一条不可能靠同一个表达式出现两次来满足。
+        var versionsPerLanguage = new Dictionary<string, string>();
+        foreach (var language in Languages.All)
+        {
+            Loc.SetLanguage(language);
+            versionsPerLanguage[language] = new ModSource(labelLessDir).Version;
+        }
+        Loc.SetLanguage(Languages.ChineseSimplified);   // 还原，避免影响后续断言
+
+        var versionTrail = string.Join(" · ",
+            versionsPerLanguage.Select(kv => $"{kv.Key}=\"{kv.Value}\""));
+
+        Check("同一份 payload 在每一种语言下得到同一个版本值（§17 P2-⑫）",
+            versionsPerLanguage.Count == Languages.All.Length
+                && versionsPerLanguage.Values.Distinct(StringComparer.Ordinal).Count() == 1,
+            versionTrail);
+
+        // **落点**：那些值建出来的目录也必须只有一个（这才是用户能看到的东西）。
+        var distinctDirs = versionsPerLanguage.Values
+            .Select(v => PayloadPaths.For("p", v))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        Check("那个版本值建出来的 payload 目录也只有一个（§17 P2-⑫）",
+            distinctDirs.Count == 1 && distinctDirs[0].EndsWith("_unknown", StringComparison.OrdinalIgnoreCase),
+            string.Join(" · ", distinctDirs));
 
         // **反向配对**：真实的版本号必须原样保留 —— 否则「把所有东西都归成 _unknown」也能通过上面那些。
         Check("真实的版本号仍然原样保留（§17 P2-⑫ · 反向配对）",
