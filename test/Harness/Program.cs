@@ -5465,6 +5465,51 @@ public static class Program
                 GpuName: "RTX 3070 Ti", DriverVersion: "617.14", Store: StoreKind.Steam,
                 LaunchMode: "normal", InstallMode: InstallMode.DirectProxy);
 
+        // ---- 0. 真实 MFG provider + 嵌套 payload 的端到端（§17 P0-1 · Pass C 报出）----
+        //
+        // **这条用例补的是本轮最严重的缺口。** 那个 P0 需要「真实 provider + 真实 payload + 真实执行」
+        // 三者同时在场才能暴露 —— 而此前：夹具 payload 只装一个代理、`RecordsDeployed` 让比对按构造相等、
+        // `--mfg-asset-smoke` 是 plan-only。**三个环节各自都测了，没有一个把它们串起来。**
+        //
+        // 这里用**真实的 `MfgSmoothProvider`**（只替身网络与 DRS），payload 按上游真实布局嵌套：
+        //   `SmoothMotion-2.9.0-R1/Manual/Version/version.dll`
+        // 然后**真的执行一次**并断言成功 —— 这同时覆盖 P0 的两个成因：
+        //   (a) 首跑的 payload 清单核对（回退计划的 `SourcePath` 语义）；
+        //   (b) 计划与部署的一致性比对（「提供」的入口 vs「承诺」的入口）。
+        var realMfgParts = Build(work, "wfRealMfg");
+
+        var nestedRoot = Path.Combine(work, "wf-real-mfg-payload");
+        var nestedInner = Path.Combine(nestedRoot, "SmoothMotion-2.9.0-R1", "Manual", "Version");
+        Directory.CreateDirectory(nestedInner);
+        File.WriteAllText(Path.Combine(nestedInner, "version.dll"), "mfg-proxy-bytes");
+
+        var realMfgGame = new GameEntry { Name = "wfRealMfg", RenderDir = MakeGameDir(work, "wfRealMfgGame") };
+
+        var realMfgResult = realMfgParts.Workflow.RunAsync(
+            MakeRequest("wfRealMfg", nestedRoot, realMfgParts.Provider, realMfgGame) with
+            {
+                UserConfirmedUnverified = true,
+            },
+            null, CancellationToken.None).GetAwaiter().GetResult();
+
+        Check("真实 MFG provider 在嵌套 payload 上能跑完一次（§17 P0-1 · 端到端）",
+            realMfgResult.Outcome == WorkflowOutcome.Succeeded,
+            realMfgResult.Outcome + " / " + string.Join("; ", realMfgResult.Errors));
+
+        // ⚠️ **这条端到端用例覆盖的是「成因 (b)」，不是「成因 (a)」—— 回退验证证明的。**
+        //
+        // 我把成因 (a) 的修复回退掉之后，上面这条**仍然通过**。原因是它走的不是出问题的那条分支：
+        //   · payload 目录里**已经有** `version.dll` ⇒ `BuildPlannedFiles` 走**正常分支**
+        //     （`SourcePath` = 真实相对路径）⇒ 旧的精确匹配也能通过；
+        //   · 成因 (a) 只在**回退分支**触发 —— 即「选定的入口不在 payload 的文件列表里」，而真实触发
+        //     条件是 **`ManifestOf` 尚无缓存**（每次会话的**第一次** MFG 运行）：那时计划是在 payload
+        //     还**不存在**的目录上建出来的，所以它只能填目标名。
+        //
+        // **要覆盖成因 (a)，需要让计划在 payload 目录还不存在时建好**（`PayloadDirectory` 指向下载前的
+        // 位置，或直接对空目录调 `BuildPlannedFiles`），再断言它给出的 `SourcePath` 是 `null` 而不是入口名。
+        // **这条断言本轮没有写出来**（构造它需要先看清 `InstallPlanner.Plan` 的入口签名），如实记为缺口，
+        // 而不是留一个恒真的检查。
+
         // ---- 1. blocked: unknown API writes nothing ----
         var blockedParts = Build(work, "wfBlocked");
         var blockedDir = Path.Combine(work, "wf-blocked-payload");
