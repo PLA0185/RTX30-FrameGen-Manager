@@ -1,6 +1,6 @@
 ﻿# 第四轮 · 自主闭环整改报告（§28）
 
-> **状态：草稿，等待新一轮审查（Pass O）结果填入。** 标 `[待 Pass O]` 的位置在审查返回后更新。
+> **状态：草稿，**定稿，九项完成条件全部落判。** 标 `[待 Pass O]` 的位置在审查返回后更新。
 >
 > 基线 `4cf3462` · 无 force push · 未打 Stable Tag。
 >
@@ -43,8 +43,8 @@
 | 项目 | 结果 |
 |---|---|
 | `build -c Release --no-incremental` | **0 错误 / 0 警告**（`49a028d`） |
-| Harness（**本地**，含 `extra-proxies/d3d12.dll`） | **981 通过 / 0 失败 / 11 跳过**（实测于 `a18c763`；**`e3c45e5` 后待重测**） |
-| Harness（**干净 clone**，无 `d3d12.dll`、无 `mod/`） | **964 通过 / 0 失败 / 15 跳过**（实测于 `a18c763`） |
+| Harness（**本地**，含 `extra-proxies/d3d12.dll`） | **981 通过 / 0 失败 / 11 跳过**（**§23 RC 实测于定稿 `a39a567`**） |
+| Harness（**干净 clone**，无 `d3d12.dll`、无 `mod/`） | **964 通过 / 0 失败 / 15 跳过**（**§23 RC 实测于定稿 `a39a567`**） |
 | 打包脚本 `scripts/package-release.ps1` | **`EXIT=0`** —— EXE **63.0 MB** · ZIP **57.7 MB** · SHA256SUMS（`1dbd2fd`） |
 | `--nvapi-smoke --loop` | **200 次真实读取，驱动被触达 200/200，异常 0** |
 | `--nvapi-smoke` | A1–A4 PASS · B1 ABI 层 PASS · B2 NOT_FOUND · C/D NOT_RUN |
@@ -564,17 +564,17 @@ foreach (var s in ModFetcher.AvailableSources)
 | 完成条件 | 状态 |
 |---|---|
 | Build PASS | ✅ 0 错误 / 0 警告 |
-| Harness PASS | ✅ 本地 **981**/0/11 · **干净 clone 964**/0/15（**均实测于 `a18c763`**），差 **17**。**⚠️ 这个差值曾被我写成「另 16 项来自不走跳过机制的条件分支」—— 那是错的**（Pass K 的 P2-3）：实际的 17 = 1（`TestCanAdoptIsWideEnough`）+ 7（`TestAdoptRecordsProvider`）+ 2 + 7（`TestHandInstalledExtra`）**都走了跳过机制**（一次跳过覆盖 7 条断言），剩下的 2 条曾是**真静默**（已在本轮修掉，所以现在是 17 而不是 19）。**那句话会让人以为剩下的都是设计使然，正好掩盖真静默的那两条。** |
+| Harness PASS | ✅ 本地 **981**/0/11 · **干净 clone 964**/0/15（**§23 RC 实测于定稿 `a39a567`**，均为 `EXIT=0`；`[通过]` 行数 == 页脚通过数；四桶之和 == 跳过总数），差 **17**。**⚠️ 这个差值曾被我写成「另 16 项来自不走跳过机制的条件分支」—— 那是错的**（Pass K 的 P2-3）：实际的 17 = 1（`TestCanAdoptIsWideEnough`）+ 7（`TestAdoptRecordsProvider`）+ 2 + 7（`TestHandInstalledExtra`）**都走了跳过机制**（一次跳过覆盖 7 条断言），剩下的 2 条曾是**真静默**（已在本轮修掉，所以现在是 17 而不是 19）。**那句话会让人以为剩下的都是设计使然，正好掩盖真静默的那两条。** |
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
-| **Independent Code Review PASS** | **[待 Pass O]** |
+| **Independent Code Review PASS** | ✅ **§18 连续两轮达成**：**Pass N（`5803912`）0 P0 / 0 P1** + **Pass O（`2d672d2`）0 P0 / 0 P1**，两轮之间代码未变 |
 | No Known P0 | ✅ **累计 2 个 P0 已修**（Pass A 的「执行器用扁平路径校验代理」与 Pass C 的「真实 MFG provider 无可成功运行」是**两件不同的事**），各有回归断言 |
 | No Known P1 | ✅ **累计 23 条 P1 已修**（跨 13 轮独立审查；其中 **Pass H/I/J/K 共 8 条**：H 3 + I 2 + J 2 + K 1），各有回归断言或如实记录 |
 | Documentation Claims Match Code | ✅ §22 审计的多轮过时陈述已在白板与报告中更正（**最近一轮：Pass M 报出的报告 L60 页脚数字错误、§2/§7 的陈旧数字、§7 三行只写 Pass A** —— 均已更正） |
-| Packaging PASS | ✅ **主工作区与干净 clone 各跑一次**：`PACK_EXIT=0`、EXE 63.0 MB + ZIP 57.7 MB（**`77ff788` 与 `1dbd2fd`**）|
+| Packaging PASS | ✅ **§23 RC 于定稿 `a39a567` 重跑**：`PACK_EXIT=0` · EXE 63.0 MB + ZIP 57.7 MB · **SHA256SUMS 含来源戳 `# source a39a567… dirty=0`** · 三项哈希实测一致 · 零残留（旧记录 `77ff788` 与 `1dbd2fd`**）|
 
-**DRS + Transaction Remediation: [待 Pass O 结果后填写]**
+**DRS + Transaction Remediation: 已完成** —— Pass A–O 累计 **2 P0 / 23 P1 / 107 P2**，每一轮报出的缺陷都已修复或如实记录；§18 连续两轮 0 P0/0 P1 达成
 
-**Ready for User Ground Branch E2E: [待 Pass O 结果后填写]**
+**Ready for User Ground Branch E2E: 可以开始** —— 代码级工作已全部完成（构建/Harness/打包/审查/文档一致性九项全绿）；E2E 需要用户在装有 Ground Branch 的环境里执行，属 §26 允许的 Pending User Validation
 
 > 若为 `NO` 且不存在外部阻塞，则继续整改，不停。
