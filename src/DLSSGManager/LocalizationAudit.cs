@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text.RegularExpressions;
 
 namespace DLSSGManager;
@@ -92,7 +92,10 @@ public static class LocalizationAudit
     /// <para><b>为什么要这个方法</b>：字典初始化器里同一个键写两次时，**后者覆盖前者**（C# 对重复键
     /// 在集合初始化器里不报错），于是前一处**永远不可达**。而既有审计查的是「用到但未定义」与
     /// 「两表键集是否一致」—— **都看不见「定义了一次 vs 定义了两次」**。
-    /// 所以判据是：**定义行数 == <see cref="Strings.AllKeys"/>.Count()**（后者是去重后的键数）。</para>
+    /// 所以判据是：**定义行数 == <c>Strings.For(language).Count</c>**（**本表**的去重键数）。</para>
+    /// <para>⚠️ **不要用 `Strings.AllKeys`**：它（`Strings.cs:41`）**只是中文表的键集，不是两表并集** ——
+    /// 用它去判**英文表**会得出**假红**（Pass M 的 P2-2 报出；Pass N 的 P2-2 更正了原因：
+    /// 问题不是「并集」，而是「拿了另一张表的键数」）。</para>
     ///
     /// <para>它读的是磁盘上的 <c>Strings.zh.cs</c> / <c>Strings.en.cs</c>（源码是唯一真源；
     /// 运行时字典已经把重复项吃掉了，**查不出来**）。</para>

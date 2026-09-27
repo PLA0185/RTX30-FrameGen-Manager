@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -942,7 +942,7 @@ public static class Program
             }
             else
             {
-                Check("正规化后的目录是 ModSource 可消费的 canonical 布局（§11）", false,
+                Check("正规化后的目录是 ModSource 可消费的 canonical 布局（§11）—— 失败标记", false,
                     "PrepareCanonicalPayload 返回 null —— 真实 payload 仍未可消费");
             }
 
@@ -1511,8 +1511,8 @@ public static class Program
         // —— 既有审计查「用到但未定义」「两表不一致」，**都查不到「定义了一次 vs 定义了两次」**。
         var zhDefs = LocalizationAudit.DefinitionLineCount(Languages.ChineseSimplified);
         var enDefs = LocalizationAudit.DefinitionLineCount(Languages.English);
-        // ⚠️ **判据必须用【本表】的去重键数，不能用跨表并集**（Pass M 的 P2-2）：
-        // 我第一版两条都写 `== Strings.AllKeys.Count()`，而 `AllKeys` 是**两张表的键并集**
+        // ⚠️ **判据必须用【本表】的去重键数**（Pass M 的 P2-2 报出，Pass N 的 P2-2 更正了原因）：
+        // 我第一版两条都写 `== Strings.AllKeys.Count()`，而我当时以为 `AllKeys` 是**两张表的键并集**（**错**）
         // —— 它**只在两表键集完全一致时才等于某一张表的键数**。
         // **实测**：在中文表插入一个英文表没有的新键 ⇒ 英文那条也**变红**
         //（`定义行 415 vs 去重键 416`），**而英文表根本没有重复键** —— 真因是并集从 415 变 416。
@@ -1826,7 +1826,11 @@ public static class Program
             }
             else
             {
-                _skipped += 2; _skippedNeedingOther += 2;
+                // ⚠️ **计数口径与全仓一致：一条 `[跳过]` 行 = 1 项**（Pass N 的 P2-5）。
+                // 这里此前写 `+= 2`（理由是实际上有 2 条断言未执行），但全仓其余跳过点都是「一行一项」，
+                // 且**桶覆盖断言只查 `sum == _skipped`**、并不查「每桶项数 == 实际未执行断言数」。
+                // ⇒ 统一成 1，避免口径混杂；**「未执行断言数」这个量没有守护者，不该由桶来承担**。
+                _skipped++; _skippedNeedingOther++;
                 Console.WriteLine("  [跳过] RTX 30 系与 RTX 20 系的型号映射（本机是其它型号）");
             }
         }
@@ -2031,7 +2035,7 @@ public static class Program
         Check("INI 被改动后状态变为已改动", game.Status == GameStatus.Modified, game.StatusText);
 
         var restore = DeploymentService.Restore(game, removeLogs: false);
-        Check("恢复成功", restore.Ok, restore.Message);
+        Check("恢复成功（DeployRestore）", restore.Ok, restore.Message);
         Check("version.dll 已移除", !File.Exists(Path.Combine(dir, "version.dll")));
         Check("INI 已移除", !File.Exists(Path.Combine(dir, ModSource.IniName)));
         Check("原游戏 exe 未受影响", File.Exists(Path.Combine(dir, "GameClean.exe")));
@@ -2039,7 +2043,7 @@ public static class Program
         Check("部署记录已清除", game.Deployment is null);
 
         DeploymentService.Check(game);
-        Check("恢复后状态为未部署", game.Status == GameStatus.NotDeployed, game.StatusText);
+        Check("恢复后状态为未部署（DeployRestore）", game.Status == GameStatus.NotDeployed, game.StatusText);
     }
 
     private static void TestForeignFileProtection(string modRoot, string work)
@@ -2095,12 +2099,12 @@ public static class Program
             Profile = new GameProfile(),
         };
 
-        Check("首次部署成功", DeploymentService.Deploy(game2, source).Ok);
+        Check("首次部署成功（ForeignFileProtection）", DeploymentService.Deploy(game2, source).Ok);
         Check("首次部署备份了外部 INI", game2.Deployment?.Backups.Count == 1);
 
         game2.Profile.MaxGeneratedFrames = 2;
         var redeploy = DeploymentService.Deploy(game2, source);
-        Check("二次部署成功", redeploy.Ok, redeploy.Message);
+        Check("二次部署成功（ForeignFileProtection）", redeploy.Ok, redeploy.Message);
         Check("二次部署结转了备份记录",
             game2.Deployment?.Backups.Any(b => string.Equals(b.FileName, ModSource.IniName, StringComparison.OrdinalIgnoreCase)) == true);
 
@@ -2236,7 +2240,7 @@ public static class Program
         Check("代理与 INI 都记了指纹", game.Deployment!.Files.Count == 2, "实际: " + game.Deployment.Files.Count);
 
         DeploymentService.Check(game);
-        Check("状态为已部署", game.Status == GameStatus.Deployed, game.StatusText + " / " + game.StatusDetail);
+        Check("状态为已部署（ProxyImport）", game.Status == GameStatus.Deployed, game.StatusText + " / " + game.StatusDetail);
 
         var restore = DeploymentService.Restore(game, removeLogs: false);
         Check("一键恢复成功", restore.Ok, restore.Message);
@@ -2244,7 +2248,7 @@ public static class Program
         Check("INI 也已删除", !File.Exists(Path.Combine(dir, ModSource.IniName)));
 
         DeploymentService.Check(game);
-        Check("恢复后状态为未部署", game.Status == GameStatus.NotDeployed, game.StatusText);
+        Check("恢复后状态为未部署（ProxyImport）", game.Status == GameStatus.NotDeployed, game.StatusText);
 
         // An imported proxy next to a project-signed one is still two proxies live at once — the crash
         // the single-proxy invariant exists for. Needs the real signed payload.
@@ -2292,7 +2296,7 @@ public static class Program
         // First deployment: takes the default entry.
         var game = new GameEntry { Name = "GameOneProxy", RenderDir = dir, PreferredProxy = DeploymentService.AutoProxy };
         var first = DeploymentService.Deploy(game, source);
-        Check("首次部署成功", first.Ok, first.Message);
+        Check("首次部署成功（SingleProxyInvariant）", first.Ok, first.Message);
         var firstProxy = game.Deployment?.ProxyName ?? "";
         Check("首次部署使用默认入口 version.dll", firstProxy == "version.dll", firstProxy);
 
@@ -2339,7 +2343,7 @@ public static class Program
             game.Deployment?.Files.Any(f => string.Equals(f.FileName, stray, StringComparison.OrdinalIgnoreCase)) == true);
 
         var restore = DeploymentService.Restore(game, removeLogs: false);
-        Check("恢复成功", restore.Ok, restore.Message);
+        Check("恢复成功（SingleProxyInvariant）", restore.Ok, restore.Message);
         Check("恢复时多余代理也被清理", !File.Exists(Path.Combine(dir, stray)), stray);
 
         // No proxy of ours may survive. The INI is a different matter: if a deploy displaced a
@@ -2403,15 +2407,15 @@ public static class Program
                 game.Deployment?.Files.Any(f => string.Equals(f.FileName, customName, StringComparison.OrdinalIgnoreCase)) == true);
 
             DeploymentService.Check(game);
-            Check("状态为已部署", game.Status == GameStatus.Deployed, game.StatusText + " / " + game.StatusDetail);
+            Check("状态为已部署（CustomNamedProxy）", game.Status == GameStatus.Deployed, game.StatusText + " / " + game.StatusDetail);
 
             // Restore must remove the custom entry too — this was the gap.
             var restore = DeploymentService.Restore(game, removeLogs: false);
-            Check("恢复成功", restore.Ok, restore.Message);
+            Check("恢复成功（CustomNamedProxy）", restore.Ok, restore.Message);
             Check("自定义入口被删除", !File.Exists(proxyPath));
             Check("INI 被删除", !File.Exists(Path.Combine(dir, ModSource.IniName)));
             DeploymentService.Check(game);
-            Check("恢复后状态为未部署", game.Status == GameStatus.NotDeployed, game.StatusText + " / " + game.StatusDetail);
+            Check("恢复后状态为未部署（CustomNamedProxy）", game.Status == GameStatus.NotDeployed, game.StatusText + " / " + game.StatusDetail);
 
             // Switching entry names must displace the custom one instead of running two proxies.
             var game2 = new GameEntry
@@ -2422,7 +2426,7 @@ public static class Program
                 Profile = new GameProfile(),
             };
             var deploy2 = DeploymentService.Deploy(game2, source);
-            Check("二次部署成功", deploy2.Ok, deploy2.Message);
+            Check("二次部署成功（CustomNamedProxy）", deploy2.Ok, deploy2.Message);
 
             game2.PreferredProxy = "version.dll";
             var switched = DeploymentService.Deploy(game2, source);
@@ -2604,7 +2608,7 @@ public static class Program
             $"记录 «{game.Deployment?.ModVersion}»");
 
         DeploymentService.Check(game);
-        Check("接管后状态为已部署", game.Status == GameStatus.Deployed, game.StatusText + " / " + game.StatusDetail);
+        Check("接管后状态为已部署（Adopt）", game.Status == GameStatus.Deployed, game.StatusText + " / " + game.StatusDetail);
 
         var restore = DeploymentService.Restore(game, removeLogs: false);
         Check("接管后可恢复", restore.Ok && !File.Exists(Path.Combine(dir, "version.dll")), restore.Message);
@@ -2930,7 +2934,7 @@ public static class Program
             hoyoGame.StatusText + " / " + hoyoGame.StatusDetail);
 
         var restore = DeploymentService.Restore(hoyoGame, removeLogs: false);
-        Check("恢复成功", restore.Ok, restore.Message);
+        Check("恢复成功（AntiCheat）", restore.Ok, restore.Message);
         Check("被隔离副本已清理", !File.Exists(renamed));
         Check("INI 已清理", !File.Exists(Path.Combine(hoyo, ModSource.IniName)));
         Check("反作弊文件未被误删",
@@ -3482,7 +3486,7 @@ public static class Program
             try { allowed = ModFetcher.IsAllowedAddress(new Uri(url)); }
             catch (Exception ex) { detail = $"{url} → {ex.GetType().Name}"; }
 
-            Check($"源 [{s.Id}] 的真实地址通过 allow-list（{detail}）", allowed);
+            Check($"源 [{s.Id}] 的地址（策略实际校验的那个）通过 allow-list（{detail}）", allowed);
         }
     }
 
@@ -3684,7 +3688,7 @@ public static class Program
         Check("入口名记为 d3d12.dll", game.Deployment?.ProxyName == "d3d12.dll", game.Deployment?.ProxyName);
 
         DeploymentService.Check(game);
-        Check("接管后状态为已部署", game.Status == GameStatus.Deployed,
+        Check("接管后状态为已部署（HandInstalledExtra）", game.Status == GameStatus.Deployed,
             game.StatusText + " / " + game.StatusDetail);
 
         var restore = DeploymentService.Restore(game, removeLogs: false);
