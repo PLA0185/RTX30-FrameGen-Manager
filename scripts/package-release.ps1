@@ -74,6 +74,27 @@ $StageTmp = Join-Path $ArtifactsDir 'release-candidate/.win-x64-staging'
 if (Test-Path $StageTmp) { Remove-Item $StageTmp -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $StageTmp | Out-Null
 
+# ── 1b. 清掉上一次失败留下的**陈旧临时产物**（Pass I 报出）──────────────────
+#
+# 这里此前只清 `$StageTmp`。而 `$ZipTmp`（`*.tmp.zip`）与 `$SumsTmp`（`*.tmp`）**只在成功路径上
+# 被 `Move-Item` 移走** —— 一旦脚本在中间失败，它们就**留在这里**，而且：
+#   · `*.tmp.zip` 是一个**完整可用的 ZIP**，**看起来就是发布物**；
+#   · 累积起来是**上百 MB**（Pass I 在真 `artifacts/` 里量到 ~126 MB）；
+#   · **失败消息一个字都不提它们**。
+#
+# ⇒ 启动时清掉。**注意这是「清陈旧」，不是「清本次」** —— 本次失败时**不删**它们，
+# 因为回滚不完整时那个 `.tmp` 可能是唯一的新产物（见 `catch` 里的报告）。
+$ZipTmpPre = Join-Path $ArtifactsDir "RTX30-FrameGen-Manager-win-x64-$Version.zip.tmp.zip"
+$SumsTmpPre = Join-Path $ArtifactsDir 'SHA256SUMS.txt.tmp'
+foreach ($stale in @($ZipTmpPre, $SumsTmpPre))
+{
+    if (Test-Path $stale)
+    {
+        Write-Host ("  清掉上一次留下的临时产物：" + (Split-Path $stale -Leaf))
+        Remove-Item $stale -Force
+    }
+}
+
 # ── 2. 构建 ───────────────────────────────────────────────────────────────
 Step "构建 Release"
 dotnet build DLSSGManager.sln -c Release --nologo
@@ -320,7 +341,30 @@ catch
         "⚠️ 恢复不完整：" + ($undoNotes -join "；") + " —— 请手工检查 artifacts 目录。"
     }
 
-    $script:replaceFailure = "替换正式产物失败：$reason`n$rollbackState"
+    # ⚠️ **把残留的临时产物也说出来**（Pass I 报出）：它们**不删**（回滚不完整时可能是唯一的新产物），
+    # 但**必须让用户知道它们在、叫什么、以及它们看起来像发布物**。
+    $leftover = @()
+    foreach ($p in @($StageTmp, $ZipTmp, $SumsTmp))
+    {
+        if (Test-Path $p)
+        {
+            $sizeMb = if ((Get-Item $p).PSIsContainer) {
+                [math]::Round((Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue |
+                               Measure-Object Length -Sum).Sum / 1MB, 1)
+            } else { [math]::Round((Get-Item $p).Length / 1MB, 1) }
+            $leftover += "$(Split-Path $p -Leaf)（${sizeMb} MB）"
+        }
+    }
+
+    $leftoverNote = if ($leftover.Count -eq 0) {
+        ""
+    } else {
+        "`n⚠️ 本次运行留下的临时产物**没有删除**（回滚不完整时它们可能是唯一的新产物）："
+        + ($leftover -join "、")
+        + " —— 它们不是发布物；下一次成功运行会自动清掉。"
+    }
+
+    $script:replaceFailure = "替换正式产物失败：$reason`n$rollbackState$leftoverNote"
 }
 
 # **在 catch 之外抛出**：这样回滚的两步一定执行完、消息一定发得出去、原始原因一定保留。
