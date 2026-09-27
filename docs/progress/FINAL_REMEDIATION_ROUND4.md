@@ -1,6 +1,6 @@
-# 第四轮 · 自主闭环整改报告（§28）
+﻿# 第四轮 · 自主闭环整改报告（§28）
 
-> **状态：草稿，等待新一轮审查（Pass J）结果填入。** 标 `[待 Pass J]` 的位置在审查返回后更新。
+> **状态：草稿，等待新一轮审查（Pass K）结果填入。** 标 `[待 Pass K]` 的位置在审查返回后更新。
 >
 > 基线 `4cf3462` · 无 force push · 未打 Stable Tag。
 >
@@ -254,7 +254,29 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 - **P2-3 文案写死数字，而那个「或」也是错的**：`ProxyCandidates` = **6 个**、`KnownProxyNames` = **7 个**，而文案说「本项目的 **5 个**入口，**或**随附加入口分发的 `d3d12.dll`」—— 数字错，且 **`d3d12.dll` 就在那 6 个里**（子集不是并列项）。**已修**：改成不写数字，并在四处注释里写明「要数量就读数组」。**★ 判据：凡是「数量」出现在散文里，它就是一个会漂的副本。**
 - **P2-4 无条件删 `.old`**：需连续两次失败才丢发布 ⇒ **设计取舍，记录备查**。
 
-**§18 的状态**：Pass A–J **各报出缺陷 ⇒ 计数已重来十次**；**Pass H / I / J 的 P1 已全部修复**，**下一轮审查是新周期的第一轮**。
+### Pass J（**它抓到了我的修复【本来不完整】**）
+
+**结论：0 P0 / 2 P1 / 9 P2。** 它的检查方法是**两份输出的 `[通过]` 行集合做 diff** + 真实脚本注入 + `web_fetch` 拉真实上游 INI + **逐键扫描全部 416 个语言键**。
+
+**P1-A —— 干净 clone 上有 20 条断言【静默消失】，套件一个字都不说。**
+`Program.cs:3360-3364` 与 `:3427-3431` 都是 `if (!File.Exists(...)) { Console.WriteLine(...); return; }` —— **既不计 `_skipped`、也不打印 `[跳过]`**。
+**实测**（两份输出逐行 diff）：28 项只在本地跑 = `TestCanAdoptIsWideEnough` 1 + `TestAdoptRecordsProvider` 7（**这 8 条有计数**）+ **`TestCommunityBuildRecognition` 12 + `TestHandInstalledExtra` 8 = 20 条静默**。
+**更糟**：那个 `return` 把**完全不依赖那个文件**的 4 条 `ReadVersionFromText` 纯逻辑断言与 3 条哈希拒绝断言一起带走了。**而同一个方法里 mod 那一支反而是规范计数** ⇒ **Pass I 的「如实计入跳过」只落到了 4 组里的 2 组**。
+**已修**：两处改成 `_skipped++` + `_skippedNeedingCommunityProxy++` + `[跳过]` 行；不依赖文件的部分**移出 `return` 之前**；并**删掉两条恒真断言**（`Check(…, true, …)`）。
+**实测**：本机 **977 → 975**（删掉两条恒真，**降了才对**）；干净 clone **949 / 0 / 11 → 956 / 0 / 13**。
+**它同时证伪了报告 §2 的一句**：「跳过数两边都是 10，因为静默 `return` 已改为走跳过机制」—— **干净 clone 实测是 11**，而那句话恰好是拿来证明「静默 return 已清」的。**「已清」是全称判断，它需要覆盖全量的证据；那个证据只是「跳过数从 9 变成 10」。**
+
+**P1-B —— `AdoptButton.IsEnabled` 的【第三支】仍与 `Adopt` 不同宽。**
+我上一轮只修了 `NotDeployed` 那一支，而 `Status != NotDeployed` 仍用 `!deployed || Status == Modified` ⇒ **两个方向都错**：
+- **`Modified`**（代理被换成无法识别的 DLL）⇒ 按钮**可点**而 `Adopt` **必 `NotFound`**（用户又经历一次「先弹承诺按 SHA256 恢复的确认框，然后失败」）；
+- **`Missing`**（INI 被删、签名代理仍在）⇒ 按钮**禁用**而 `Adopt` **本可成功**。
+**已修**：**`Evaluate` 在所有分支都算 `CanAdopt`**（用的就是 `Adopt` 自己那道门 `FindInstalledProxy(renderDir, prev: null)`），**UI 直接读 `game.CanAdopt`、不做任何回退判断**。
+**★ 判据：回退判断 = 第二份判据 = 迟早与第一份不同宽。**（这是本会话修过三次的同一形态；而 Pass J 给出的机械理由更硬 —— `Adopt` 的第一道门就是那一个调用，所以「同宽」不是努力方向，而是**同一个表达式的两次求值**。）
+
+**它还独立证明了一件事（关于构造）**：**「部分回滚」构造不出，而现在有原理上的理由** —— 实测把子文件独占打开后，**目录连改名都做不到**（`Rename-Item` → `Access to the path … is denied.`）⇒ 能让回滚的 `Remove-Item $a.Live` 失败的那种锁，**同时也会让阶段二的 `Move-Item` 失败**，产物永远到不了「已就位但撤不下」的状态。**这是附了尝试记录的有效「构造不出」结论。**
+**另一个已实测的事实**：`Move-Item` 目标已存在时的终止错误**逐字**是 `Cannot create a file when that file already exists.` ⇒ Pass H 看到的那个「与本因无关」的报错来自**阶段二的 `Move-Item`**，而把 `throw` 移出 `catch` 正是让真因可见的那个修复。
+
+**§18 的状态**：Pass A–J **各报出缺陷 ⇒ 计数已重来十次**；**Pass H / I / J 的 P1 已全部修复**，**Pass K 是新周期的第一轮**。
 
 ### ★ 累计数字的口径（Pass J 的 P2-③）
 
@@ -400,14 +422,14 @@ game.Deployment?.ModVersion == (adoptedVersion ?? Loc.T("ModSource.UnknownVersio
 | Harness PASS | ✅ 本地 **975**/0/10 · **干净 clone 956**/0/13（**均实测于 `d4f6ba4`**），差 **19**（其中 **3** 项显式计入跳过，另 **16** 项来自不走跳过机制的条件分支）|
 | Integration Review | ✅ §17 列出 |
 | Real Smoke PASS | ✅ 见 §2（提权路径为人工触发） |
-| **Independent Code Review PASS** | **[待 Pass J]** |
+| **Independent Code Review PASS** | **[待 Pass K]** |
 | No Known P0 | ✅ Pass A 的 P0 已修 + 回归断言 |
 | No Known P1 | ✅ Pass A 的 4 条 P1 已修 + 回归断言 |
 | Documentation Claims Match Code | ✅ §22 审计的 5 条过时陈述已在白板与报告中更正 |
 | Packaging PASS | ✅ **主工作区与干净 clone 各跑一次**：`PACK_EXIT=0`、EXE 63.0 MB + ZIP 57.7 MB（**`77ff788` 与 `1dbd2fd`**）|
 
-**DRS + Transaction Remediation: [待 Pass J 结果后填写]**
+**DRS + Transaction Remediation: [待 Pass K 结果后填写]**
 
-**Ready for User Ground Branch E2E: [待 Pass J 结果后填写]**
+**Ready for User Ground Branch E2E: [待 Pass K 结果后填写]**
 
 > 若为 `NO` 且不存在外部阻塞，则继续整改，不停。
